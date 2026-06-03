@@ -25,15 +25,15 @@ struct UniformBufferObject {
     alignas(16) glm::vec4 materialTint;
     alignas(16) glm::vec4 boxMaterialTint;
     alignas(16) glm::vec4 emissive;     // rgb = emissive color, w = intensity
-    // PBR additions ─ all aligned to 16 bytes (std140-friendly)
+    // PBR additions -- all aligned to 16 bytes (std140-friendly)
     alignas(16) glm::vec4 cameraPos;    // xyz = world camera position, w unused
     alignas(16) glm::vec4 lightDir;     // xyz = world-space *to-light* direction (normalized)
     alignas(16) glm::vec4 lightColor;   // rgb = radiance, a = ambient strength
     alignas(16) glm::vec4 pbrFactors;   // x=metallic, y=roughness, z=ao, w=normalScale
-    // Pre-computed matrix cache — appended at end to preserve old shader binding offsets.
+    // Pre-computed matrix cache -- appended at end to preserve old shader binding offsets.
     alignas(16) glm::mat4 viewProj;     // proj * view; shaders use this to save one matrix multiply
     alignas(16) glm::mat4 invView;      // inverse(view); used for lighting vector transforms / env mapping
-    alignas(16) glm::mat4 invProj;      // inverse(proj); reserved for depth→world reconstruction in post-FX
+    alignas(16) glm::mat4 invProj;      // inverse(proj); reserved for depth->world reconstruction in post-FX
 };
 
 /**
