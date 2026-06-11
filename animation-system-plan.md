@@ -72,9 +72,9 @@ struct Skeleton {
 
 **具体任务：**
 
-- [ ] **A1-1** 创建 `src/Animation/` 目录，新建 `Skeleton.hpp` / `Skeleton.cpp`
-- [ ] **A1-2** 实现 `Skeleton::computeFinalMatrices`：按父→子顺序遍历（`parentIndex < i` 保证），`global[i] = global[parent] * local[i]`，`final[i] = global[i] * inverseBindMatrix[i]`
-- [ ] **A1-3** 在 `Skeleton.cpp` 写单元测试函数 `testSkeleton()`（不对外暴露，仅 debug 用）：构造一个两骨骼链，验证 final matrix 计算正确
+- [x] **A1-1** 创建 `src/Animation/` 目录，新建 `Skeleton.hpp` / `Skeleton.cpp`
+- [x] **A1-2** 实现 `Skeleton::computeFinalMatrices`：按父→子顺序遍历（`parentIndex < i` 保证），`global[i] = global[parent] * local[i]`，`final[i] = global[i] * inverseBindMatrix[i]`
+- [x] **A1-3** 在 `Skeleton.cpp` 写单元测试函数 `testSkeleton()`（不对外暴露，仅 debug 用）：构造一个两骨骼链，验证 final matrix 计算正确
 
 **验收标准：** 能构造一个 3 骨骼链式骨架，调用 `computeFinalMatrices` 后 `finalBoneMatrices[2]` 与手算结果一致。
 
@@ -110,29 +110,29 @@ struct AnimationClip {
 
 **具体任务：**
 
-- [ ] **A2-1** 新建 `src/Animation/AnimationClip.hpp` / `.cpp`，实现上述结构体
-- [ ] **A2-2** 实现 `AnimationClip::evaluateBoneLocalTransform`：
+- [x] **A2-1** 新建 `src/Animation/AnimationClip.hpp` / `.cpp`，实现上述结构体
+- [x] **A2-2** 实现 `AnimationClip::evaluateBoneLocalTransform`：
   - 找到该骨骼的 Translation / Rotation / Scale 三条 channel（可能缺失，缺失则用骨骼的 bindTransform 值）
   - 对每个 channel 做二分查找找到 `[t0, t1]` 区间
   - `Linear`：`glm::mix` 或 `glm::slerp`；`Step`：取 `t0` 值；`CubicSpline`：三次 Hermite 插值
   - 将 T/R/S 组合成 `T * R * S` 的 mat4
-- [ ] **A2-3** 在 `SceneManager.hpp` 中新增成员：
+- [x] **A2-3** 在 `SceneManager.hpp` 中新增成员：
   ```cpp
   std::shared_ptr<Skeleton>               skeleton_;
   std::vector<AnimationClip>              animationClips_;
   ```
-- [ ] **A2-4** 在 `SceneManager::loadModelFromGltf` 末尾新增皮肤解析：
+- [x] **A2-4** 在 `SceneManager::loadModelFromGltf` 末尾新增皮肤解析：
   - 遍历 `data->skins`（取第一个 skin，或后续多皮肤支持）
   - 读取 `skin->joints` 数组，为每个 joint 从 `cgltf_node` 的 `matrix` / `translation/rotation/scale` 中提取 `localBindTransform`
   - 读取 `skin->inverse_bind_matrices` accessor，填充 `Bone::inverseBindMatrix`
   - 维护 `cgltf_node* → boneIndex` 的临时 map，供动画解析使用
-- [ ] **A2-5** 继续解析 `data->animations`：
+- [x] **A2-5** 继续解析 `data->animations`：
   - 遍历每个 `cgltf_animation`，创建对应 `AnimationClip`
   - 遍历 `anim->channels`：找到 target node 对应的 boneIndex（用上一步的 map）
   - 遍历 `anim->samplers`：读取 input（时间）和 output（值）accessor，填充 `AnimChannel::times` 和 `values`
   - 计算 `clip.duration = max(channel.times.back())`
-- [ ] **A2-6** 新增 `SceneManager::getAnimationClips()` / `getSkeleton()` 公开访问器，供 Application 层使用
-- [ ] **A2-7** 修改 `SceneManager::loadModelFromObj`：皮肤和动画置空（OBJ 不支持骨骼），不影响现有渲染路径
+- [x] **A2-6** 新增 `SceneManager::getAnimationClips()` / `getSkeleton()` 公开访问器，供 Application 层使用
+- [x] **A2-7** 修改 `SceneManager::loadModelFromObj`：皮肤和动画置空（OBJ 不支持骨骼），不影响现有渲染路径
 
 **验收标准：** 加载一个带骨骼动画的 glTF 文件（如 Khronos 官方的 `CesiumMan.glb`），能在 debug 日志中打印出骨骼数量、动画数量、第一条动画的时长。
 

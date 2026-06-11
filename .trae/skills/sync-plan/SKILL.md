@@ -1,6 +1,6 @@
 ---
 name: "sync-plan"
-description: "将当前会话中完成的代码变更同步到 TDD.md 技术文档和 animation-system-plan.md 计划文件。在完成一个功能/阶段后，由用户说出"更新TDD""同步计划""打勾"时调用。"
+description: "将当前会话中完成的代码变更同步到 TDD.md 技术文档，并在 animation-system-plan.md 中为已完成任务打勾，同步 todolist.md 的搁置/完成状态。当用户说"更新TDD""同步计划""打勾"时调用。"
 ---
 
 # 计划同步 Skill
@@ -66,7 +66,33 @@ description: "将当前会话中完成的代码变更同步到 TDD.md 技术文�
 | 在 `Application.hpp` 添加 `ModelRegistry modelRegistry_` 成员 | S0B1-4, S0B1-5 |
 | 实现 `drawContentBrowser()` 完整体 | S0A1-3, S0A1-1（若之前未打勾） |
 
-### 步骤 4：输出更新摘要
+### 步骤 4：更新 animation-system-plan.md 中的废弃/跳过项到 todolist.md
+
+**触发条件：** 当一个 Phase 或里程碑的所有子任务打勾完毕、或用户明确决定跳过某些子任务
+
+文件路径：`e:/Projects/tinyEngine/todolist.md`
+
+**操作规则：**
+1. **Phase 完成检查**：扫描 animation-system-plan.md，若某个 Phase 内部存在仍为 `- [ ]` 的任务但用户明确选择跳过（如"这个先不做""太复杂以后再说"），将该任务记录到 todolist.md 的「待办」区
+2. **格式**：
+   ```markdown
+   - [ ] 【{计划中的任务描述}】
+     - 上下文：{跳过原因}
+     - 日期：{当前日期}
+     - 来源：animation-system-plan.md → Phase X
+   ```
+3. **不自动添加**：只有用户明确表示跳过/搁置时才记录，不要代用户判断
+
+### 步骤 5：更新 todolist.md 中的"已完成"项
+
+**触发条件：** TDD.md「已知限制与待扩展」表格中某项状态变为"已完成"
+
+**操作规则：**
+1. 扫描 TDD.md 第 15 节，找出状态为"已完成"的新条目
+2. 若 todolist.md 的「待办」区有对应条目，将其移到「已完成」区，`[ ]` 改为 `[x]`
+3. 若「待办」区无对应条目，不需要新增（只有用户通过 defer-todo skill 手动添加的才需要同步）
+
+### 步骤 6：输出更新摘要
 
 向用户报告此次同步的结果：
 
@@ -81,12 +107,15 @@ description: "将当前会话中完成的代码变更同步到 TDD.md 技术文�
 - [x] S0X-Y 任务描述
 - （如无新增完成则写"无新增完成任务"）
 
+### todolist.md 同步
+- 新增 N 条搁置项 / 完成 N 条 / 无需更新
+
 ### 未完成提示
 - 当前 Phase 还有 N 个任务待完成
 - 下一阶段是：xxx
 ```
 
-### 步骤 5：输出 commit summary（必须执行）
+### 步骤 7：输出 commit summary（必须执行）
 
 完成所有文档更新后，**必须**输出一个完整的 commit summary。这个 summary 覆盖当前整个对话会话中所有代码变更和文档变更，格式如下：
 
@@ -129,5 +158,6 @@ description: "将当前会话中完成的代码变更同步到 TDD.md 技术文�
 
 - 不要无中生有地标记未完成的任务为已完成
 - TDD.md 更新要精炼，不要大段重写已有内容
+- todolist.md 只在用户明确跳过/搁置时新增条目，TDD 状态变更时自动同步已有条目的完成状态
 - 如果用户指定的变更范围不明确，主动询问后再更新
 - 使用 SearchReplace 工具精确替换 checkbox 状态，不要重写整行

@@ -279,6 +279,7 @@ void MaterialManager::destroy(const VulkanContext& ctx)
         destroyEntry(e, ctx);
     materials_.clear();
     allIds_.clear();
+    assetCache_.clear();
 
     if (pool_ != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(ctx.getDevice(), pool_, nullptr);
@@ -513,6 +514,12 @@ void MaterialManager::destroyMaterial(MaterialId id, const VulkanContext& ctx)
     destroyEntry(it->second, ctx);
     materials_.erase(it);
     allIds_.erase(std::remove(allIds_.begin(), allIds_.end(), id), allIds_.end());
+
+    // 从资产缓存中移除失效条目
+    for (auto ci = assetCache_.begin(); ci != assetCache_.end(); ) {
+        if (ci->second == id) ci = assetCache_.erase(ci);
+        else ++ci;
+    }
 }
 
 // ── Parameter accessors ────────────────────────────────────────────────────────
@@ -679,6 +686,11 @@ MaterialId MaterialManager::loadMaterialFromAsset(const std::string& astRelPath,
                                                   const FramebufferManager& fbMgr,
                                                   const PipelineManager& pipeMgr)
 {
+    // 缓存命中：同一 .ast 文件只创建一次材质
+    auto cacheIt = assetCache_.find(astRelPath);
+    if (cacheIt != assetCache_.end() && isValid(cacheIt->second))
+        return cacheIt->second;
+
     MaterialAssetDesc desc;
     std::string err;
     if (!MaterialAssetLoader::load(astRelPath, desc, &err)) {
@@ -708,6 +720,8 @@ MaterialId MaterialManager::loadMaterialFromAsset(const std::string& astRelPath,
     MaterialEntry& e = materials_.at(id);
     e.vertSpvPath = desc.vertSpv;
     e.fragSpvPath = desc.fragSpv;
+
+    assetCache_[astRelPath] = id;
     return id;
 }
 

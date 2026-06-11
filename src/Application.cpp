@@ -9,8 +9,12 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <cstring>
+#include "cgltf.h"
 #include <stdexcept>
 
 // STB_IMAGE_IMPLEMENTATION defined globally; only TextureManager.cpp implements it
@@ -734,13 +738,29 @@ void Application::beginDragPlace(uint64_t assetId)
     // 记录 .ast 资产路径，供 SceneSerializer 保存
     ent->astRelPath = asset->astRelPath;
 
-    // 加载 .ast 中的材质并应用到所有子网格
-    const MaterialId mid = matMgr_.loadMaterialFromAsset(
-        asset->astRelPath, ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_);
-    if (mid != kInvalidMaterialId) {
-        ent->materialId = mid;
-        if (!ent->subMeshes.empty()) {
-            ent->subMeshMaterials.resize(ent->subMeshes.size(), mid);
+    // glTF 模型在 loadModelFromGltf 中已为每个 primitive 生成详细 .ast 文件
+    // （存储在 ent->autoAstPaths 中），逐槽位加载这些材质
+    if (!ent->autoAstPaths.empty()) {
+        ent->subMeshMaterials.resize(ent->subMeshes.size(), 0u);
+        for (size_t slot = 0; slot < ent->autoAstPaths.size(); ++slot) {
+            const MaterialId mid = matMgr_.loadMaterialFromAsset(
+                ent->autoAstPaths[slot], ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_);
+            if (mid != kInvalidMaterialId && slot < ent->subMeshMaterials.size()) {
+                ent->subMeshMaterials[slot] = mid;
+            }
+        }
+        // 把 slot 0 的材质设为整个实体的回退材质
+        if (!ent->subMeshMaterials.empty() && ent->subMeshMaterials[0] != 0u)
+            ent->materialId = ent->subMeshMaterials[0];
+    } else {
+        // 无 auto-generated .ast（如 .obj 文件）：加载入口 .ast
+        const MaterialId mid = matMgr_.loadMaterialFromAsset(
+            asset->astRelPath, ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_);
+        if (mid != kInvalidMaterialId) {
+            ent->materialId = mid;
+            if (!ent->subMeshes.empty()) {
+                ent->subMeshMaterials.resize(ent->subMeshes.size(), mid);
+            }
         }
     }
 
@@ -961,6 +981,183 @@ bool Application::loadScene(const std::string& path)
             mainModelTransform = ents[0].transform;
     }
     return ok;
+}
+
+// ─── Import Model ─────────────────────────────────────────────────────────────
+
+bool Application::importModel(const std::string& sourcePath)
+{
+    namespace fs = std::filesystem;
+    std::error_code ec;
+
+    const fs::path srcPath = fs::absolute(sourcePath, ec);
+    if (ec || !fs::is_regular_file(srcPath, ec)) {
+        std::cerr << "[Import] source not found: " << sourcePath << "\n";
+        return false;
+    }
+
+    const std::string stem = srcPath.stem().string();
+    // 使用绝对路径，确保 fs::relative 在 resolveGltfImageRel 中能正确计算
+    const std::string resRoot = std::filesystem::absolute(modelRegistry_.getResRoot()).string();
+    std::string modelRelPath; // relative to res/
+
+    auto toLower = [](const std::string& s) {
+        std::string r = s;
+        std::transform(r.begin(), r.end(), r.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return r;
+    };
+
+    const std::string lowerExt = toLower(srcPath.extension().string());
+
+    if (lowerExt == ".obj") {
+        const fs::path dst = fs::path(resRoot) / "models" / (stem + ".obj");
+        fs::create_directories(dst.parent_path(), ec);
+        fs::copy_file(srcPath, dst, fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            std::cerr << "[Import] copy failed: " << ec.message() << "\n";
+            return false;
+        }
+        modelRelPath = "models/" + stem + ".obj";
+
+    } else if (lowerExt == ".gltf" || lowerExt == ".glb") {
+        const fs::path srcDir = srcPath.parent_path();
+
+        // 判断是否需要拷贝整个目录（存在配套 .bin 或 textures/ 子目录）
+        bool hasSidecars = false;
+        if (lowerExt == ".gltf") {
+            for (const auto& entry : fs::directory_iterator(srcDir, ec)) {
+                if (ec) break;
+                const std::string name = entry.path().filename().string();
+                if (toLower(name) == toLower(srcPath.filename().string()))
+                    continue;
+                if (entry.is_regular_file(ec) && toLower(name).ends_with(".bin")) {
+                    hasSidecars = true; break;
+                }
+                if (entry.is_directory(ec) && toLower(name) == "textures") {
+                    hasSidecars = true; break;
+                }
+            }
+        }
+
+        fs::path dstPath; // 拷贝目标路径（glTF 文件在 res/ 下的绝对路径）
+
+        if (hasSidecars) {
+            const fs::path dstDir = fs::path(resRoot) / "models" / stem;
+            dstPath = dstDir / srcPath.filename();
+            fs::create_directories(dstDir, ec);
+            for (const auto& entry : fs::recursive_directory_iterator(srcDir, ec)) {
+                if (ec) break;
+                const fs::path rel = fs::relative(entry.path(), srcDir, ec);
+                const fs::path dp = dstDir / rel;
+                if (entry.is_directory(ec)) {
+                    fs::create_directories(dp, ec);
+                } else {
+                    fs::create_directories(dp.parent_path(), ec);
+                    fs::copy_file(entry.path(), dp,
+                                  fs::copy_options::overwrite_existing, ec);
+                }
+            }
+            if (ec) {
+                std::cerr << "[Import] directory copy failed: " << ec.message() << "\n";
+                return false;
+            }
+            modelRelPath = "models/" + stem + "/" + srcPath.filename().string();
+        } else {
+            dstPath = fs::path(resRoot) / "models" / (stem + lowerExt);
+            fs::create_directories(dstPath.parent_path(), ec);
+            fs::copy_file(srcPath, dstPath, fs::copy_options::overwrite_existing, ec);
+            if (ec) {
+                std::cerr << "[Import] copy failed: " << ec.message() << "\n";
+                return false;
+            }
+            modelRelPath = "models/" + stem + lowerExt;
+        }
+
+        // ── 预解析 glTF 材质，生成详细 .ast ────────────────────────────
+        std::vector<std::string> subMaterials;
+        {
+            cgltf_options opts{};
+            cgltf_data*   data = nullptr;
+            if (cgltf_parse_file(&opts, dstPath.string().c_str(), &data) == cgltf_result_success && data) {
+                if (cgltf_load_buffers(&opts, data, dstPath.string().c_str()) == cgltf_result_success) {
+                    const fs::path gltfDir = dstPath.parent_path();
+                    int globalPrimIndex = 0;
+                    for (cgltf_size mi = 0; mi < data->meshes_count; ++mi) {
+                        const cgltf_mesh& mesh = data->meshes[mi];
+                        for (cgltf_size pi = 0; pi < mesh.primitives_count; ++pi, ++globalPrimIndex) {
+                            const cgltf_primitive& prim = mesh.primitives[pi];
+                            if (prim.material) {
+                                const std::string astRel = SceneManager::dumpGltfMaterialAst(
+                                    prim.material, stem, globalPrimIndex,
+                                    gltfDir.string(), resRoot);
+                                if (!astRel.empty())
+                                    subMaterials.push_back(astRel);
+                            }
+                        }
+                    }
+                    std::cout << "[Import] pre-generated " << subMaterials.size()
+                              << " material .ast file(s) for " << stem << "\n";
+                }
+                cgltf_free(data);
+            }
+        }
+
+        // ── 创建入口 .ast（含 subMaterials）────────────────────────────
+        const std::string astRelPath = "materials/" + stem + ".ast";
+        const fs::path astAbs = fs::path(resRoot) / astRelPath;
+        fs::create_directories(astAbs.parent_path(), ec);
+
+        std::ofstream out(astAbs);
+        if (!out.is_open()) {
+            std::cerr << "[Import] cannot create .ast: " << astAbs << "\n";
+            return false;
+        }
+        std::string displayName = stem;
+        std::replace(displayName.begin(), displayName.end(), '_', ' ');
+        out << "{\n"
+            << "  \"name\": \"" << displayName << "\",\n"
+            << "  \"type\": \"Mesh\",\n"
+            << "  \"model\": \"" << modelRelPath << "\"";
+        if (!subMaterials.empty()) {
+            out << ",\n  \"subMaterials\": [";
+            for (size_t i = 0; i < subMaterials.size(); ++i) {
+                if (i > 0) out << ", ";
+                out << "\"" << subMaterials[i] << "\"";
+            }
+            out << "]";
+        }
+        out << "\n}\n";
+
+        std::cout << "[Import] imported " << sourcePath << " as " << modelRelPath
+                  << " (" << astRelPath << ")\n";
+        return true;
+    } else {
+        std::cerr << "[Import] unsupported format: " << srcPath.extension() << "\n";
+        return false;
+    }
+
+    // 创建入口 .ast 文件
+    const std::string astRelPath = "materials/" + stem + ".ast";
+    const fs::path astAbs = fs::path(resRoot) / astRelPath;
+    fs::create_directories(astAbs.parent_path(), ec);
+
+    std::ofstream out(astAbs);
+    if (!out.is_open()) {
+        std::cerr << "[Import] cannot create .ast: " << astAbs << "\n";
+        return false;
+    }
+    std::string displayName = stem;
+    std::replace(displayName.begin(), displayName.end(), '_', ' ');
+    out << "{\n"
+        << "  \"name\": \"" << displayName << "\",\n"
+        << "  \"type\": \"Mesh\",\n"
+        << "  \"model\": \"" << modelRelPath << "\"\n"
+        << "}\n";
+
+    std::cout << "[Import] imported " << sourcePath << " as " << modelRelPath
+              << " (" << astRelPath << ")\n";
+    return true;
 }
 
 // ─── Input ────────────────────────────────────────────────────────────────────

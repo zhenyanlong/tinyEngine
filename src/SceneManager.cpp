@@ -29,6 +29,7 @@
 #include <string>
 
 namespace {
+
 bool endsWithIgnoreCase(const std::string& s, const char* suffix) {
     const size_t n = std::strlen(suffix);
     if (s.size() < n) return false;
@@ -40,7 +41,7 @@ bool endsWithIgnoreCase(const std::string& s, const char* suffix) {
     return true;
 }
 
-std::string sanitize(const std::string& in) {
+static std::string sanitize(const std::string& in) {
     std::string out; out.reserve(in.size());
     for (char c : in) {
         if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-') out += c;
@@ -50,7 +51,7 @@ std::string sanitize(const std::string& in) {
     return out;
 }
 
-std::string resolveGltfImageRel(const cgltf_image* img,
+static std::string resolveGltfImageRel(const cgltf_image* img,
                                 const std::filesystem::path& gltfDir,
                                 const std::filesystem::path& resRoot)
 {
@@ -65,7 +66,7 @@ std::string resolveGltfImageRel(const cgltf_image* img,
     return rel.generic_string();
 }
 
-std::string dumpGltfMaterialAst(const cgltf_material& mat,
+static std::string dumpGltfMaterialAstImpl(const cgltf_material& mat,
                                 const std::string& baseName, int primIndex,
                                 const std::filesystem::path& gltfDir,
                                 const std::filesystem::path& resRoot)
@@ -143,6 +144,18 @@ std::string dumpGltfMaterialAst(const cgltf_material& mat,
     return fileRel;
 }
 } // namespace
+
+// ─── Public static: glTF material dump ────────────────────────────────────────
+
+std::string SceneManager::dumpGltfMaterialAst(const void* cgltfMaterial,
+                                              const std::string& baseName,
+                                              int primIndex,
+                                              const std::string& gltfDir,
+                                              const std::string& resRoot)
+{
+    const auto& mat = *static_cast<const cgltf_material*>(cgltfMaterial);
+    return dumpGltfMaterialAstImpl(mat, baseName, primIndex, gltfDir, resRoot);
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -278,7 +291,12 @@ void SceneManager::loadModelFromGltf(const std::string& path, const glm::vec3& p
     namespace fs = std::filesystem;
     const fs::path gltfPath = fs::path(path);
     const fs::path gltfDir  = gltfPath.parent_path();
-    const fs::path resRoot  = fs::absolute(fs::path("res"));
+    // 从模型文件路径向上查找 res/ 目录，不依赖 CWD
+    fs::path resRoot = gltfPath.parent_path();  // 从 gltf 所在目录开始
+    while (resRoot.has_parent_path() && resRoot.filename() != "res")
+        resRoot = resRoot.parent_path();
+    if (resRoot.filename() != "res")
+        resRoot = fs::absolute(fs::path("res")); // fallback
     const std::string baseName = gltfPath.stem().string();
 
     ent.vertices.clear();
@@ -351,8 +369,17 @@ void SceneManager::loadModelFromGltf(const std::string& path, const glm::vec3& p
             int slot = -1;
             std::string astRel;
             if (prim.material) {
-                astRel = dumpGltfMaterialAst(*prim.material, baseName, globalPrimIndex,
-                                             gltfDir, resRoot);
+                // 计算预期的 .ast 文件名
+                const std::string matName = prim.material->name
+                    ? sanitize(prim.material->name)
+                    : ("prim" + std::to_string(globalPrimIndex));
+                astRel = "materials/" + sanitize(baseName) + "_" + matName + ".ast";
+
+                // 如果 .ast 已存在（import 时已预生成），跳过重复生成
+                if (!fs::exists(resRoot / astRel)) {
+                    astRel = dumpGltfMaterialAstImpl(*prim.material, baseName, globalPrimIndex,
+                                                     gltfDir, resRoot);
+                }
                 if (!astRel.empty()) {
                     slot = static_cast<int>(ent.autoAstPaths.size());
                     ent.autoAstPaths.push_back(astRel);

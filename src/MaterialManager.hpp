@@ -170,6 +170,9 @@ private:
     MaterialId defaultBoxId_  = kInvalidMaterialId;
     uint32_t   imageCount_    = 0;
 
+    // 资产缓存：已加载的 .ast → MaterialId，避免重复创建
+    std::unordered_map<std::string, MaterialId> assetCache_;
+
     // Shared 1x1 fallback textures
     TextureGPU defaultAlbedo_, defaultNormal_;
     TextureGPU defaultMR_, defaultAO_, defaultEmissive_;

@@ -120,6 +120,14 @@ public:
     uint32_t getBoxMaterialId(RenderEntityId eid) const;
     bool     hasBoxMaterialId(RenderEntityId eid) const { return boxMaterialIds_.count(eid) > 0; }
 
+    // ── glTF 材质预生成（供 Application::importModel 在导入时调用）───────────
+    /** @brief 将 glTF primitive 的材质信息导出为 .ast 文件，返回相对 res/ 的路径 */
+    static std::string dumpGltfMaterialAst(const void* cgltfMaterial,
+                                           const std::string& baseName,
+                                           int primIndex,
+                                           const std::string& gltfDir,
+                                           const std::string& resRoot);
+
 private:
     // ── 模型实体列表 ──────────────────────────────────────────────────────
     std::vector<ModelEntity> modelEntities_;

@@ -231,6 +231,8 @@ GPU 缓冲创建/销毁/拷贝的统一入口。提供：
 
 **材质管道选择：** `getPipeline(matId)` 返回该材质绑定的自定义管线（若有无），否则回退到默认 Mesh/Box 管线
 
+**资产缓存：** `loadMaterialFromAsset()` 内部维护 `assetCache_`（`unordered_map<string, MaterialId>`），同一 `.ast` 路径只创建一次材质，后续调用直接返回已缓存的 MaterialId。缓存随 `destroy()` 清空。
+
 ### 4.11 SceneManager（SceneManager.hpp）
 
 场景管理，当前支持：
@@ -238,6 +240,7 @@ GPU 缓冲创建/销毁/拷贝的统一入口。提供：
 - **Box 实体**（GPU 实例化渲染）：`addBox()` / `removeBox()` / `setBoxPosition()`
 - **SubMesh 系统**：glTF 多 primitive 按 `SubMesh` 分片，每片可绑定独立材质
 - **glTF 皮肤/动画解析**：加载带骨骼的 glTF 时自动解析 `cgltf_skin` → `Skeleton`，`cgltf_animation` → `AnimationClip`
+- **glTF 材质预生成**：`dumpGltfMaterialAst()` 公开静态方法，将 glTF primitive 材质导出为 `.ast`。供 `Application::importModel` 在导入时调用；`loadModelFromGltf` 检测 `.ast` 已存在则跳过重复生成
 
 **PickId 分配：**
 - `kPickIdNone = 0` — 无命中
@@ -513,7 +516,7 @@ struct PushConstants {
 
 **当前面板：**
 - **主控制面板（tinyEngineOperationWindow）：** 清屏色、相机速度、下拉切换预设场景、材质列表（创建/删除）、Box 增删
-- **Content Browser：** 扫描 `res/materials/*.ast` 展示缩略图网格，支持搜索、拖拽放置模型到场景
+- **Content Browser：** 扫描 `res/materials/*.ast` 展示缩略图网格，支持搜索、拖拽放置模型到场景。提供 **Import...** 按钮（通过 Windows 原生文件对话框选择 `.obj/.gltf/.glb`，自动拷贝到 `res/models/` 并生成入口 `.ast`；glTF 文件同时预解析材质生成详细 `.ast`）
 - **Scene Outliner：** 场景实体列表，单选/多选
 - **Properties：** 选中实体的 Transform 编辑 + Material 材质参数/纹理内联编辑
 - **Box 面板：** 添加/删除 Box、选中 Box 属性
@@ -589,6 +592,8 @@ TINYOBJLOADER_IMPLEMENTATION # tinyobjloader 实现编译
 | materialOverride | 已完成 | 保存时对比 .ast 参考值仅写差异；加载时叠加到重建材质 |
 | 骨骼数据结构 | 已完成 | Phase A1：Bone / Skeleton + computeFinalMatrices |
 | 动画数据解析 | 已完成 | Phase A2：cgltf skin/anim → Skeleton / AnimationClip，含关键帧求值 |
+| glTF 模型导入 | 已完成 | Content Browser Import... 按钮：原生文件对话框 + 自动拷贝 + 材质预生成 |
+| 材质资产缓存 | 已完成 | MaterialManager.assetCache_ 同一 .ast 仅创建一次材质，拖入同模型秒加载 |
 | GPU 蒙皮渲染 | 待实现 | Phase A3：skinned_vert + BoneMatricesUBO + SkinnedPipeline |
 | 动画运行时播放 | 待实现 | Phase A4：AnimationPlayer + 每帧 UBO 更新 |
 | 动画资产序列化 | 待实现 | Phase A5：.anim.json 保存/加载 |

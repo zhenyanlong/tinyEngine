@@ -6,7 +6,11 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
+#include <shellapi.h>
+#include <commdlg.h>
 #endif
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -23,6 +27,31 @@ static void check_vk_result(VkResult err)
     if (err < 0)
         abort();
 }
+
+#ifdef _WIN32
+/** @brief 打开 Windows 原生文件选择对话框，返回选中的文件路径（UTF-8） */
+static std::string openFileDialog(GLFWwindow* window)
+{
+    wchar_t fileBuf[1024]{};
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner   = glfwGetWin32Window(window);
+    ofn.lpstrFilter = L"3D Models (*.obj;*.gltf;*.glb)\0*.obj;*.gltf;*.glb\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFile   = fileBuf;
+    ofn.nMaxFile    = sizeof(fileBuf) / sizeof(wchar_t);
+    ofn.Flags       = OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_PATHMUSTEXIST;
+    ofn.lpstrDefExt = L"gltf";
+
+    if (GetOpenFileNameW(&ofn)) {
+        int len = WideCharToMultiByte(CP_UTF8, 0, fileBuf, -1, nullptr, 0, nullptr, nullptr);
+        if (len <= 0) return {};
+        std::string result(static_cast<size_t>(len) - 1, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, fileBuf, -1, &result[0], len, nullptr, nullptr);
+        return result;
+    }
+    return {};
+}
+#endif
 
 /** @brief 返回 exe 所在目录，用于拼接 res/shaders 等相对路径 */
 static std::string applicationResourceRoot()
@@ -538,11 +567,26 @@ void UIManager::drawContentBrowser()
         return;
     }
 
-    // 搜索框 + 刷新按钮
+    // 搜索框 + 刷新按钮 + 导入按钮
     ImGui::InputTextWithHint("##cbSearch", "Search...", contentBrowserSearch_, sizeof(contentBrowserSearch_));
     ImGui::SameLine();
     if (ImGui::Button("Refresh")) {
         if (reg) reg->refresh();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Import...")) {
+#ifdef _WIN32
+        if (vulkanRender) {
+            const std::string selected = openFileDialog(vulkanRender->getMainWindow());
+            if (!selected.empty()) {
+                if (vulkanRender->importModel(selected)) {
+                    if (reg) reg->refresh();
+                }
+            }
+        }
+#else
+        std::cerr << "[Import] not supported on this platform\n";
+#endif
     }
 
     // 过滤模型列表（通过 ModelRegistry::search）

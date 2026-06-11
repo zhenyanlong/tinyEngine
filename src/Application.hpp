@@ -67,6 +67,9 @@ public:
     /** @brief 从 .scene.json 加载场景 */
     bool loadScene(const std::string& path);
 
+    /** @brief 导入外部模型文件到 res/ 并创建入口 .ast，返回 true 表示成功 */
+    bool importModel(const std::string& sourcePath);
+
     /** @brief 返回资源根目录 */
     std::string getResRoot() const { return modelRegistry_.getResRoot(); }
 
