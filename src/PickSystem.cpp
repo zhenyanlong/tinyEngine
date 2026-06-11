@@ -56,12 +56,13 @@ uint32_t PickSystem::runPick(const VulkanContext& ctx,
                               const PipelineManager& pipelineMgr,
                               VkDescriptorSet boxDescSet0,
                               const SceneManager& scene,
-                              const glm::vec3& mainModelWorldPos,
                               VkExtent2D extent,
                               uint32_t pixelX, uint32_t pixelY)
 {
     if (pickCmdBuf_ == VK_NULL_HANDLE || readbackMapped_ == nullptr) return SceneManager::kPickIdNone;
-    if (scene.getVertexBuffer() == VK_NULL_HANDLE) return SceneManager::kPickIdNone;
+
+    const auto& entities = scene.getModelEntities();
+    if (entities.empty() || entities[0].vertexBuffer == VK_NULL_HANDLE) return SceneManager::kPickIdNone;
 
     vkDeviceWaitIdle(ctx.getDevice());
     vkResetCommandBuffer(pickCmdBuf_, 0);
@@ -91,22 +92,24 @@ uint32_t PickSystem::runPick(const VulkanContext& ctx,
     vkCmdBindDescriptorSets(pickCmdBuf_, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             pipelineMgr.getPickPipelineLayout(), 0, 1, &boxDescSet0, 0, nullptr);
 
-    // Draw main model
-    if (scene.getModelIndexCount() > 0) {
-        VkDeviceSize off = 0;
-        VkBuffer vb = scene.getVertexBuffer();
-        vkCmdBindVertexBuffers(pickCmdBuf_, 0, 1, &vb, &off);
-        vkCmdBindIndexBuffer(pickCmdBuf_, scene.getIndexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+    // 绘制每个模型实体（各自独立 vertex/index buffer，PickId = entityId）
+    for (const auto& ent : entities) {
+        if (!ent.visible || ent.indexCount == 0 || !ent.vertexBuffer || !ent.indexBuffer)
+            continue;
 
-        glm::mat4 m = glm::translate(glm::mat4(1.0f), mainModelWorldPos);
+        VkDeviceSize off = 0;
+        vkCmdBindVertexBuffers(pickCmdBuf_, 0, 1, &ent.vertexBuffer, &off);
+        vkCmdBindIndexBuffer(pickCmdBuf_, ent.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+
+        glm::mat4 m = ent.transform.GetModelMatrix();
         std::array<uint8_t, kPickPushConstantSize> bytes{};
         std::memcpy(bytes.data(), &m, sizeof(glm::mat4));
-        const uint32_t oid = SceneManager::kPickIdMainModel;
+        const uint32_t oid = static_cast<uint32_t>(ent.entityId);
         std::memcpy(bytes.data() + sizeof(glm::mat4), &oid, sizeof(uint32_t));
         vkCmdPushConstants(pickCmdBuf_, pipelineMgr.getPickPipelineLayout(),
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, kPickPushConstantSize, bytes.data());
-        vkCmdDrawIndexed(pickCmdBuf_, scene.getModelIndexCount(), 1, 0, 0, 0);
+        vkCmdDrawIndexed(pickCmdBuf_, ent.indexCount, 1, 0, 0, 0);
     }
 
     // Draw boxes

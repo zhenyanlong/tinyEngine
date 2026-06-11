@@ -1,4 +1,4 @@
-﻿# CMakeList.txt: tinyEngine 的 CMake 项目，在此处包括源代码并定义
+# CMakeList.txt: tinyEngine 的 CMake 项目，在此处包括源代码并定义
 # 项目特定的逻辑。
 #
 cmake_minimum_required (VERSION 3.8)
@@ -18,7 +18,7 @@ find_package(Vulkan REQUIRED)
 file(GLOB_RECURSE IMGUI_SRCS CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/thirdParty/imgui/*.cpp")
 
 # src 下源码：CONFIGURE_DEPENDS 在增删 .cpp 时会触发重新配置，避免链接缺文件
-file(GLOB SOURCE CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/*.cpp")
+file(GLOB_RECURSE SOURCE CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/*.cpp")
 
 add_executable(${PROJECT_NAME}
     ${SOURCE}
@@ -27,6 +27,7 @@ add_executable(${PROJECT_NAME}
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC
+                src
                 thirdParty/glfw/include
                 thirdParty/stb
                 thirdParty/tinyobjloader
@@ -74,6 +75,9 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
         STB_IMAGE_IMPLEMENTATION
         TINYOBJLOADER_IMPLEMENTATION
         )
+if (MSVC)
+    target_compile_options(${PROJECT_NAME} PRIVATE /utf-8)
+endif()
 if (CMAKE_VERSION VERSION_GREATER 3.12)
   set_property(TARGET tinyEngine PROPERTY CXX_STANDARD 20)
 endif()

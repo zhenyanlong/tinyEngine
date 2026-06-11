@@ -7,6 +7,7 @@
 #include <backends/imgui_impl_glfw.h>
 
 #include <vector>
+#include <unordered_map>
 
 #include <GLFW/glfw3.h>
 
@@ -105,8 +106,21 @@ public:
 	/** @brief 当前主纹理路径 */
 	std::string texturePath;
 
-private:
+	// ── Scene Outliner & Properties ─────────────────────────────────────────
+	bool     showOutliner_        = true;
+	bool     showPropertiesPanel_ = true;
+	uint64_t selectedEntityId_    = 0;
 
+	int gizmoOperation_ = 7;  // ImGuizmo::TRANSLATE (bitmask: 7=TRANSLATE, 120=ROTATE, 896=SCALE)
+
+	/** @brief 共享缩略图占位符纹理（ImTextureID） */
+	ImTextureID thumbnailIcon_ = (ImTextureID)0;
+
+	/** @brief 按 assetId 缓存的缩略图纹理 */
+	std::unordered_map<uint64_t, ImTextureID> thumbCache_;
+	std::unordered_map<uint64_t, VkSampler>   thumbSamplers_;
+
+private:
 
 	/** @brief 根据 fragShaderPath 生成 boxFragShaderPath（frag.spv → box.spv） */
 	void syncBoxFragShaderPathFromFrag();
@@ -179,5 +193,28 @@ private:
 
 	/** @brief 扫描 res/materials/ 下的 .ast 文件填充 astAssetFiles_ */
 	void scanMaterialAssets();
+
+	// Content Browser state
+	bool                     showContentBrowser_ = false;
+	char                     contentBrowserSearch_[256]{};
+	float                    placementDistance_ = 5.0f;
+
+	/** @brief 绘制 Content Browser 面板 */
+	void drawContentBrowser();
+
+	/** @brief 绘制场景实体列表面板 */
+	void drawSceneOutliner();
+
+	/** @brief 绘制选中实体属性面板 */
+	void drawPropertiesPanel();
+
+	/** @brief 加载 res/icons/model.png 作为共享缩略图图标 */
+	void loadThumbnailIcon();
+
+	// ── Thumbnail GPU resources ──────────────────────────────────────────
+	VkImage        thumbIconImage_ {};
+	VkDeviceMemory thumbIconMemory_{};
+	VkImageView    thumbIconView_ {};
+	VkSampler      thumbIconSampler_{};
 
 };

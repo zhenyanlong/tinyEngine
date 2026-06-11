@@ -1,8 +1,8 @@
 #include "MaterialManager.hpp"
 #include "MaterialAssetLoader.hpp"
 #include "VulkanTypes.hpp"
-// STB_IMAGE_IMPLEMENTATION is defined globally — undefine here to avoid
-// duplicate symbol errors with TextureManager.obj.
+// STB_IMAGE_IMPLEMENTATION defined globally; undefine here to avoid
+// duplicate symbol errors with TextureManager.obj
 #undef STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 #include <glm/gtc/matrix_inverse.hpp>

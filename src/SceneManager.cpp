@@ -24,6 +24,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <glm/gtc/type_ptr.hpp>
 #include <stdexcept>
 #include <string>
 
@@ -39,7 +40,6 @@ bool endsWithIgnoreCase(const std::string& s, const char* suffix) {
     return true;
 }
 
-// Sanitize a string into something safe to use inside a filename.
 std::string sanitize(const std::string& in) {
     std::string out; out.reserve(in.size());
     for (char c : in) {
@@ -50,32 +50,23 @@ std::string sanitize(const std::string& in) {
     return out;
 }
 
-// Resolve glTF image URI / embedded buffer view -> a path RELATIVE to res/.
-// We only handle the simple URI case (most exporters do this); embedded base64
-// or buffer-view textures fall back to empty (frag shader will use 1x1).
-// Returns "" when no usable file path can be derived.
 std::string resolveGltfImageRel(const cgltf_image* img,
                                 const std::filesystem::path& gltfDir,
                                 const std::filesystem::path& resRoot)
 {
     if (!img || !img->uri) return {};
     const std::string uri = img->uri;
-    if (uri.rfind("data:", 0) == 0) return {}; // embedded base64, skip
+    if (uri.rfind("data:", 0) == 0) return {};
     namespace fs = std::filesystem;
     fs::path abs = (gltfDir / uri).lexically_normal();
     std::error_code ec;
     fs::path rel = fs::relative(abs, resRoot, ec);
     if (ec || rel.empty()) return {};
-    // Force forward slashes for cross-platform consistency in the .ast file.
-    std::string s = rel.generic_string();
-    return s;
+    return rel.generic_string();
 }
 
-// Write a minimal PBR .ast (JSON) file for one glTF material.
-// Returns the relative .ast path (rel to res/) on success, empty on failure.
 std::string dumpGltfMaterialAst(const cgltf_material& mat,
-                                const std::string& baseName, // e.g. "vintage_radio"
-                                int primIndex,
+                                const std::string& baseName, int primIndex,
                                 const std::filesystem::path& gltfDir,
                                 const std::filesystem::path& resRoot)
 {
@@ -116,8 +107,6 @@ std::string dumpGltfMaterialAst(const cgltf_material& mat,
     if (emissive.r + emissive.g + emissive.b > 1e-4f || !emissiveRel.empty())
         emissiveIntensity = 1.f;
 
-    // Hand-rolled JSON writer (the engine already pulls in nlohmann/json elsewhere
-    // but we keep this dependency-free to avoid pulling its header into the .cpp).
     auto q = [](const std::string& s) { return std::string("\"") + s + "\""; };
     std::ofstream out(fileAbs);
     if (!out.is_open()) {
@@ -153,8 +142,9 @@ std::string dumpGltfMaterialAst(const cgltf_material& mat,
     out << "}\n";
     return fileRel;
 }
-
 } // namespace
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 void SceneManager::destroyBuf(const VulkanContext& ctx, VkBuffer& buf, VkDeviceMemory& mem)
 {
@@ -163,22 +153,55 @@ void SceneManager::destroyBuf(const VulkanContext& ctx, VkBuffer& buf, VkDeviceM
     if (mem != VK_NULL_HANDLE) { vkFreeMemory(dev, mem, nullptr);    mem = VK_NULL_HANDLE; }
 }
 
+// ─── Model Loading ───────────────────────────────────────────────────────────
+
 void SceneManager::loadModel(const std::string& path, const glm::vec3& position,
                               const BufferManager& bufMgr)
 {
-    // Dispatch by file extension. glTF (.gltf JSON / .glb binary) -> cgltf,
-    // anything else falls back to the original tinyobjloader path.
-    if (endsWithIgnoreCase(path, ".gltf") || endsWithIgnoreCase(path, ".glb")) {
-        loadModelFromGltf(path, position, bufMgr);
+    // 兼容旧接口：加载到第一个 ModelEntity 槽位
+    // 调用方负责在调用前销毁旧 GPU 资源（destroyModelBuffers + vkDeviceWaitIdle）
+    if (modelEntities_.empty()) {
+        createModelEntity(path, position, bufMgr);
     } else {
-        loadModelFromObj(path, position, bufMgr);
+        // 替换已有实体 0：loadModelFrom* 会覆盖 vertex/index/subMeshes 并创建新缓冲
+        if (endsWithIgnoreCase(path, ".gltf") || endsWithIgnoreCase(path, ".glb"))
+            loadModelFromGltf(path, position, bufMgr);
+        else
+            loadModelFromObj(path, position, bufMgr);
     }
+}
+
+uint64_t SceneManager::createModelEntity(const std::string& path, const glm::vec3& position,
+                                          const BufferManager& bufMgr)
+{
+    // 先创建一个空的 ModelEntity 并加入列表，再将数据填入
+    static uint64_t nextEntityId = 1000;
+    ModelEntity ent;
+    ent.entityId    = nextEntityId++;
+    ent.transform.position = position;
+    ent.displayName = std::filesystem::path(path).stem().string();
+
+    modelEntities_.push_back(std::move(ent));
+    ModelEntity& ref = modelEntities_.back();
+
+    if (endsWithIgnoreCase(path, ".gltf") || endsWithIgnoreCase(path, ".glb"))
+        loadModelFromGltf(path, position, bufMgr);
+    else
+        loadModelFromObj(path, position, bufMgr);
+
+    return ref.entityId;
 }
 
 void SceneManager::loadModelFromObj(const std::string& path, const glm::vec3& position,
                                      const BufferManager& bufMgr)
 {
-    modelPosition_ = position;
+    // 填充最后一个实体
+    ModelEntity& ent = modelEntities_.back();
+    ent.transform.position = position;
+
+    // OBJ 不支持骨骼动画
+    skeleton_.reset();
+    animationClips_.clear();
 
     tinyobj::attrib_t attrib;
     std::vector<tinyobj::shape_t> shapes;
@@ -187,11 +210,11 @@ void SceneManager::loadModelFromObj(const std::string& path, const glm::vec3& po
     if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, path.c_str()))
         throw std::runtime_error("Failed to load model: " + path + "\n" + err + "\n" + warn);
 
-    modelVertices_.clear();
-    modelIndices_.clear();
-    modelSubMeshes_.clear();
-    modelSubMeshMaterials_.clear();
-    modelAutoAstPaths_.clear();
+    ent.vertices.clear();
+    ent.indices.clear();
+    ent.subMeshes.clear();
+    ent.subMeshMaterials.clear();
+    ent.autoAstPaths.clear();
     modelLocalBoundsMin_ = glm::vec3(FLT_MAX);
     modelLocalBoundsMax_ = glm::vec3(-FLT_MAX);
 
@@ -211,36 +234,35 @@ void SceneManager::loadModelFromObj(const std::string& path, const glm::vec3& po
                              attrib.normals[3 * idx.normal_index + 1],
                              attrib.normals[3 * idx.normal_index + 2] };
             }
-            // tangent stays at (0,0,0,0) -> frag shader will skip normal-map perturbation.
             v.color = { 1.0f, 1.0f, 1.0f };
 
             modelLocalBoundsMin_ = glm::min(modelLocalBoundsMin_, v.pos);
             modelLocalBoundsMax_ = glm::max(modelLocalBoundsMax_, v.pos);
 
             if (!unique.count(v)) {
-                unique[v] = static_cast<uint32_t>(modelVertices_.size());
-                modelVertices_.push_back(v);
+                unique[v] = static_cast<uint32_t>(ent.vertices.size());
+                ent.vertices.push_back(v);
             }
-            modelIndices_.push_back(unique[v]);
+            ent.indices.push_back(unique[v]);
         }
     }
 
-    // Single sub-mesh covering everything; falls back to modelMaterialId_.
     SubMesh sm{};
     sm.indexOffset  = 0;
-    sm.indexCount   = static_cast<uint32_t>(modelIndices_.size());
+    sm.indexCount   = static_cast<uint32_t>(ent.indices.size());
     sm.materialSlot = -1;
-    modelSubMeshes_.push_back(sm);
+    ent.subMeshes.push_back(sm);
 
-    bufMgr.createVertexBuffer(modelVertices_, vertexBuffer_, vertexMemory_);
-    bufMgr.createIndexBuffer(modelIndices_, indexBuffer_, indexMemory_);
-    modelIndexCount_ = static_cast<uint32_t>(modelIndices_.size());
+    bufMgr.createVertexBuffer(ent.vertices, ent.vertexBuffer, ent.vertexMemory);
+    bufMgr.createIndexBuffer(ent.indices, ent.indexBuffer, ent.indexMemory);
+    ent.indexCount = static_cast<uint32_t>(ent.indices.size());
 }
 
 void SceneManager::loadModelFromGltf(const std::string& path, const glm::vec3& position,
                                       const BufferManager& bufMgr)
 {
-    modelPosition_ = position;
+    ModelEntity& ent = modelEntities_.back();
+    ent.transform.position = position;
 
     cgltf_options opts{};
     cgltf_data*   data = nullptr;
@@ -259,19 +281,15 @@ void SceneManager::loadModelFromGltf(const std::string& path, const glm::vec3& p
     const fs::path resRoot  = fs::absolute(fs::path("res"));
     const std::string baseName = gltfPath.stem().string();
 
-    modelVertices_.clear();
-    modelIndices_.clear();
-    modelSubMeshes_.clear();
-    modelSubMeshMaterials_.clear();
-    modelAutoAstPaths_.clear();
+    ent.vertices.clear();
+    ent.indices.clear();
+    ent.subMeshes.clear();
+    ent.subMeshMaterials.clear();
+    ent.autoAstPaths.clear();
     modelLocalBoundsMin_ = glm::vec3(FLT_MAX);
     modelLocalBoundsMax_ = glm::vec3(-FLT_MAX);
 
     int globalPrimIndex = 0;
-    // Walk every primitive of every mesh. Each primitive becomes one SubMesh
-    // with its own contiguous range in the shared index buffer. Vertices are
-    // appended without dedup across primitives (cheap, simpler) but the
-    // primitive's own index buffer is preserved.
     for (cgltf_size mi = 0; mi < data->meshes_count; ++mi) {
         const cgltf_mesh& mesh = data->meshes[mi];
         for (cgltf_size pi = 0; pi < mesh.primitives_count; ++pi, ++globalPrimIndex) {
@@ -291,9 +309,9 @@ void SceneManager::loadModelFromGltf(const std::string& path, const glm::vec3& p
             }
             if (!posAcc) continue;
 
-            const uint32_t baseVertex = static_cast<uint32_t>(modelVertices_.size());
+            const uint32_t baseVertex = static_cast<uint32_t>(ent.vertices.size());
             const cgltf_size vcount = posAcc->count;
-            modelVertices_.reserve(modelVertices_.size() + vcount);
+            ent.vertices.reserve(ent.vertices.size() + vcount);
             for (cgltf_size i = 0; i < vcount; ++i) {
                 Vertex v{};
                 float p[3]{};
@@ -316,30 +334,29 @@ void SceneManager::loadModelFromGltf(const std::string& path, const glm::vec3& p
                     cgltf_accessor_read_float(tanAcc, i, t, 4);
                     v.tangent = { t[0], t[1], t[2], t[3] };
                 }
-                modelVertices_.push_back(v);
+                ent.vertices.push_back(v);
                 modelLocalBoundsMin_ = glm::min(modelLocalBoundsMin_, v.pos);
                 modelLocalBoundsMax_ = glm::max(modelLocalBoundsMax_, v.pos);
             }
 
-            const uint32_t indexOffset = static_cast<uint32_t>(modelIndices_.size());
+            const uint32_t indexOffset = static_cast<uint32_t>(ent.indices.size());
             const cgltf_accessor* idxAcc = prim.indices;
-            modelIndices_.reserve(modelIndices_.size() + idxAcc->count);
+            ent.indices.reserve(ent.indices.size() + idxAcc->count);
             for (cgltf_size i = 0; i < idxAcc->count; ++i) {
                 const cgltf_size srcIdx = cgltf_accessor_read_index(idxAcc, i);
-                modelIndices_.push_back(baseVertex + static_cast<uint32_t>(srcIdx));
+                ent.indices.push_back(baseVertex + static_cast<uint32_t>(srcIdx));
             }
-            const uint32_t indexCount = static_cast<uint32_t>(modelIndices_.size()) - indexOffset;
+            const uint32_t indexCount = static_cast<uint32_t>(ent.indices.size()) - indexOffset;
 
-            // Per-primitive material -> emit a .ast and remember its slot.
             int slot = -1;
             std::string astRel;
             if (prim.material) {
                 astRel = dumpGltfMaterialAst(*prim.material, baseName, globalPrimIndex,
                                              gltfDir, resRoot);
                 if (!astRel.empty()) {
-                    slot = static_cast<int>(modelAutoAstPaths_.size());
-                    modelAutoAstPaths_.push_back(astRel);
-                    modelSubMeshMaterials_.push_back(0u); // unbound until Application loads it
+                    slot = static_cast<int>(ent.autoAstPaths.size());
+                    ent.autoAstPaths.push_back(astRel);
+                    ent.subMeshMaterials.push_back(0u);
                 }
             }
 
@@ -347,25 +364,288 @@ void SceneManager::loadModelFromGltf(const std::string& path, const glm::vec3& p
             sm.indexOffset  = indexOffset;
             sm.indexCount   = indexCount;
             sm.materialSlot = slot;
-            modelSubMeshes_.push_back(sm);
+            ent.subMeshes.push_back(sm);
+        }
+    }
+
+    // ── Parse skin ───────────────────────────────────────────────────────────
+    skeleton_.reset();
+    animationClips_.clear();
+
+    if (data->skins_count > 0) {
+        const cgltf_skin& skin = data->skins[0];
+        auto skel = std::make_shared<Skeleton>();
+        const int numBones = static_cast<int>(skin.joints_count);
+        skel->bones.resize(numBones);
+
+        // 构建 cgltf_node* → boneIndex 映射
+        std::unordered_map<const cgltf_node*, int> nodeToBone;
+        for (cgltf_size j = 0; j < skin.joints_count; ++j) {
+            nodeToBone[skin.joints[j]] = static_cast<int>(j);
+        }
+
+        for (cgltf_size j = 0; j < skin.joints_count; ++j) {
+            const cgltf_node* node = skin.joints[j];
+            Bone& bone = skel->bones[j];
+
+            bone.name = node->name ? node->name : ("bone_" + std::to_string(j));
+            skel->boneNameToIndex[bone.name] = static_cast<int>(j);
+
+            // parentIndex：若父节点也在 joints 中则取对应索引，否则为根骨骼
+            if (node->parent && nodeToBone.count(node->parent)) {
+                bone.parentIndex = nodeToBone[node->parent];
+            } else {
+                bone.parentIndex = -1;
+            }
+
+            // localBindTransform：从 cgltf_node 的 TRS 或 matrix 提取
+            if (node->has_matrix) {
+                bone.localBindTransform = glm::make_mat4(node->matrix);
+            } else {
+                const glm::vec3 translate(node->translation[0], node->translation[1], node->translation[2]);
+                const glm::quat  rotate(node->rotation[3], node->rotation[0], node->rotation[1], node->rotation[2]);
+                const glm::vec3 scale(node->scale[0], node->scale[1], node->scale[2]);
+                const glm::mat4 T = glm::translate(glm::mat4(1.f), translate);
+                const glm::mat4 R = glm::mat4_cast(rotate);
+                const glm::mat4 S = glm::scale(glm::mat4(1.f), scale);
+                bone.localBindTransform = T * R * S;
+            }
+
+            // inverseBindMatrix
+            if (skin.inverse_bind_matrices) {
+                float ibm[16];
+                cgltf_accessor_read_float(skin.inverse_bind_matrices, j, ibm, 16);
+                bone.inverseBindMatrix = glm::make_mat4(ibm);
+            } else {
+                bone.inverseBindMatrix = glm::mat4(1.f);
+            }
+        }
+
+        skeleton_ = skel;
+        std::cout << "[glTF] parsed skeleton with " << numBones << " bones\n";
+    }
+
+    // ── Parse animations ─────────────────────────────────────────────────────
+    if (skeleton_) {
+        // 构建 node→boneIndex 映射供动画解析用
+        std::unordered_map<const cgltf_node*, int> nodeToBone;
+        if (data->skins_count > 0) {
+            const cgltf_skin& skin = data->skins[0];
+            for (cgltf_size j = 0; j < skin.joints_count; ++j) {
+                nodeToBone[skin.joints[j]] = static_cast<int>(j);
+            }
+        }
+
+        for (cgltf_size ai = 0; ai < data->animations_count; ++ai) {
+            const cgltf_animation& anim = data->animations[ai];
+            AnimationClip clip;
+            clip.name = anim.name ? anim.name : ("anim_" + std::to_string(ai));
+            clip.duration = 0.f;
+
+            for (cgltf_size ci = 0; ci < anim.channels_count; ++ci) {
+                const cgltf_animation_channel& ch = anim.channels[ci];
+                const cgltf_animation_sampler&   sm = anim.samplers[ch.sampler - anim.samplers];
+
+                // 查找 boneIndex
+                auto it = nodeToBone.find(ch.target_node);
+                if (it == nodeToBone.end()) continue; // 不是骨骼节点
+
+                AnimChannel ac;
+                ac.boneIndex = it->second;
+
+                // 目标属性
+                switch (ch.target_path) {
+                case cgltf_animation_path_type_translation:
+                    ac.target = AnimChannel::Target::Translation; break;
+                case cgltf_animation_path_type_rotation:
+                    ac.target = AnimChannel::Target::Rotation;    break;
+                case cgltf_animation_path_type_scale:
+                    ac.target = AnimChannel::Target::Scale;       break;
+                default:
+                    continue; // 跳过 weights 等
+                }
+
+                // 插值类型
+                switch (sm.interpolation) {
+                case cgltf_interpolation_type_linear:
+                    ac.interp = AnimInterpolation::Linear; break;
+                case cgltf_interpolation_type_step:
+                    ac.interp = AnimInterpolation::Step;   break;
+                case cgltf_interpolation_type_cubic_spline:
+                    ac.interp = AnimInterpolation::CubicSpline; break;
+                default:
+                    ac.interp = AnimInterpolation::Linear; break;
+                }
+
+                // 读取时间戳
+                const cgltf_accessor* inputAcc = sm.input;
+                ac.times.resize(inputAcc->count);
+                for (cgltf_size k = 0; k < inputAcc->count; ++k) {
+                    cgltf_accessor_read_float(inputAcc, k, &ac.times[k], 1);
+                }
+
+                // 读取值
+                const cgltf_accessor* outputAcc = sm.output;
+                const cgltf_size compCount = (ac.target == AnimChannel::Target::Rotation) ? 4 : 3;
+                ac.values.resize(outputAcc->count);
+                for (cgltf_size k = 0; k < outputAcc->count; ++k) {
+                    float tmp[4]{};
+                    cgltf_accessor_read_float(outputAcc, k, tmp, compCount);
+                    if (compCount == 3) {
+                        ac.values[k] = glm::vec4(tmp[0], tmp[1], tmp[2], 0.f);
+                    } else {
+                        // quaternion xyzw → 存入 vec4
+                        ac.values[k] = glm::vec4(tmp[0], tmp[1], tmp[2], tmp[3]);
+                    }
+                }
+
+                // 更新 clip 时长
+                if (!ac.times.empty()) {
+                    clip.duration = std::max(clip.duration, ac.times.back());
+                }
+
+                clip.channels.push_back(std::move(ac));
+            }
+
+            if (!clip.channels.empty()) {
+                animationClips_.push_back(std::move(clip));
+                std::cout << "[glTF] parsed animation \"" << animationClips_.back().name
+                          << "\" with " << animationClips_.back().channels.size()
+                          << " channels, duration=" << animationClips_.back().duration << "s\n";
+            }
         }
     }
 
     cgltf_free(data);
 
-    if (modelVertices_.empty() || modelIndices_.empty()) {
+    if (ent.vertices.empty() || ent.indices.empty()) {
         throw std::runtime_error("glTF has no usable triangle data: " + path);
     }
 
-    bufMgr.createVertexBuffer(modelVertices_, vertexBuffer_, vertexMemory_);
-    bufMgr.createIndexBuffer(modelIndices_, indexBuffer_, indexMemory_);
-    modelIndexCount_ = static_cast<uint32_t>(modelIndices_.size());
+    bufMgr.createVertexBuffer(ent.vertices, ent.vertexBuffer, ent.vertexMemory);
+    bufMgr.createIndexBuffer(ent.indices, ent.indexBuffer, ent.indexMemory);
+    ent.indexCount = static_cast<uint32_t>(ent.indices.size());
 
-    if (!modelAutoAstPaths_.empty()) {
-        std::cout << "[glTF] dumped " << modelAutoAstPaths_.size()
+    if (!ent.autoAstPaths.empty()) {
+        std::cout << "[glTF] dumped " << ent.autoAstPaths.size()
                   << " .ast file(s) under res/materials/ for " << baseName << "\n";
     }
 }
+
+// ─── Multi-Entity Operations ─────────────────────────────────────────────────
+
+SceneManager::ModelEntity* SceneManager::getModelEntity(uint64_t id)
+{
+    for (auto& e : modelEntities_) {
+        if (e.entityId == id) return &e;
+    }
+    return nullptr;
+}
+
+bool SceneManager::removeModelEntity(uint64_t entityId, const VulkanContext& ctx)
+{
+    for (auto it = modelEntities_.begin(); it != modelEntities_.end(); ++it) {
+        if (it->entityId == entityId) {
+            destroyBuf(ctx, it->vertexBuffer, it->vertexMemory);
+            destroyBuf(ctx, it->indexBuffer,  it->indexMemory);
+            modelEntities_.erase(it);
+            return true;
+        }
+    }
+    return false;
+}
+
+void SceneManager::destroyModelBuffers(const VulkanContext& ctx)
+{
+    // 销毁所有模型实体的 GPU 缓冲
+    for (auto& ent : modelEntities_) {
+        destroyBuf(ctx, ent.vertexBuffer, ent.vertexMemory);
+        destroyBuf(ctx, ent.indexBuffer,  ent.indexMemory);
+        ent.indexCount = 0;
+    }
+}
+
+void SceneManager::setEntityTransform(uint64_t id, const ObjectTransform& t)
+{
+    if (auto* e = getModelEntity(id)) e->transform = t;
+}
+
+void SceneManager::setEntityMaterial(uint64_t id, uint32_t matId)
+{
+    if (auto* e = getModelEntity(id)) e->materialId = matId;
+}
+
+void SceneManager::setEntityVisibility(uint64_t id, bool v)
+{
+    if (auto* e = getModelEntity(id)) e->visible = v;
+}
+
+// ─── Compat Accessors ────────────────────────────────────────────────────────
+
+VkBuffer SceneManager::getVertexBuffer() const
+{
+    return modelEntities_.empty() ? VK_NULL_HANDLE : modelEntities_[0].vertexBuffer;
+}
+
+VkBuffer SceneManager::getIndexBuffer() const
+{
+    return modelEntities_.empty() ? VK_NULL_HANDLE : modelEntities_[0].indexBuffer;
+}
+
+uint32_t SceneManager::getModelIndexCount() const
+{
+    return modelEntities_.empty() ? 0 : modelEntities_[0].indexCount;
+}
+
+glm::vec3 SceneManager::getModelPosition() const
+{
+    return modelEntities_.empty() ? glm::vec3(0.f) : modelEntities_[0].transform.position;
+}
+
+void SceneManager::setModelPosition(const glm::vec3& p)
+{
+    if (!modelEntities_.empty()) modelEntities_[0].transform.position = p;
+}
+
+const std::vector<SceneManager::SubMesh>& SceneManager::getModelSubMeshes() const
+{
+    static const std::vector<SubMesh> kEmpty;
+    return modelEntities_.empty() ? kEmpty : modelEntities_[0].subMeshes;
+}
+
+const std::vector<std::string>& SceneManager::getModelAutoAstPaths() const
+{
+    static const std::vector<std::string> kEmpty;
+    return modelEntities_.empty() ? kEmpty : modelEntities_[0].autoAstPaths;
+}
+
+uint32_t SceneManager::getModelMaterialId() const
+{
+    return modelEntities_.empty() ? 0 : modelEntities_[0].materialId;
+}
+
+void SceneManager::setModelMaterialId(uint32_t id)
+{
+    if (!modelEntities_.empty()) modelEntities_[0].materialId = id;
+}
+
+uint32_t SceneManager::getModelSubMeshMaterialId(int slot) const
+{
+    if (modelEntities_.empty()) return 0;
+    const auto& smm = modelEntities_[0].subMeshMaterials;
+    if (slot < 0 || slot >= (int)smm.size()) return modelEntities_[0].materialId;
+    return (smm[slot] != 0u) ? smm[slot] : modelEntities_[0].materialId;
+}
+
+void SceneManager::setModelSubMeshMaterialId(int slot, uint32_t id)
+{
+    if (modelEntities_.empty() || slot < 0) return;
+    auto& smm = modelEntities_[0].subMeshMaterials;
+    if ((int)smm.size() <= slot) smm.resize(slot + 1, 0u);
+    smm[slot] = id;
+}
+
+// ─── Box System ──────────────────────────────────────────────────────────────
 
 void SceneManager::createCubeTemplate(const BufferManager& bufMgr)
 {
@@ -402,16 +682,12 @@ void SceneManager::destroy(const VulkanContext& ctx)
     destroyBuf(ctx, instanceBuffer_,   instanceMemory_);
     destroyBuf(ctx, cubeIndexBuffer_,  cubeIndexMemory_);
     destroyBuf(ctx, cubeVertexBuffer_, cubeVertexMemory_);
-    destroyBuf(ctx, indexBuffer_,      indexMemory_);
-    destroyBuf(ctx, vertexBuffer_,     vertexMemory_);
+    for (auto& ent : modelEntities_) {
+        destroyBuf(ctx, ent.vertexBuffer, ent.vertexMemory);
+        destroyBuf(ctx, ent.indexBuffer,  ent.indexMemory);
+    }
 }
 
-void SceneManager::destroyModelBuffers(const VulkanContext& ctx)
-{
-    destroyBuf(ctx, indexBuffer_,  indexMemory_);
-    destroyBuf(ctx, vertexBuffer_, vertexMemory_);
-    modelIndexCount_ = 0;
-}
 RenderEntityId SceneManager::addBox(const glm::vec3& position,
                                      const VulkanContext& ctx, const BufferManager& bufMgr)
 {

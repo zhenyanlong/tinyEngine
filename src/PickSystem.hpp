@@ -13,14 +13,20 @@ public:
     void create(const VulkanContext& ctx, const CommandManager& cmdMgr);
     void destroy(const VulkanContext& ctx, const CommandManager& cmdMgr);
 
-    // Returns the raw pick ID, or SceneManager::kPickIdNone if nothing was hit.
+    /**
+     * @brief 执行 GPU 拾取，返回命中实体的 PickId。
+     *
+     * PickId 约定：
+     *  - kPickIdNone (0)    无命中
+     *  - entityId 的 uint32_t 截断值  命中某个 ModelEntity
+     *  - kPickIdBoxBase + i        命中第 i 个 Box 实例
+     */
     uint32_t runPick(const VulkanContext& ctx,
                      const RenderPassManager& rpMgr,
                      const FramebufferManager& fbMgr,
                      const PipelineManager& pipelineMgr,
                      VkDescriptorSet boxDescSet0,
                      const SceneManager& scene,
-                     const glm::vec3& mainModelWorldPos,
                      VkExtent2D extent,
                      uint32_t pixelX, uint32_t pixelY);
 

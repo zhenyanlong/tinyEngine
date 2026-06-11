@@ -62,6 +62,22 @@ void Camera::RebuildOrientation()
 	UpdataCameraVectors();
 }
 
+void Camera::SetPitchYaw(float pitch, float yaw)
+{
+    pitchAccum_ = glm::clamp(pitch, glm::radians(-89.0f), glm::radians(89.0f));
+    yawAccum_   = yaw;
+    RebuildOrientation();
+}
+
+void Camera::SetOrientation(const glm::quat& q)
+{
+    orientation_ = glm::normalize(q);
+    UpdataCameraVectors();
+    // 回解 pitch/yaw，保持与 SmoothFocus 兼容
+    pitchAccum_ = glm::asin(glm::clamp(Forward.y, -1.0f, 1.0f));
+    yawAccum_   = glm::atan(Forward.x, -Forward.z);
+}
+
 /**
  * @brief Apply orientation_ to basis vectors, producing Forward / Right / Up,
  *        and rebuild worldTransform_ (Camera-to-World matrix).

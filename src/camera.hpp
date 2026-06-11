@@ -166,6 +166,21 @@ glm::mat4 GetWorldTransform() const;
 	/** @brief 平滑聚焦进行中时返回 true，期间应禁用 WASD 位移 */
 	[[nodiscard]] bool IsSmoothFocusActive() const { return smoothFocusActive_; }
 
+	/** @brief 返回当前俯仰角（弧度） */
+	[[nodiscard]] float GetPitch() const { return pitchAccum_; }
+
+	/** @brief 返回当前偏航角（弧度） */
+	[[nodiscard]] float GetYaw()   const { return yawAccum_; }
+
+	/** @brief 强制设置俯仰/偏航并重建方向向量（供场景加载用） */
+	void SetPitchYaw(float pitch, float yaw);
+
+	/** @brief 直接设置相机四元数姿态（供场景加载用），自动回解 pitch/yaw */
+	void SetOrientation(const glm::quat& q);
+
+	/** @brief 返回相机姿态四元数（供场景保存用） */
+	[[nodiscard]] const glm::quat& GetOrientation() const { return orientation_; }
+
 private:
 	/** @brief 相机姿态四元数，由 yawAccum_ 和 pitchAccum_ 组合而成 */
 	glm::quat orientation_;

@@ -1,5 +1,6 @@
 #include "Application.hpp"
 #include "MaterialAssetLoader.hpp"
+#include "SceneSerializer.hpp"
 #include "TinyEngineDebug.hpp"
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
@@ -8,8 +9,13 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
 #include <array>
+#include <filesystem>
 #include <iostream>
 #include <stdexcept>
+
+// STB_IMAGE_IMPLEMENTATION defined globally; only TextureManager.cpp implements it
+#undef STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
 
 Application::Application()
     : camera_(glm::vec3(0.f, -4.f, 4.f), glm::radians(45.f), 0.0f, glm::vec3(0.f, 1.f, 0.f))
@@ -122,34 +128,65 @@ void Application::initVulkan()
     fbMgr_.create(ctx_, swapChain_, rpMgr_);
 
     sceneMgr_.createCubeTemplate(bufMgr_);
-    sceneMgr_.loadModel(ui_->modelPath, glm::vec3(0.f), bufMgr_);
 
+    // 扫描模型资产注册表
+    std::string resRoot;
+    {
+        const std::filesystem::path modelP(ui_->modelPath);
+        resRoot = modelP.parent_path().parent_path().string();
+        modelRegistry_.scan(resRoot);
+    }
+
+    // 初始化材质管理器（auto-load 和正常流程都需要）
     matMgr_.init(ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_,
                  swapChain_.getImageCount(), ui_->texturePath);
     sceneMgr_.setModelMaterialId(matMgr_.getDefaultMeshMaterialId());
 
-    // Try to apply the JSON material asset to the main model.
-    // On failure (file missing, parse error, texture missing) the default
-    // mesh material remains in effect.
+    // 尝试自动加载 default.scene.json
+    bool sceneLoadedFromJson = false;
     {
-        const MaterialId mid = matMgr_.loadMaterialFromAsset(
-            "materials/mainmodel.ast", ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_);
-        if (mid != kInvalidMaterialId) sceneMgr_.setModelMaterialId(mid);
+        const std::string defaultScene = resRoot + "/scenes/default.scene.json";
+        if (std::filesystem::exists(std::filesystem::path(defaultScene))) {
+            std::cout << "[tinyEngine] Found default.scene.json, loading...\n";
+            sceneLoadedFromJson = loadScene(defaultScene);
+        }
     }
 
-    // Auto-load any .ast files dumped by the glTF loader, one per SubMesh slot.
-    {
-        const auto& autoPaths = sceneMgr_.getModelAutoAstPaths();
-        for (int slot = 0; slot < (int)autoPaths.size(); ++slot) {
-            if (autoPaths[slot].empty()) continue;
+    if (!sceneLoadedFromJson) {
+        // 正常流程：加载默认模型 + 应用材质
+        sceneMgr_.loadModel(ui_->modelPath, glm::vec3(0.f), bufMgr_);
+
+        // Try to apply the JSON material asset to the main model.
+        {
             const MaterialId mid = matMgr_.loadMaterialFromAsset(
-                autoPaths[slot], ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_);
-            if (mid != kInvalidMaterialId)
-                sceneMgr_.setModelSubMeshMaterialId(slot, mid);
+                "materials/mainmodel.ast", ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_);
+            if (mid != kInvalidMaterialId) sceneMgr_.setModelMaterialId(mid);
+        }
+
+        // Auto-load any .ast files dumped by the glTF loader, one per SubMesh slot.
+        {
+            const auto& autoPaths = sceneMgr_.getModelAutoAstPaths();
+            for (int slot = 0; slot < (int)autoPaths.size(); ++slot) {
+                if (autoPaths[slot].empty()) continue;
+                const MaterialId mid = matMgr_.loadMaterialFromAsset(
+                    autoPaths[slot], ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_);
+                if (mid != kInvalidMaterialId)
+                    sceneMgr_.setModelSubMeshMaterialId(slot, mid);
+            }
         }
     }
 
     descMgr_.create(ctx_, swapChain_, pipeMgr_, bufMgr_);
+
+    // 缩略图渲染器初始化 + 首次生成缺失缩略图
+    {
+        thumbnailRenderer_.create(ctx_, cmdMgr_, pipeMgr_, matMgr_,
+                                  sceneMgr_, bufMgr_, resRoot);
+        // 生成所有缺失的缩略图（首次启动时，之后跳过已有）
+        thumbnailRenderer_.generateAll(resRoot);
+        // 刷新模型注册表使新缩略图生效
+        modelRegistry_.refresh();
+    }
 
     ui_->setVulkanInstance(ctx_.getInstance(), nullptr);
     ui_->setPhysicalDevice(ctx_.getDevice(), ctx_.getPhysicalDevice());
@@ -186,6 +223,24 @@ void Application::gameLoop()
         prevTick = now;
 
         processInput(window_);
+
+        // ── 拖拽放置更新 ─────────────────────────────────────────────
+        if (ImGui::GetCurrentContext()) {
+            if (auto* payload = ImGui::GetDragDropPayload();
+                payload && strcmp(payload->DataType, "MODEL_ASSET") == 0) {
+                if (!dragPlace.active) {
+                    uint64_t assetId = *static_cast<const uint64_t*>(payload->Data);
+                    beginDragPlace(assetId);
+                }
+                const ImVec2 mp = ImGui::GetMousePos();
+                updateDragPlace(mp.x, mp.y);
+            } else if (dragPlace.active) {
+                endDragPlace();
+            }
+        } else if (dragPlace.active) {
+            endDragPlace();
+        }
+
         if (!camera_.IsSmoothFocusActive())
             camera_.UpdataCameraPosition(dt > 0.f ? dt : 1.f / 240.f);
         camera_.UpdateSmoothFocus(dt > 0.f ? dt : 1.f / 240.f);
@@ -292,53 +347,61 @@ void Application::recordCommandBuffer(VkCommandBuffer cb, uint32_t imageIndex)
     rpi.pClearValues      = clears.data();
 
     TINYENGINE(cb, "Main Render Pass");
+    {
     vkCmdBeginRenderPass(cb, &rpi, VK_SUBPASS_CONTENTS_INLINE);
 
-    // Main model — iterate SubMeshes and switch material/descriptor set per entry.
-    if (sceneMgr_.getModelIndexCount() > 0) {
+    // ── All model entities ────────────────────────────────────────────────────
+    {
         TINYENGINE(cb, "Scene Geometry");
-        const MaterialId fallbackMat = matMgr_.isValid(sceneMgr_.getModelMaterialId())
-            ? sceneMgr_.getModelMaterialId()
-            : matMgr_.getDefaultMeshMaterialId();
+        const auto& allEnts = sceneMgr_.getModelEntities();
+        if (!allEnts.empty()) {
+            const MaterialId fallbackMat = matMgr_.isValid(sceneMgr_.getModelMaterialId())
+                ? sceneMgr_.getModelMaterialId()
+                : matMgr_.getDefaultMeshMaterialId();
 
-        // Bind shared vertex/index buffer once; SubMeshes only differ in offset/count.
-        VkBuffer vb = sceneMgr_.getVertexBuffer(); VkDeviceSize off = 0;
-        vkCmdBindVertexBuffers(cb, 0, 1, &vb, &off);
-        vkCmdBindIndexBuffer(cb, sceneMgr_.getIndexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+            for (size_t ei = 0; ei < allEnts.size(); ++ei) {
+                const auto& ent = allEnts[ei];
+                if (!ent.visible || ent.indexCount == 0 || !ent.vertexBuffer || !ent.indexBuffer)
+                    continue;
 
-        PushConstants push{ mainModelTransform.GetModelMatrix(), mainModelTransform.GetNormalMatrix() };
-        vkCmdPushConstants(cb, pipeMgr_.getMainPipelineLayout(),
-                           VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &push);
+                VkBuffer vb = ent.vertexBuffer; VkDeviceSize off = 0;
+                vkCmdBindVertexBuffers(cb, 0, 1, &vb, &off);
+                vkCmdBindIndexBuffer(cb, ent.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
-        const auto& subs = sceneMgr_.getModelSubMeshes();
-        // Track last-bound pipeline/desc set to skip redundant binds.
-        VkPipeline lastPipe = VK_NULL_HANDLE;
-        VkDescriptorSet lastDs = VK_NULL_HANDLE;
+                // Entity 0 使用 mainModelTransform，其他实体使用自身的 transform
+                PushConstants push = (ei == 0)
+                    ? PushConstants{ mainModelTransform.GetModelMatrix(), mainModelTransform.GetNormalMatrix() }
+                    : PushConstants{ ent.transform.GetModelMatrix(), ent.transform.GetNormalMatrix() };
+                vkCmdPushConstants(cb, pipeMgr_.getMainPipelineLayout(),
+                                   VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &push);
 
-        auto drawSpan = [&](uint32_t indexOffset, uint32_t indexCount, MaterialId mat) {
-            if (indexCount == 0) return;
-            const MaterialId useMat = matMgr_.isValid(mat) ? mat : fallbackMat;
-            VkPipeline pipe = matMgr_.getPipeline(useMat, ctx_, pipeMgr_);
-            if (pipe != lastPipe) {
+                const MaterialId useMat = matMgr_.isValid(ent.materialId) ? ent.materialId : fallbackMat;
+                VkPipeline pipe = matMgr_.getPipeline(useMat, ctx_, pipeMgr_);
                 vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
-                lastPipe = pipe;
-            }
-            VkDescriptorSet ds = matMgr_.getDescriptorSet(useMat, imageIndex);
-            if (ds != lastDs) {
+                VkDescriptorSet ds = matMgr_.getDescriptorSet(useMat, imageIndex);
                 vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                         pipeMgr_.getMainPipelineLayout(), 0, 1, &ds, 0, nullptr);
-                lastDs = ds;
-            }
-            vkCmdDrawIndexed(cb, indexCount, 1, indexOffset, 0, 0);
-        };
 
-        if (subs.empty()) {
-            // Backwards-compat path: no SubMesh table -> single draw.
-            drawSpan(0, sceneMgr_.getModelIndexCount(), fallbackMat);
-        } else {
-            for (const auto& sm : subs) {
-                const MaterialId mat = sceneMgr_.getModelSubMeshMaterialId(sm.materialSlot);
-                drawSpan(sm.indexOffset, sm.indexCount, mat);
+                if (ent.subMeshes.empty()) {
+                    vkCmdDrawIndexed(cb, ent.indexCount, 1, 0, 0, 0);
+                } else {
+                    for (const auto& sm : ent.subMeshes) {
+                        MaterialId smMat = useMat;
+                        if (sm.materialSlot >= 0 && sm.materialSlot < (int)ent.subMeshMaterials.size()
+                            && ent.subMeshMaterials[sm.materialSlot] != 0u) {
+                            const MaterialId slotMat = ent.subMeshMaterials[sm.materialSlot];
+                            if (matMgr_.isValid(slotMat)) smMat = slotMat;
+                        }
+                        if (smMat != useMat) {
+                            pipe = matMgr_.getPipeline(smMat, ctx_, pipeMgr_);
+                            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+                            ds = matMgr_.getDescriptorSet(smMat, imageIndex);
+                            vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                                    pipeMgr_.getMainPipelineLayout(), 0, 1, &ds, 0, nullptr);
+                        }
+                        vkCmdDrawIndexed(cb, sm.indexCount, 1, sm.indexOffset, 0, 0);
+                    }
+                }
             }
         }
     }
@@ -369,6 +432,8 @@ void Application::recordCommandBuffer(VkCommandBuffer cb, uint32_t imageIndex)
     }
 
     vkCmdEndRenderPass(cb);
+    } // Main Render Pass scope
+
     if (vkEndCommandBuffer(cb) != VK_SUCCESS)
         throw std::runtime_error("Failed to record command buffer!");
 }
@@ -487,16 +552,26 @@ void Application::tryPickMainModel(float cx, float cy)
 
     const uint32_t id = pickSys_.runPick(ctx_, rpMgr_, fbMgr_, pipeMgr_,
                                           descMgr_.getBoxDescriptorSet(0),
-                                          sceneMgr_, mainModelTransform.position, swapChain_.getExtent(),
+                                          sceneMgr_, swapChain_.getExtent(),
                                           static_cast<uint32_t>(px),
                                           static_cast<uint32_t>(py));
 
     if (id == SceneManager::kPickIdNone) return;
-    if (id == SceneManager::kPickIdMainModel) {
-        mainModelSelected  = true;
-        selectedMaterialId = firstRenderedModelMaterialId();
+
+    // 尝试匹配 ModelEntity（PickId = entityId 的低 32 位）
+    if (auto* ent = sceneMgr_.getModelEntity(static_cast<uint64_t>(id))) {
+        mainModelSelected = false;
+        pickedBoxEntityId = 0;
+        if (ui_) ui_->selectedEntityId_ = ent->entityId;
+        selectedMaterialId = ent->materialId
+            ? ent->materialId : firstRenderedModelMaterialId();
+        // Entity 0 的兼容路径
+        const auto& ents = sceneMgr_.getModelEntities();
+        if (!ents.empty() && ent->entityId == ents[0].entityId)
+            mainModelSelected = true;
         return;
     }
+
     if (id >= SceneManager::kPickIdBoxBase) {
         const uint32_t idx = id - SceneManager::kPickIdBoxBase;
         const auto& ids = sceneMgr_.getBoxRangeEntityIds();
@@ -621,6 +696,273 @@ void Application::setMaterialNormal(MaterialId id, const std::string& path)
     matMgr_.setNormalPath(id, path, ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_);
 }
 
+// ─── Drag-Place Implementation ───────────────────────────────────────────────
+
+glm::vec3 Application::screenToWorld(float mx, float my, float distance) const
+{
+    const VkExtent2D ext = swapChain_.getExtent();
+    const float vpW = static_cast<float>(ext.width);
+    const float vpH = static_cast<float>(ext.height);
+    if (vpW <= 0.f || vpH <= 0.f) return camera_.Position;
+
+    // NDC [-1, 1]（投影矩阵已含 Vulkan Y-flip，此处不再翻转）
+    const float ndcX = (2.0f * mx / vpW) - 1.0f;
+    const float ndcY = (2.0f * my / vpH) - 1.0f;
+
+    const glm::mat4 invVP = glm::inverse(camera_.GetViewProjectionMatrix());
+    const glm::vec4 nearPoint = invVP * glm::vec4(ndcX, ndcY, 0.0f, 1.0f);
+    if (glm::abs(nearPoint.w) < 1e-6f) return camera_.Position;
+    const glm::vec3 nearWorld = glm::vec3(nearPoint) / nearPoint.w;
+
+    const glm::vec3 rayDir = glm::normalize(nearWorld - camera_.Position);
+    return camera_.Position + rayDir * distance;
+}
+
+void Application::beginDragPlace(uint64_t assetId)
+{
+    const ModelAsset* asset = modelRegistry_.findById(assetId);
+    if (!asset) return;
+
+    // 使用 .ast 中的 modelRelPath 拼接模型文件完整路径
+    const std::string fullPath = modelRegistry_.getResRoot() + "/" + asset->modelRelPath;
+
+    dragPlace.assetId  = assetId;
+    dragPlace.entityId = sceneMgr_.createModelEntity(fullPath, glm::vec3(0.f), bufMgr_);
+    auto* ent = sceneMgr_.getModelEntity(dragPlace.entityId);
+    if (!ent) { dragPlace.active = true; return; }
+
+    // 记录 .ast 资产路径，供 SceneSerializer 保存
+    ent->astRelPath = asset->astRelPath;
+
+    // 加载 .ast 中的材质并应用到所有子网格
+    const MaterialId mid = matMgr_.loadMaterialFromAsset(
+        asset->astRelPath, ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_);
+    if (mid != kInvalidMaterialId) {
+        ent->materialId = mid;
+        if (!ent->subMeshes.empty()) {
+            ent->subMeshMaterials.resize(ent->subMeshes.size(), mid);
+        }
+    }
+
+    dragPlace.active   = true;
+}
+
+void Application::updateDragPlace(float mx, float my)
+{
+    if (!dragPlace.active) return;
+    const glm::vec3 pos = screenToWorld(mx, my, dragPlace.distance);
+    sceneMgr_.setEntityTransform(dragPlace.entityId, ObjectTransform{pos});
+}
+
+void Application::endDragPlace()
+{
+    dragPlace.active   = false;
+    dragPlace.entityId = 0;
+    dragPlace.assetId  = 0;
+}
+
+void Application::deleteModelEntity(uint64_t entityId)
+{
+    vkDeviceWaitIdle(ctx_.getDevice());
+    sceneMgr_.removeModelEntity(entityId, ctx_);
+}
+
+// ─── PNG Texture Loader (for UI thumbnails) ───────────────────────────────────
+
+ImTextureID Application::createUITexture(const void* rgbaPixels, int w, int h, VkSampler& outSampler)
+{
+    if (!rgbaPixels || w <= 0 || h <= 0) return (ImTextureID)0;
+
+    const VkDeviceSize imageSize = static_cast<VkDeviceSize>(w * h * 4);
+
+    // 1. Staging buffer
+    VkBuffer stagingBuf{};
+    VkDeviceMemory stagingMem{};
+    {
+        VkBufferCreateInfo bi{};
+        bi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bi.size        = imageSize;
+        bi.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        vkCreateBuffer(ctx_.getDevice(), &bi, nullptr, &stagingBuf);
+
+        VkMemoryRequirements req{};
+        vkGetBufferMemoryRequirements(ctx_.getDevice(), stagingBuf, &req);
+        VkMemoryAllocateInfo mi{};
+        mi.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        mi.allocationSize  = req.size;
+        mi.memoryTypeIndex = ctx_.findMemoryType(
+            req.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        vkAllocateMemory(ctx_.getDevice(), &mi, nullptr, &stagingMem);
+        vkBindBufferMemory(ctx_.getDevice(), stagingBuf, stagingMem, 0);
+
+        void* data = nullptr;
+        vkMapMemory(ctx_.getDevice(), stagingMem, 0, imageSize, 0, &data);
+        std::memcpy(data, rgbaPixels, imageSize);
+        vkUnmapMemory(ctx_.getDevice(), stagingMem);
+    }
+
+    // 2. VkImage
+    VkImage image{};
+    VkDeviceMemory imageMem{};
+    {
+        VkImageCreateInfo ii{};
+        ii.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        ii.imageType     = VK_IMAGE_TYPE_2D;
+        ii.format        = VK_FORMAT_R8G8B8A8_SRGB;
+        ii.extent        = { static_cast<uint32_t>(w), static_cast<uint32_t>(h), 1 };
+        ii.mipLevels     = 1;
+        ii.arrayLayers   = 1;
+        ii.samples       = VK_SAMPLE_COUNT_1_BIT;
+        ii.tiling        = VK_IMAGE_TILING_OPTIMAL;
+        ii.usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        ii.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+        ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        vkCreateImage(ctx_.getDevice(), &ii, nullptr, &image);
+
+        VkMemoryRequirements req{};
+        vkGetImageMemoryRequirements(ctx_.getDevice(), image, &req);
+        VkMemoryAllocateInfo mi{};
+        mi.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        mi.allocationSize  = req.size;
+        mi.memoryTypeIndex = ctx_.findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        vkAllocateMemory(ctx_.getDevice(), &mi, nullptr, &imageMem);
+        vkBindImageMemory(ctx_.getDevice(), image, imageMem, 0);
+    }
+
+    // 3. Copy staging → image with layout transitions
+    VkCommandBuffer cb = cmdMgr_.beginSingleTimeCommands(ctx_);
+
+    // Transition: undefined → transfer dst
+    {
+        VkImageMemoryBarrier bar{};
+        bar.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        bar.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+        bar.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        bar.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bar.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bar.image               = image;
+        bar.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        bar.srcAccessMask       = 0;
+        bar.dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                             0, nullptr, 0, nullptr, 1, &bar);
+    }
+
+    VkBufferImageCopy region{};
+    region.bufferOffset      = 0;
+    region.bufferRowLength   = 0;
+    region.bufferImageHeight = 0;
+    region.imageSubresource  = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    region.imageOffset       = { 0, 0, 0 };
+    region.imageExtent       = { static_cast<uint32_t>(w), static_cast<uint32_t>(h), 1 };
+    vkCmdCopyBufferToImage(cb, stagingBuf, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    // Transition: transfer dst → shader read
+    {
+        VkImageMemoryBarrier bar{};
+        bar.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        bar.oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        bar.newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        bar.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bar.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bar.image               = image;
+        bar.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        bar.srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
+        bar.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+                             0, nullptr, 0, nullptr, 1, &bar);
+    }
+
+    cmdMgr_.endSingleTimeCommands(ctx_, cb);
+
+    // Cleanup staging
+    vkDestroyBuffer(ctx_.getDevice(), stagingBuf, nullptr);
+    vkFreeMemory(ctx_.getDevice(), stagingMem, nullptr);
+
+    // 4. VkImageView
+    VkImageView view{};
+    {
+        VkImageViewCreateInfo vi{};
+        vi.sType      = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vi.image      = image;
+        vi.viewType   = VK_IMAGE_VIEW_TYPE_2D;
+        vi.format     = VK_FORMAT_R8G8B8A8_SRGB;
+        vi.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        vkCreateImageView(ctx_.getDevice(), &vi, nullptr, &view);
+    }
+
+    // 5. VkSampler
+    {
+        VkSamplerCreateInfo si{};
+        si.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        si.magFilter    = VK_FILTER_LINEAR;
+        si.minFilter    = VK_FILTER_LINEAR;
+        si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.anisotropyEnable = VK_TRUE;
+        si.maxAnisotropy    = ctx_.getMaxAnisotropy();
+        si.borderColor      = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        si.unnormalizedCoordinates = VK_FALSE;
+        si.compareEnable   = VK_FALSE;
+        si.mipLodBias      = 0.f;
+        si.minLod          = 0.f;
+        si.maxLod          = 0.f;
+        vkCreateSampler(ctx_.getDevice(), &si, nullptr, &outSampler);
+    }
+
+    // 6. Register with ImGui (stores image+view+sampler internally, returns descriptor set)
+    ImTextureID texId = (ImTextureID)ImGui_ImplVulkan_AddTexture(outSampler, view,
+                                                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    // Store view handle for cleanup (image and memory we'll track separately)
+    // We use the view in ImGui's internal tracking. The id must remain valid.
+    return texId;
+}
+
+ImTextureID Application::loadPNGTexture(const std::string& path, VkSampler& outSampler)
+{
+    int w = 0, h = 0, ch = 0;
+    stbi_uc* pixels = stbi_load(path.c_str(), &w, &h, &ch, 4);
+    if (!pixels) {
+        std::cerr << "[Texture] Failed to load: " << path << "\n";
+        return (ImTextureID)0;
+    }
+    ImTextureID tid = createUITexture(pixels, w, h, outSampler);
+    stbi_image_free(pixels);
+    return tid;
+}
+
+bool Application::saveScene(const std::string& path)
+{
+    return SceneSerializer::save(path, sceneMgr_, matMgr_, camera_);
+}
+
+bool Application::loadScene(const std::string& path)
+{
+    vkDeviceWaitIdle(ctx_.getDevice());
+    const std::string resRoot = modelRegistry_.getResRoot();
+    const bool ok = SceneSerializer::load(path, *this, sceneMgr_, matMgr_,
+                                          bufMgr_, ctx_, cmdMgr_, fbMgr_, pipeMgr_,
+                                          camera_, resRoot);
+    if (ok) {
+        // Reset UI state
+        ui_->selectedEntityId_ = 0;
+        mainModelSelected  = false;
+        pickedBoxEntityId  = 0;
+        mainModelTransform = ObjectTransform{};
+        // Sync entity 0 transform for ImGuizmo compatibility
+        const auto& ents = sceneMgr_.getModelEntities();
+        if (!ents.empty())
+            mainModelTransform = ents[0].transform;
+    }
+    return ok;
+}
+
 // ─── Input ────────────────────────────────────────────────────────────────────
 
 void Application::processInput(GLFWwindow* w)
@@ -631,6 +973,18 @@ void Application::processInput(GLFWwindow* w)
     if (!imguiKb && fKeyDown && !fKeyWasDown)
         tryBeginCameraFocusOnPick();
     fKeyWasDown = fKeyDown;
+
+    // 1/2/3 切换 ImGuizmo 操作模式
+    if (!imguiKb) {
+        static bool key1WasDown = false, key2WasDown = false, key3WasDown = false;
+        const bool k1 = glfwGetKey(w, GLFW_KEY_1) == GLFW_PRESS;
+        const bool k2 = glfwGetKey(w, GLFW_KEY_2) == GLFW_PRESS;
+        const bool k3 = glfwGetKey(w, GLFW_KEY_3) == GLFW_PRESS;
+        if (k1 && !key1WasDown) ui_->gizmoOperation_ = 7;   // ImGuizmo::TRANSLATE
+        if (k2 && !key2WasDown) ui_->gizmoOperation_ = 120; // ImGuizmo::ROTATE
+        if (k3 && !key3WasDown) ui_->gizmoOperation_ = 896; // ImGuizmo::SCALE
+        key1WasDown = k1; key2WasDown = k2; key3WasDown = k3;
+    }
 
     camera_.speedZ = (glfwGetKey(w, GLFW_KEY_W) == GLFW_PRESS)  ?  1.f
                    : (glfwGetKey(w, GLFW_KEY_S) == GLFW_PRESS)  ? -1.f : 0.f;
@@ -678,6 +1032,7 @@ void Application::cleanUp()
 {
     vkDeviceWaitIdle(ctx_.getDevice());
 
+    thumbnailRenderer_.destroy(ctx_, matMgr_, sceneMgr_);
     pickSys_.destroy(ctx_, cmdMgr_);
     sceneMgr_.destroy(ctx_);
     matMgr_.destroy(ctx_);

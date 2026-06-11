@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
+#include <iostream>
 /** @brief ImGui Vulkan 后端的错误回调：非 0 打印并中止（教学：发布版可改为日志） */
 static void check_vk_result(VkResult err)
 {
@@ -111,6 +112,9 @@ void UIManager::initIMGUI()
 
 	ImGui_ImplGlfw_InitForVulkan(window, true);
 	initImGuiVulkanBackend();
+
+	// 加载缩略图占位图标
+	loadThumbnailIcon();
 }
 
 /** @brief 见 IMGUIManager.hpp：swapchain 重建后重绑 ImGui 与新的 RenderPass */
@@ -210,6 +214,7 @@ void UIManager::prepareFrame()
     )";
     ImGui::Text(prompt.c_str());              
 
+    ImGui::Checkbox("Content Browser", &showContentBrowser_);
 
     ImGui::ColorEdit3("clear color", (float*)&clear_color); 
 
@@ -318,6 +323,32 @@ void UIManager::prepareFrame()
         else if (vulkanRender->pickedBoxEntityId != 0) {
             ImGui::TextUnformatted("Move box: drag RGB arrows in 3D view.");
         }
+
+        // ── Scene Save / Load ────────────────────────────────────────────
+        ImGui::Separator();
+        ImGui::Text("Scene Persistence");
+        static char sceneNameBuf[128] = "default";
+        ImGui::InputText("Scene Name", sceneNameBuf, sizeof(sceneNameBuf));
+        if (ImGui::Button("Save Scene")) {
+            const std::string path = vulkanRender->getResRoot() + "/scenes/"
+                + sceneNameBuf + ".scene.json";
+            // Ensure directory exists
+            std::filesystem::create_directories(
+                std::filesystem::path(vulkanRender->getResRoot()) / "scenes");
+            if (vulkanRender->saveScene(path))
+                astStatusMsg_ = std::string("Saved: ") + sceneNameBuf + ".scene.json";
+            else
+                astStatusMsg_ = std::string("Save failed: ") + sceneNameBuf + ".scene.json";
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Load Scene")) {
+            const std::string path = vulkanRender->getResRoot() + "/scenes/"
+                + sceneNameBuf + ".scene.json";
+            if (vulkanRender->loadScene(path))
+                astStatusMsg_ = std::string("Loaded: ") + sceneNameBuf + ".scene.json";
+            else
+                astStatusMsg_ = std::string("Load failed: ") + sceneNameBuf + ".scene.json";
+        }
     }
 
     ImGui::Separator();
@@ -386,59 +417,18 @@ void UIManager::prepareFrame()
             MaterialId newId = vulkanRender->createBoxMaterial("New Box", MaterialParams{});
             editingMaterialId_ = newId;
         }
-
-        // Edit selected material
-        if (matMgr.isValid(editingMaterialId_)) {
-            ImGui::Separator();
-            ImGui::Text("Editing: [%u]", editingMaterialId_);
-            MaterialParams& p = matMgr.getParamsMut(editingMaterialId_);
-
-            char nameBuf[256];
-            snprintf(nameBuf, sizeof(nameBuf), "%s", matMgr.getMaterialName(editingMaterialId_).c_str());
-            if (ImGui::InputText("Name##mat", nameBuf, sizeof(nameBuf)))
-                matMgr.setMaterialName(editingMaterialId_, nameBuf);
-
-            ImGui::ColorEdit4("Base Color##mat",          &p.baseColor.x);
-            ImGui::SliderFloat("Roughness##mat",          &p.roughness,          0.f, 1.f);
-            ImGui::SliderFloat("Metallic##mat",           &p.metallic,           0.f, 1.f);
-            ImGui::SliderFloat("Emissive Intensity##mat", &p.emissiveIntensity,  0.f, 10.f);
-            ImGui::ColorEdit3("Emissive Color##mat",      &p.emissiveColor.x);
-
-            if (matMgr.getMaterialType(editingMaterialId_) == MaterialType::Mesh) {
-                ImGui::Separator();
-                ImGui::Text("Textures (leave blank for default white/normal)");
-                ImGui::InputText("Albedo##mat", matAlbedoPath_, sizeof(matAlbedoPath_));
-                ImGui::SameLine();
-                if (ImGui::Button("Load##albedo"))
-                    vulkanRender->setMaterialAlbedo(editingMaterialId_, matAlbedoPath_);
-
-                ImGui::InputText("Normal##mat", matNormalPath_, sizeof(matNormalPath_));
-                ImGui::SameLine();
-                if (ImGui::Button("Load##normal"))
-                    vulkanRender->setMaterialNormal(editingMaterialId_, matNormalPath_);
-            }
-
-            ImGui::Separator();
-            if (ImGui::Button("Assign to Selected")) {
-                if (vulkanRender->mainModelSelected)
-                    vulkanRender->setModelMaterial(editingMaterialId_);
-                else if (vulkanRender->pickedBoxEntityId != 0)
-                    vulkanRender->setBoxMaterial(vulkanRender->pickedBoxEntityId, editingMaterialId_);
-            }
-
-            if (matMgr.isDeletable(editingMaterialId_)) {
-                ImGui::SameLine();
-                if (ImGui::Button("Delete##mat")) {
-                    vulkanRender->destroyMaterial(editingMaterialId_);
-                    editingMaterialId_ = allIds.empty() ? kInvalidMaterialId : allIds.front();
-                    matAlbedoPath_[0] = '\0';
-                    matNormalPath_[0] = '\0';
-                }
-            }
-        }
     }
 
     ImGui::End();
+
+    if (showContentBrowser_)
+        drawContentBrowser();
+
+    if (showOutliner_)
+        drawSceneOutliner();
+
+    if (showPropertiesPanel_)
+        drawPropertiesPanel();
 
 	if (vulkanRender != nullptr) {
 		ImGuiIO& io = ImGui::GetIO();
@@ -447,16 +437,49 @@ void UIManager::prepareFrame()
 		ImGuizmo::SetRect(0.0f, 0.0f, io.DisplaySize.x, io.DisplaySize.y);
 		glm::mat4 view = vulkanRender->getSceneViewMatrix();
 		glm::mat4 proj = vulkanRender->getSceneProjMatrixForImGuizmo();
-		if (vulkanRender->mainModelSelected) {
+
+		ImGuizmo::OPERATION op = static_cast<ImGuizmo::OPERATION>(gizmoOperation_);
+
+		// 优先对选中的非 Box 实体操作 ImGuizmo
+		if (selectedEntityId_ != 0) {
+			auto* ent = vulkanRender->getSceneManager().getModelEntity(selectedEntityId_);
+			if (ent) {
+				glm::mat4 model = ent->transform.GetModelMatrix();
+				ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), op, ImGuizmo::WORLD,
+					glm::value_ptr(model), nullptr, nullptr);
+				// 从修改后的矩阵分解 TRS
+				ent->transform.position = glm::vec3(model[3]);
+				ent->transform.scale = glm::vec3(
+					glm::length(glm::vec3(model[0])),
+					glm::length(glm::vec3(model[1])),
+					glm::length(glm::vec3(model[2])));
+				glm::mat3 rot;
+				rot[0] = glm::vec3(model[0]) / ent->transform.scale.x;
+				rot[1] = glm::vec3(model[1]) / ent->transform.scale.y;
+				rot[2] = glm::vec3(model[2]) / ent->transform.scale.z;
+				ent->transform.rotation = glm::quat_cast(rot);
+				vulkanRender->getSceneManager().setEntityTransform(ent->entityId, ent->transform);
+			}
+		}
+		else if (vulkanRender->mainModelSelected) {
 			glm::mat4 model = vulkanRender->mainModelTransform.GetModelMatrix();
-			ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), ImGuizmo::TRANSLATE, ImGuizmo::WORLD,
+			ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), op, ImGuizmo::WORLD,
 				glm::value_ptr(model), nullptr, nullptr);
 			vulkanRender->mainModelTransform.position = glm::vec3(model[3]);
+			vulkanRender->mainModelTransform.scale = glm::vec3(
+				glm::length(glm::vec3(model[0])),
+				glm::length(glm::vec3(model[1])),
+				glm::length(glm::vec3(model[2])));
+			glm::mat3 rot;
+			rot[0] = glm::vec3(model[0]) / vulkanRender->mainModelTransform.scale.x;
+			rot[1] = glm::vec3(model[1]) / vulkanRender->mainModelTransform.scale.y;
+			rot[2] = glm::vec3(model[2]) / vulkanRender->mainModelTransform.scale.z;
+			vulkanRender->mainModelTransform.rotation = glm::quat_cast(rot);
 		}
 		else if (vulkanRender->pickedBoxEntityId != 0) {
 			glm::vec3 boxPos = vulkanRender->getBoxPosition(vulkanRender->pickedBoxEntityId);
 			glm::mat4 model = glm::translate(glm::mat4(1.0f), boxPos);
-			ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), ImGuizmo::TRANSLATE, ImGuizmo::WORLD,
+			ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), op, ImGuizmo::WORLD,
 				glm::value_ptr(model), nullptr, nullptr);
 			vulkanRender->setBoxPosition(vulkanRender->pickedBoxEntityId, glm::vec3(model[3]));
 		}
@@ -471,6 +494,15 @@ void UIManager::cleanUp()
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
+}
+
+/** @brief 加载 res/icons/model.png 作为共享缩略图图标 */
+void UIManager::loadThumbnailIcon()
+{
+    if (!vulkanRender) return;
+    const std::string iconPath =
+        (std::filesystem::path(applicationResourceRoot()) / "res" / "icons" / "model.png").string();
+    thumbnailIcon_ = vulkanRender->loadPNGTexture(iconPath, thumbIconSampler_);
 }
 
 /** @brief 扫描 res/materials/ 下的 .ast 文件填充 astAssetFiles_ */
@@ -491,4 +523,368 @@ void UIManager::scanMaterialAssets()
     astAssetScanned_ = true;
     if (astAssetIndex_ >= static_cast<int>(astAssetFiles_.size()))
         astAssetIndex_ = 0;
+}
+
+// ─── Content Browser ──────────────────────────────────────────────────────
+
+/** @brief 绘制 Content Browser 面板：通过 ModelRegistry 展示模型文件 */
+void UIManager::drawContentBrowser()
+{
+    ModelRegistry* reg = vulkanRender ? &vulkanRender->getModelRegistry() : nullptr;
+
+    ImGui::SetNextWindowSize(ImVec2(360, 400), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Content Browser", &showContentBrowser_)) {
+        ImGui::End();
+        return;
+    }
+
+    // 搜索框 + 刷新按钮
+    ImGui::InputTextWithHint("##cbSearch", "Search...", contentBrowserSearch_, sizeof(contentBrowserSearch_));
+    ImGui::SameLine();
+    if (ImGui::Button("Refresh")) {
+        if (reg) reg->refresh();
+    }
+
+    // 过滤模型列表（通过 ModelRegistry::search）
+    std::vector<const ModelAsset*> filtered;
+    if (reg)
+        filtered = reg->search(contentBrowserSearch_);
+
+    ImGui::Separator();
+
+    // 缩略图网格
+    const float thumbSize = 72.f;
+    const float cellWidth = thumbSize + 8.f;
+    const int columns = std::max(1, static_cast<int>(ImGui::GetContentRegionAvail().x / cellWidth));
+
+    ImGui::BeginChild("##cbGrid", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+
+    int n = 0;
+    for (const auto* asset : filtered) {
+        if (n > 0 && n % columns != 0)
+            ImGui::SameLine();
+
+        ImGui::BeginGroup();
+
+        // 缩略图：优先专用纹理，其次共享占位图标，回退纯色方块
+        ImTextureID texId = (ImTextureID)0;
+
+        // 1. 尝试缓存命中
+        auto cacheIt = thumbCache_.find(asset->id);
+        if (cacheIt != thumbCache_.end()) {
+            texId = cacheIt->second;
+        }
+        // 2. 尝试从磁盘加载专属缩略图
+        else if (reg) {
+            // 从 astRelPath 的 stem 推导缩略图文件名
+            const std::string stem = std::filesystem::path(asset->astRelPath).stem().string();
+            const std::string thumbPath = reg->getResRoot() + "/thumbnails/" + stem + ".png";
+            if (std::filesystem::exists(thumbPath) && vulkanRender) {
+                VkSampler sampler{};
+                ImTextureID loaded = vulkanRender->loadPNGTexture(thumbPath, sampler);
+                if (loaded) {
+                    thumbCache_[asset->id] = loaded;
+                    thumbSamplers_[asset->id] = sampler;
+                    texId = loaded;
+                }
+            }
+        }
+
+        if (texId) {
+            ImGui::ImageButton(("##thumb" + std::to_string(n)).c_str(),
+                               texId, ImVec2(thumbSize, thumbSize));
+        } else if (thumbnailIcon_) {
+            ImGui::ImageButton(("##thumb" + std::to_string(n)).c_str(),
+                               thumbnailIcon_, ImVec2(thumbSize, thumbSize));
+        } else {
+            // 纯色占位方块
+            const ImVec2 p0 = ImGui::GetCursorScreenPos();
+            const ImU32 col = IM_COL32(60, 90, 140, 255);
+            ImGui::GetWindowDrawList()->AddRectFilled(p0, ImVec2(p0.x + thumbSize, p0.y + thumbSize), col, 4.f);
+            ImGui::InvisibleButton(("##thumb" + std::to_string(n)).c_str(), ImVec2(thumbSize, thumbSize));
+        }
+
+        // 拖拽源
+        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+            uint64_t id = asset->id;
+            ImGui::SetDragDropPayload("MODEL_ASSET", &id, sizeof(uint64_t));
+            ImGui::Text("%s", asset->name.c_str());
+            ImGui::EndDragDropSource();
+        }
+
+        // 文件名
+        const std::string displayName = asset->name.size() > 16
+            ? asset->name.substr(0, 14) + ".." : asset->name;
+        ImGui::TextWrapped("%s", displayName.c_str());
+
+        ImGui::EndGroup();
+        ++n;
+    }
+
+    ImGui::EndChild();
+
+    // 状态栏
+    ImGui::Separator();
+
+    // Place Distance 滑块
+    if (vulkanRender) {
+        ImGui::SliderFloat("Place Distance", &placementDistance_, 1.0f, 50.0f);
+        vulkanRender->dragPlace.distance = placementDistance_;
+    }
+
+    if (reg)
+        ImGui::Text("Models: %zu", reg->size());
+    else
+        ImGui::TextDisabled("(unavailable)");
+
+    ImGui::End();
+}
+
+// ─── Scene Outliner & Properties ────────────────────────────────────────────
+
+void UIManager::drawSceneOutliner()
+{
+    ImGui::SetNextWindowSize(ImVec2(260, 300), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Scene Outliner", &showOutliner_)) {
+        ImGui::End();
+        return;
+    }
+
+    if (!vulkanRender) {
+        ImGui::TextDisabled("(unavailable)");
+        ImGui::End();
+        return;
+    }
+
+    auto& scene = vulkanRender->getSceneManager();
+
+    ImGui::Text("Entities");
+    ImGui::Separator();
+
+    // 模型实体列表
+    const auto& ents = scene.getModelEntities();
+    for (size_t i = 0; i < ents.size(); ++i) {
+        const auto& ent = ents[i];
+        char label[256];
+        const char* name = ent.displayName.empty() ? "(unnamed)" : ent.displayName.c_str();
+        snprintf(label, sizeof(label), "%s##ent%llu", name,
+                 static_cast<unsigned long long>(ent.entityId));
+
+        if (ImGui::Selectable(label, selectedEntityId_ == ent.entityId)) {
+            selectedEntityId_ = ent.entityId;
+            // 同步到 Application 的选中状态
+            vulkanRender->mainModelSelected = (i == 0);
+            vulkanRender->pickedBoxEntityId = 0;
+        }
+    }
+
+    // Box 实例列表
+    const auto& boxes = scene.getBoxes();
+    if (!boxes.empty()) {
+        ImGui::Separator();
+        ImGui::Text("Boxes");
+        for (const auto& kv : boxes) {
+            char label[64];
+            snprintf(label, sizeof(label), "Box_%llu##box%llu",
+                     static_cast<unsigned long long>(kv.first),
+                     static_cast<unsigned long long>(kv.first));
+
+            if (ImGui::Selectable(label, selectedEntityId_ == 0
+                                         && vulkanRender->pickedBoxEntityId == kv.first)) {
+                selectedEntityId_ = 0;
+                vulkanRender->mainModelSelected = false;
+                vulkanRender->pickedBoxEntityId = kv.first;
+            }
+        }
+    }
+
+    // 底部操作按钮
+    ImGui::Separator();
+    if (ImGui::Button("Delete Selected")) {
+        if (selectedEntityId_ != 0 && vulkanRender) {
+            vulkanRender->deleteModelEntity(selectedEntityId_);
+            selectedEntityId_ = 0;
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Add Box")) {
+        if (vulkanRender) {
+            auto eid = vulkanRender->addBox(glm::vec3(0.f));
+            vulkanRender->pickedBoxEntityId = eid;
+            selectedEntityId_ = 0;
+        }
+    }
+
+    ImGui::End();
+}
+
+void UIManager::drawPropertiesPanel()
+{
+    ImGui::SetNextWindowSize(ImVec2(280, 350), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Properties", &showPropertiesPanel_)) {
+        ImGui::End();
+        return;
+    }
+
+    if (!vulkanRender) {
+        ImGui::TextDisabled("(unavailable)");
+        ImGui::End();
+        return;
+    }
+
+    auto& scene = vulkanRender->getSceneManager();
+
+    // 确定当前选中的目标
+    SceneManager::ModelEntity* ent = nullptr;
+    if (selectedEntityId_ != 0)
+        ent = scene.getModelEntity(selectedEntityId_);
+
+    if (!ent && vulkanRender->pickedBoxEntityId == 0) {
+        // 无选中：尝试 fallback 到 entity 0
+        if (!scene.getModelEntities().empty())
+            ent = scene.getModelEntity(scene.getModelEntities()[0].entityId);
+    }
+
+    if (!ent && vulkanRender->pickedBoxEntityId == 0) {
+        ImGui::TextDisabled("No entity selected");
+        ImGui::End();
+        return;
+    }
+
+    if (ent) {
+        // ── 模型实体属性 ──────────────────────────────────────────────
+        ImGui::Text("Model Entity: %s", ent->displayName.c_str());
+        ImGui::Separator();
+
+        // Name
+        char nameBuf[256];
+        snprintf(nameBuf, sizeof(nameBuf), "%s", ent->displayName.c_str());
+        if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf)))
+            ent->displayName = nameBuf;
+
+        // Visibility
+        ImGui::Checkbox("Visible", &ent->visible);
+
+        // Transform
+        if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) {
+            float pos[3] = { ent->transform.position.x,
+                             ent->transform.position.y,
+                             ent->transform.position.z };
+            if (ImGui::DragFloat3("Position", pos, 0.1f)) {
+                ent->transform.position = { pos[0], pos[1], pos[2] };
+                scene.setEntityTransform(ent->entityId, ent->transform);
+            }
+
+            glm::vec3 euler = glm::eulerAngles(ent->transform.rotation);
+            euler = glm::degrees(euler);
+            float rot[3] = { euler.x, euler.y, euler.z };
+            if (ImGui::DragFloat3("Rotation", rot, 1.f, -180.f, 180.f)) {
+                ent->transform.rotation = glm::quat(glm::radians(glm::vec3(rot[0], rot[1], rot[2])));
+                scene.setEntityTransform(ent->entityId, ent->transform);
+            }
+
+            float scl[3] = { ent->transform.scale.x,
+                             ent->transform.scale.y,
+                             ent->transform.scale.z };
+            if (ImGui::DragFloat3("Scale", scl, 0.05f, 0.01f, 100.f)) {
+                ent->transform.scale = { scl[0], scl[1], scl[2] };
+                scene.setEntityTransform(ent->entityId, ent->transform);
+            }
+        }
+
+        // Material
+        if (ImGui::CollapsingHeader("Material", ImGuiTreeNodeFlags_DefaultOpen)) {
+            auto& matMgr = vulkanRender->getMaterialManager();
+            const auto& allIds = matMgr.getAllMaterialIds();
+
+            // 确保实体持有有效材质 ID
+            if (!matMgr.isValid(ent->materialId))
+                ent->materialId = matMgr.getDefaultMeshMaterialId();
+
+            if (allIds.empty()) {
+                ImGui::TextDisabled("No materials");
+            } else {
+                int currentMatIndex = -1;
+                for (int mi = 0; mi < (int)allIds.size(); ++mi) {
+                    if (allIds[mi] == ent->materialId) { currentMatIndex = mi; break; }
+                }
+                if (currentMatIndex < 0) currentMatIndex = 0;
+
+                std::vector<const char*> names;
+                names.reserve(allIds.size());
+                for (MaterialId mid : allIds)
+                    names.push_back(matMgr.getMaterialName(mid).c_str());
+
+                ImGui::Text("Slot");
+                ImGui::SameLine();
+                if (ImGui::Combo("##matSlot", &currentMatIndex, names.data(), (int)names.size())) {
+                    if (currentMatIndex >= 0 && currentMatIndex < (int)allIds.size()) {
+                        ent->materialId = allIds[currentMatIndex];
+                        scene.setEntityMaterial(ent->entityId, ent->materialId);
+                    }
+                }
+            }
+
+            // ── 材质参数编辑 ──────────────────────────────────────────
+            const MaterialId editId = ent->materialId;
+            const bool isMesh = (matMgr.getMaterialType(editId) == MaterialType::Mesh);
+
+            ImGui::Separator();
+            MaterialParams& p = matMgr.getParamsMut(editId);
+
+            char nameBuf[256];
+            snprintf(nameBuf, sizeof(nameBuf), "%s", matMgr.getMaterialName(editId).c_str());
+            if (ImGui::InputText("Name##matEdit", nameBuf, sizeof(nameBuf)))
+                matMgr.setMaterialName(editId, nameBuf);
+
+            ImGui::ColorEdit4("Base Color##matEdit",          &p.baseColor.x);
+            ImGui::SliderFloat("Roughness##matEdit",          &p.roughness,          0.f, 1.f);
+            ImGui::SliderFloat("Metallic##matEdit",           &p.metallic,           0.f, 1.f);
+            ImGui::SliderFloat("Emissive Intensity##matEdit", &p.emissiveIntensity,  0.f, 10.f);
+            ImGui::ColorEdit3("Emissive Color##matEdit",      &p.emissiveColor.x);
+
+            if (isMesh) {
+                // 每次打开都同步纹理路径缓冲区（snprintf 成本极低）
+                snprintf(matAlbedoPath_, sizeof(matAlbedoPath_), "%s",
+                         matMgr.getAlbedoPath(editId).c_str());
+                snprintf(matNormalPath_, sizeof(matNormalPath_), "%s",
+                         matMgr.getNormalPath(editId).c_str());
+
+                ImGui::Separator();
+                ImGui::Text("Textures");
+                ImGui::InputText("Albedo##matEdit", matAlbedoPath_, sizeof(matAlbedoPath_));
+                ImGui::SameLine();
+                if (ImGui::Button("Load##albedoEdit"))
+                    vulkanRender->setMaterialAlbedo(editId, matAlbedoPath_);
+
+                ImGui::InputText("Normal##matEdit", matNormalPath_, sizeof(matNormalPath_));
+                ImGui::SameLine();
+                if (ImGui::Button("Load##normalEdit"))
+                    vulkanRender->setMaterialNormal(editId, matNormalPath_);
+            }
+
+            if (matMgr.isDeletable(editId)) {
+                ImGui::Separator();
+                if (ImGui::Button("Delete Material")) {
+                    vulkanRender->destroyMaterial(editId);
+                    ent->materialId = matMgr.getDefaultMeshMaterialId();
+                    matAlbedoPath_[0] = '\0';
+                    matNormalPath_[0] = '\0';
+                }
+            }
+        }
+    } else {
+        // ── Box 属性 ───────────────────────────────────────────────────
+        ImGui::Text("Box Entity: %llu",
+                    static_cast<unsigned long long>(vulkanRender->pickedBoxEntityId));
+        ImGui::Separator();
+
+        glm::vec3 pos = vulkanRender->getBoxPosition(vulkanRender->pickedBoxEntityId);
+        float fpos[3] = { pos.x, pos.y, pos.z };
+        if (ImGui::DragFloat3("Position", fpos, 0.1f))
+            vulkanRender->setBoxPosition(vulkanRender->pickedBoxEntityId,
+                                         glm::vec3(fpos[0], fpos[1], fpos[2]));
+    }
+
+    ImGui::End();
 }

@@ -9,8 +9,10 @@
 #include "DescriptorManager.hpp"
 #include "MaterialManager.hpp"
 #include "SceneManager.hpp"
+#include "ModelRegistry.hpp"
 #include "PickSystem.hpp"
 #include "IMGUIManager.hpp"
+#include "ThumbnailRenderer.hpp"
 #include "camera.hpp"
 #include "VulkanTypes.hpp"
 #include "Transform.hpp"
@@ -22,6 +24,15 @@ public:
     using RenderEntityId = uint64_t;
 
     void run();
+
+    // ── Drag-place state ──────────────────────────────────────────────────────
+    struct DragPlaceState {
+        bool     active   = false;
+        uint64_t assetId  = 0;
+        uint64_t entityId = 0;
+        float    distance = 5.0f;
+    };
+    DragPlaceState dragPlace;
 
     // Public state read/written by UIManager
     ObjectTransform mainModelTransform;             ///< Main model TRS (position, rotation, scale)
@@ -39,6 +50,32 @@ public:
     glm::mat4 getSceneViewMatrix();
     glm::mat4 getSceneProjMatrixForImGuizmo();
 
+    // ── Drag-place API ────────────────────────────────────────────────────────
+    /** @brief 屏幕坐标 → 世界坐标：通过相机 invViewProj 反投影 + 指定距离 */
+    glm::vec3 screenToWorld(float mx, float my, float distance) const;
+    void      beginDragPlace(uint64_t assetId);
+    void      updateDragPlace(float mx, float my);
+    /** @brief 结束拖拽（预览实体转为正式实体） */
+    void      endDragPlace();
+
+    /** @brief 删除指定模型实体（需 GPU 空闲时调用） */
+    void      deleteModelEntity(uint64_t entityId);
+
+    /** @brief 保存场景到 .scene.json */
+    bool saveScene(const std::string& path);
+
+    /** @brief 从 .scene.json 加载场景 */
+    bool loadScene(const std::string& path);
+
+    /** @brief 返回资源根目录 */
+    std::string getResRoot() const { return modelRegistry_.getResRoot(); }
+
+    /** @brief 将 RGBA 像素数据上传为 ImTextureID（调用方负责加载 PNG） */
+    ImTextureID createUITexture(const void* rgbaPixels, int w, int h, VkSampler& outSampler);
+
+    /** @brief 加载 PNG 文件为 ImTextureID */
+    ImTextureID loadPNGTexture(const std::string& path, VkSampler& outSampler);
+
     RenderEntityId addBox(const glm::vec3& pos);
     bool           removeBox(RenderEntityId id);
     glm::vec3      getBoxPosition(RenderEntityId id) const;
@@ -47,6 +84,7 @@ public:
     // Material accessors for UIManager
     MaterialManager& getMaterialManager()            { return matMgr_; }
     SceneManager&    getSceneManager()               { return sceneMgr_; }
+    ModelRegistry&   getModelRegistry()              { return modelRegistry_; }
 
     void setModelMaterial(MaterialId id);
     void setBoxMaterial(RenderEntityId eid, MaterialId id);
@@ -83,6 +121,8 @@ private:
     DescriptorManager  descMgr_;
     MaterialManager    matMgr_;
     SceneManager       sceneMgr_;
+    ModelRegistry      modelRegistry_;
+    ThumbnailRenderer  thumbnailRenderer_;
     PickSystem         pickSys_;
     UIManager*         ui_  = nullptr;
     Camera             camera_;
