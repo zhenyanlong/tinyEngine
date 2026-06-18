@@ -68,7 +68,8 @@ public:
     bool loadScene(const std::string& path);
 
     /** @brief 导入外部模型文件到 res/ 并创建入口 .ast，返回 true 表示成功 */
-    bool importModel(const std::string& sourcePath);
+    bool importModel(const std::string& sourcePath,
+                     const std::string& subFolder = "");
 
     /** @brief 返回资源根目录 */
     std::string getResRoot() const { return modelRegistry_.getResRoot(); }
@@ -145,6 +146,9 @@ private:
     void tryPickMainModel(float cx, float cy);
     void tryBeginCameraFocusOnPick();
     void cleanUp();
+
+    /** @brief 将含骨骼实体的所有槽位材质转换为蒙皮版本（保留原有纹理和参数） */
+    void convertModelMaterialsToSkinned();
 
     // Returns the first material ID that is actually rendered on the main model.
     // For glTF models with per-submesh materials, this is slot 0's material;

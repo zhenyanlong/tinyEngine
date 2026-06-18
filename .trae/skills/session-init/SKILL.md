@@ -1,6 +1,6 @@
 ---
 name: "session-init"
-description: "初始化 tinyEngine 项目会话。读取 TDD.md 技术设计文档、animation-system-plan.md 动画系统计划，并扫描 src/ 代码目录结构。当用户说"初始化会话""开始工作""准备开发"或在新会话中需要了解项目上下文时调用。"
+description: "初始化 tinyEngine 项目会话。读取 TDD.md 技术设计文档、animation-system-plan.md 动画系统计划、DailyProgress.md 每日进度（含验证标记），扫描 src/ 代码目录结构和 .codex/skills/ 目录，并了解 Codex 技能清单。当用户说"初始化会话""开始工作""准备开发"或在新会话中需要了解项目上下文时调用。"
 ---
 
 # tinyEngine 会话初始化
@@ -109,24 +109,59 @@ private:
    - Phase D：资产系统扩充
    - 每个 Phase 下有详细的子任务拆分（checkbox）、数据结构定义、伪代码、验收标准
 
-### 步骤 2：扫描 src/ 源代码目录结构
+### 步骤 2：阅读每日进度与教训文档
+
+使用 Read 工具读取以下进度文档，了解项目最新进展和待验证项：
+
+1. **DailyProgress.md**（`e:/Projects/tinyEngine/DailyProgress.md`）—— 英文每日工作进度，包含：
+   - 按日期倒序排列的开发条目
+   - 每条带 `[ ]`（未验证）/ `[✓]`（已验证）标记
+   - 未验证条目为潜在的功能完整性风险点，新会话应优先关注和验证
+
+2. **DailyProgress_Chinese.md**（`e:/Projects/tinyEngine/DailyProgress_Chinese.md`）—— 中文版每日进度，与英文版条目一一对应、同步标记状态
+
+3. **lessons-learned.md**（`e:/Projects/tinyEngine/lessons-learned.md`）—— 外部验证过程中积累的经验教训，由 `verify-fix` skill 维护。如存在，阅读最近 3-5 条教训以了解常见陷阱
+
+阅读后应：
+- 统计当前有多少未验证条目（`[ ]`），作为本次会话的可选复查清单
+- 若未验证条目较多（>5），在摘要中提醒用户可优先验证/复查这些功能
+- 若有已记录的教训，在摘要中简要提及最近教训的关键主题，提醒开发时注意
+
+### 步骤 3：扫描 src/ 源代码目录结构
 
 使用 LS 工具扫描以下目录，了解源代码文件布局：
 
 - `e:/Projects/tinyEngine/src/` —— 所有引擎源文件（.hpp / .cpp）
 
-### 步骤 3：输出初始化摘要
+### 步骤 4：扫描 .codex/skills/ 目录
+
+使用 LS 工具扫描 `e:/Projects/tinyEngine/.codex/skills/` 目录，了解项目拥有的 Codex 技能清单。
+
+阅读其中所有 `SKILL.md` 文件，了解其用途：
+
+- **session-init** — Codex 会话桥接，委托到 `.trae/skills/session-init` 执行本 skill
+- **todo-sync-completed** — 对比对话上下文、TDD.md 和代码证据，将 `todolist.md` 中已完成的 TODO 条目移至已完成区
+- **todo-normalize-inbox** — 将 `todolist.md` 的「手动收集」区原始需求转换为结构化的 TODO 待办条目
+
+若 `todolist.md` 文件存在，建议在初始化摘要后询问用户是否需要同步或规范化 TODO 列表。
+
+### 步骤 5：输出初始化摘要
 
 完成阅读后，向用户汇报：
 
 1. **项目概况**：一句话描述 tinyEngine 是什么
 2. **当前功能状态**：已实现的核心模块列表
 3. **开发计划**：当前 todo 和 Phase 概览
-4. **就绪声明**：告知用户已准备好进行开发工作
+4. **进度快照**：最近 1-3 天的 DailyProgress 摘要 + 未验证条目数量和清单
+5. **Codex 技能清单**：列出 `.codex/skills/` 下可用的 Codex 技能及其用途
+6. **就绪声明**：告知用户已准备好进行开发工作
 
 ## 注意事项
 
-- 如果 TDD.md 或 animation-system-plan.md 的内容已在此次会话中读取过，可跳过对应文件，但需要扫描 src/ 目录验证文件结构是否一致。
+- 如果 TDD.md、animation-system-plan.md 或 DailyProgress 的内容已在此次会话中读取过，可跳过对应文件，但需要扫描 src/ 目录验证文件结构是否一致。
 - 如果某个文档不存在，应在摘要中说明缺失情况。
 - src/ 目录扫描结果应与 TDD.md 第 2 节"目录结构"对照，如有差异应提醒用户。
+- `.codex/skills/` 目录为 Codex 技能定义，与本地的 `.trae/skills/` 互为补充；Codex 的 `session-init` 会桥接到本 skill，其余 Codex 技能专注于 Todo 列表管理。
+- `.trae/skills/` 下可用技能：`session-init`（本文件）、`daily-progress`（进度记录）、`verify-fix`（验证反馈处理 + 教训积累）、`mark-verified`（手动标记已验证）、`sync-plan`（计划同步）、`defer-todo`（任务推迟）。
+- 当用户提及"验证"或"反馈"时，主动建议是否需要调用 `verify-fix` 记录教训。
 - **禁止自动执行 git commit，代码变更的提交必须由用户手动触发。**

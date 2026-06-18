@@ -24,12 +24,15 @@ public:
 
     VkDescriptorSetLayout getMainDescSetLayout() const { return mainDescSetLayout_; }
     VkDescriptorSetLayout getBoxDescSetLayout()  const { return boxDescSetLayout_; }
+    VkDescriptorSetLayout getSkinnedDescSetLayout() const { return skinnedDescSetLayout_; }
     VkPipelineLayout      getMainPipelineLayout() const { return mainPipelineLayout_; }
     VkPipelineLayout      getBoxPipelineLayout()  const { return boxPipelineLayout_; }
     VkPipelineLayout      getPickPipelineLayout() const { return pickPipelineLayout_; }
+    VkPipelineLayout      getSkinnedPipelineLayout() const { return skinnedPipelineLayout_; }
     VkPipeline            getMainPipeline()       const { return mainPipeline_; }
     VkPipeline            getBoxPipeline()        const { return boxPipeline_; }
     VkPipeline            getPickPipeline()       const { return pickPipeline_; }
+    VkPipeline            getSkinnedPipeline()    const { return skinnedMeshPipeline_; }
 
     // Returns a pipeline matching (variant, vertSpvPath, fragSpvPath).
     // Empty paths -> returns the corresponding default pipeline.
@@ -49,12 +52,15 @@ public:
 private:
     VkDescriptorSetLayout mainDescSetLayout_{};
     VkDescriptorSetLayout boxDescSetLayout_{};
+    VkDescriptorSetLayout skinnedDescSetLayout_{};
     VkPipelineLayout      mainPipelineLayout_{};
     VkPipelineLayout      boxPipelineLayout_{};
     VkPipelineLayout      pickPipelineLayout_{};
+    VkPipelineLayout      skinnedPipelineLayout_{};
     VkPipeline            mainPipeline_{};
     VkPipeline            boxPipeline_{};
     VkPipeline            pickPipeline_{};
+    VkPipeline            skinnedMeshPipeline_{};
 
     // Dynamic pipeline cache keyed by "variant|vert|frag".
     std::unordered_map<std::string, VkPipeline> dynamicPipelines_;
@@ -70,6 +76,9 @@ private:
                            VkExtent2D extent);
     void createPickPipeline(const VulkanContext& ctx, VkRenderPass pickRenderPass,
                             const std::string& vertSpv, VkExtent2D extent);
+    void createSkinnedPipeline(const VulkanContext& ctx, VkRenderPass renderPass,
+                               const std::string& skinnedVertSpv, const std::string& fragSpv,
+                               VkExtent2D extent);
 
     // Build VkPipeline only (layout reused). Returns VK_NULL_HANDLE on failure.
     VkPipeline buildMainPipeline(const VulkanContext& ctx, VkRenderPass renderPass,
@@ -78,4 +87,7 @@ private:
     VkPipeline buildBoxPipeline(const VulkanContext& ctx, VkRenderPass renderPass,
                                 const std::string& vertSpv, const std::string& fragSpv,
                                 VkExtent2D extent);
+    VkPipeline buildSkinnedPipeline(const VulkanContext& ctx, VkRenderPass renderPass,
+                                    const std::string& vertSpv, const std::string& fragSpv,
+                                    VkExtent2D extent);
 };

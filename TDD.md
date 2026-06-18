@@ -1,6 +1,6 @@
 # tinyEngine 技术设计文档
 
-> 最后更新：2026-06-10
+> 最后更新：2026-06-18
 
 ---
 
@@ -51,7 +51,8 @@ tinyEngine/
 │
 ├── res/                           # 运行时资源（构建时拷贝到 exe 旁）
 │   ├── models/                    # 3D 模型文件（.obj / .glb / .gltf），被 res/materials/*.ast 的 model 字段引用
-│   ├── materials/                 # 模型资产定义（.ast JSON），含 model/shaders/params/textures 字段
+│   ├── materials/                 # 模型资产定义（.ast JSON），含 type/name/shaders/params/textures/model/subMaterials 字段
+│   │                              #   支持子文件夹组织（如 materials/sci-fi/）
 │   ├── scenes/                    # 场景持久化文件（.scene.json）
 │   ├── shaders/                   # GLSL 源码 + 编译后的 .spv
 │   └── textures/                  # 纹理（.png / .jpg）
@@ -111,7 +112,7 @@ cmdMgr_.create(ctx_)                        # 2. 命令池
 swapChain_.create(ctx_, window_)            # 3. 交换链
 rpMgr_.create(ctx_, swapChain_)             # 4. 渲染通道（主 + 拾取）
 bufMgr_.init(ctx_, cmdMgr_)                 # 5. 缓冲管理器
-pipeMgr_.create(ctx_, rpMgr_, ...)           # 6. 图形管线
+pipeMgr_.create(ctx_, rpMgr_, ...)           # 6. 图形管线（含 skinned mesh）
 fbMgr_.create(ctx_, swapChain_, rpMgr_)     # 7. 帧缓冲
 sceneMgr_.createCubeTemplate(bufMgr_)       # 8. Box 模板几何体
 sceneMgr_.loadModel(path, pos, bufMgr_)     # 9. 加载默认模型
@@ -191,9 +192,14 @@ GPU 缓冲创建/销毁/拷贝的统一入口。提供：
 | `mainPipeline_` | `vert.spv` | `frag.spv` | 标准 Mesh 渲染 |
 | `boxPipeline_` | `box_vert.spv` | `box.spv` | 实例化 Box 渲染（含 instance data） |
 | `pickPipeline_` | `pick_vert.spv` | `pick_frag.spv` | GPU 拾取（输出 Entity ID） |
+| `skinnedMeshPipeline_` | `skinned_vert.spv` | `frag.spv` | GPU 蒙皮 Mesh 渲染（含 BoneMatricesUBO binding 6） |
 
 - **动态管线缓存**（`dynamicPipelines_`）：`acquirePipeline()` 按 `"variant|vert|frag"` 键缓存，支持运行时切换材质 Shader 而不重编译默认管线
-- **图形管线状态：** Cull back face、Counter-clockwise front face、Depth test/stencil、无 blend（Mesh）/ 无 blend（Box）
+- **描述符集 Layout：**
+  - `mainDescSetLayout_`：binding 0=UBO, 1-5=samplers（6 绑定）
+  - `boxDescSetLayout_`：binding 0=UBO（1 绑定）
+  - `skinnedDescSetLayout_`：binding 0=UBO, 1-5=samplers, 6=BoneMatricesUBO（7 绑定，vertex stage）
+- **图形管线状态：** Cull back face、Counter-clockwise front face、Depth test/stencil、无 blend
 
 ### 4.8 DescriptorManager（DescriptorManager.hpp）
 
@@ -218,18 +224,24 @@ GPU 缓冲创建/销毁/拷贝的统一入口。提供：
 
 | MaterialType | 描述符集 Layout | 纹理绑定 | 用途 |
 |---|---|---|---|
-| `Mesh` | binding 0=UBO, 1=albedo+sampler, 2=normal+sampler, 3=metallicRoughness+sampler, 4=ao+sampler, 5=emissive+sampler | PBR 全纹理 | 标准模型 |
+| `Mesh` | binding 0=UBO, 1=albedo+sampler, 2=normal+sampler, 3=metallicRoughness+sampler, 4=ao+sampler, 5=emissive+sampler | PBR 全纹理 | 标准模型（含 model 字段） |
 | `Box` | binding 0=UBO | 无纹理 | 实例化 Box（颜色由 UBO 控制） |
+| `Material` | 同 Mesh（共用 Mesh 管线） | PBR 全纹理 | 纯材质资产（无 model 字段，不可拖入场景） |
+| Skinned Mesh | binding 0=UBO, 1-5=samplers, 6=BoneMatricesUBO（vertex stage） | PBR 全纹理 | 带骨骼蒙皮的标准模型（`hasSkinning_=true`） |
 
 **材质创建流程：**
 1. 调用 `loadMaterialFromAsset(astRelPath)` 解析 `.ast` JSON → `MaterialAssetDesc`
 2. `MaterialAssetLoader::load()` 负责 JSON 反序列化、路径解析（相对于 `res/`）
-3. 回调 `createMeshMaterial()` 或 `createBoxMaterial()` 创建材质
-4. 创建时自动上传纹理 → 分配 UBO → 分配 DescriptorSet → 记录到内部 map
+3. 回调 `createMeshMaterial()` 或 `createBoxMaterial()` 或 `createSkinnedMeshMaterial()` 创建材质
+4. 创建时自动上传纹理 → 分配 UBO → （若蒙皮）分配 BoneMatricesUBO（identity 初始化）→ 分配 DescriptorSet → 记录到内部 map
+
+**蒙皮材质克隆：** `createSkinnedMaterialFrom(src)` 从已有非蒙皮材质克隆一个带 BoneMatricesUBO 的蒙皮版本，保留原始纹理路径和 MaterialParams。用于将 glTF 加载的 PBR 材质逐槽位转换为蒙皮版本而不丢失每 primitive 的独立纹理配置。
 
 **UBO 更新：** `updateAllUBOs(imageIndex, view, proj)` 每帧将所有活跃材质的 UBO 写入对应 mapped buffer
 
-**材质管道选择：** `getPipeline(matId)` 返回该材质绑定的自定义管线（若有无），否则回退到默认 Mesh/Box 管线
+**骨骼矩阵更新：** `updateBoneMatrices(matId, imageIndex, finalBoneMatrices)` 每帧将 `BoneMatricesUBO` 写入 mapped buffer（先填 identity 再覆盖有效骨骼，其余骨骼保持 identity 防止塌陷）
+
+**材质管道选择：** `getPipeline(matId)` 返回该材质绑定的自定义管线（若有无），否则回退到默认 Mesh/Box 管线。蒙皮材质（`hasSkinning_`）直接返回 `SkinnedPipeline`。
 
 **资产缓存：** `loadMaterialFromAsset()` 内部维护 `assetCache_`（`unordered_map<string, MaterialId>`），同一 `.ast` 路径只创建一次材质，后续调用直接返回已缓存的 MaterialId。缓存随 `destroy()` 清空。
 
@@ -242,6 +254,14 @@ GPU 缓冲创建/销毁/拷贝的统一入口。提供：
 - **glTF 皮肤/动画解析**：加载带骨骼的 glTF 时自动解析 `cgltf_skin` → `Skeleton`，`cgltf_animation` → `AnimationClip`
 - **glTF 材质预生成**：`dumpGltfMaterialAst()` 公开静态方法，将 glTF primitive 材质导出为 `.ast`。供 `Application::importModel` 在导入时调用；`loadModelFromGltf` 检测 `.ast` 已存在则跳过重复生成
 
+**拖拽放置系统（dragPlace）：**
+- `beginDragPlace(assetId)` — 根据 `ModelAsset` 创建模型实体并跟踪拖拽状态；`Material` 类型资产拒绝创建实体
+- `updateDragPlace(mx, my)` — 将实体位置实时更新到鼠标指向的世界坐标（距离由 `placementDistance_` 控制）
+- `endDragPlace()` — 结束拖拽，清理临时状态
+
+**导入系统（importModel）：**
+- `importModel(sourcePath, subFolder="")` — 将外部模型文件拷贝到 `res/models/`，在 `res/materials/<subFolder>/` 下生成入口 `.ast`。glTF 文件额外预解析材质生成详细 `.ast`（含 `subMaterials` 数组）
+
 **PickId 分配：**
 - `kPickIdNone = 0` — 无命中
 - `kPickIdMainModel = 1` — 主模型
@@ -252,12 +272,15 @@ GPU 缓冲创建/销毁/拷贝的统一入口。提供：
 - `.glb` / `.gltf` — 通过 cgltf 解析（单文件 cgltf.h 实现）
 
 **glTF 加载特性：**
-- 解析多个 primitive → 生成 SubMesh 列表
+- 解析多个 primitive → 生成 SubMesh 列表 + 逐 prim 提取 PBR 纹理生成独立 `.ast` 材质
 - 提取基础色/金属/粗糙度/法线/自发光纹理
 - 自动生成 `.ast` 材质文件到 `res/materials/`
 - 保留 AABB（`modelLocalBoundsMin_` / `modelLocalBoundsMax_`）
-- 解析 `skins` → 生成 `Skeleton`（骨骼名称、父子关系、IBM、绑定局部变换）
-- 解析 `animations` → 生成 `AnimationClip` 列表（通道 + 关键帧时间/值）
+- 解析多 `skins` → **合并所有 skin 的 joint 节点为统一骨架**（`globalNodeToBone`），同时保存每个 skin 的 `skinBoneIndices` 映射表，用于运行时从全局 finalBoneMatrices 生成 per-skin palette
+- 解析 `animations` → 生成 `AnimationClip` 列表（通道 + 关键帧时间/值），动画通道的 `boneIndex` 使用全局骨骼索引
+- 解析 `JOINTS_0` / `WEIGHTS_0` 顶点属性 → 填充 `Vertex::boneIndices` / `boneWeights`（权重归一化），标记 `ModelEntity::hasSkin_`
+- **Primitive 所属 Skin 绑定**：通过 glTF node 的 `mesh` + `skin` 引用建立 mesh→skin 映射，每个 `SubMesh` 记录 `skinIndex`；顶点 `JOINTS_0` 保持 skin-local 索引，由对应 submesh 的 bone palette 解释
+- **蒙皮材质自动转换**：`Application::convertModelMaterialsToSkinned()` 遍历实体所有 sub-mesh 槽位，通过 `createSkinnedMaterialFrom()` 将每个 glTF PBR 材质独立克隆为蒙皮版本并保留纹理
 
 **公开访问器：**
 - `getSkeleton()` → `shared_ptr<Skeleton>`
@@ -319,6 +342,45 @@ struct AnimationClip {
 - `Linear`: `glm::mix`（T/S）/ `glm::slerp`（R）
 - `CubicSpline`: 三次 Hermite 插值（glTF 标准 CUBICSPLINE）
 
+#### 4.12.3 GPU 蒙皮渲染（skinned_vert.glsl + SkinnedPipeline）
+
+蒙皮顶点着色器位于 `res/shaders/skinned_vert.glsl`，复用 `shader.frag` 片段着色器。
+
+**着色器输入：**
+- `layout(location=6) in ivec4 inBoneIndices` — 骨骼索引
+- `layout(location=7) in vec4  inBoneWeights` — 混合权重
+- `layout(binding=6) uniform BoneMatricesBlock { mat4 bones[256]; } boneUBO` — 当前 submesh 所属 skin 的骨骼最终变换矩阵 palette
+
+**蒙皮计算：**
+```
+skinMatrix = boneWeights.x * bones[boneIndices.x] +
+             boneWeights.y * bones[boneIndices.y] +
+             boneWeights.z * bones[boneIndices.z] +
+             boneWeights.w * bones[boneIndices.w];
+
+skinnedPos = skinMatrix * vec4(inPosition, 1.0);
+gl_Position = viewProj * model * skinnedPos;
+vWorldNormal = mat3(normalMatrix) * mat3(skinMatrix) * inNormal;
+```
+
+**管线集成：**
+- `PipelineManager` 新增 `skinnedMeshPipeline_`（独立 `VkPipeline` + `VkPipelineLayout`），`create()` 和 `recreate()` 中均使用 `fragSpv` 作为 fragment shader 路径
+- `MaterialManager::getPipeline()` 对 `hasSkinning_=true` 的材质直接返回 skinned pipeline
+- `Application::recordCommandBuffer` 根据管线类型动态选择 `mainPipelineLayout_` 或 `skinnedPipelineLayout_`，`vkCmdPushConstants` 和 `vkCmdBindDescriptorSets` 使用一致的 layout
+- 引擎启动 / 交换链重建 / 拖拽放置 / .ast 材质加载时，调用 `convertModelMaterialsToSkinned()` 将所有 glTF PBR 材质逐槽位克隆为蒙皮版本（保留原始纹理和参数）
+- `drawFrame` 中每帧采样 AnimationClip[0] → `evaluateBoneLocalTransform(..., fallback=localBindTransform)` → `computeFinalMatrices` → 遍历 skinned entity 调用 `updateBoneMatrices`
+- 对多 skin 模型，`drawFrame` 先计算合并骨架的 `finalBoneMatrices`，再按 `SubMesh::skinIndex` 通过 `skinBoneIndices[skinIndex]` 生成 per-skin palette，并上传到对应 skinned material。这样 shader 中的 `boneIndices` 始终是 skin-local index，不会被合并骨架索引或其它 skin 的动画串扰。
+
+**外部 LLM 验证发现的关键问题（2026-06-18，参见 lessons-learned.md #1-#5）：**
+1. skeleton 解析顺序必须在顶点读取之前
+2. BoneMatricesUBO 创建时必须显式 identity 初始化（Vulkan 不保证 HOST_VISIBLE 内存初始内容）
+3. `recreate()` 中 `createSkinnedPipeline` 的 fragment shader 参数必须用 `fragSpv` 而非 `vertSpv`
+4. `vkCmdPushConstants` 和 `vkCmdBindDescriptorSets` 必须使用同一个 `VkPipelineLayout`
+5. `AnimationClip::evaluateBoneLocalTransform` 需要 bind-pose fallback 重载处理部分通道
+6. 多 skin 模型需合并骨架 + per-skin palette 映射；蒙皮材质需逐槽位克隆保留原始 PBR 纹理
+7. 顶点 `JOINTS_0` 应保持 skin-local；如果改写为合并骨架 global index，会在 shader palette 上限内产生跨 skin 串扰
+8. `kMaxBones = 128` 不足以覆盖已验证资产的人物 skin（191 joints，最大 JOINTS_0=189）；已提升到 256 并重新编译 `skinned_vert.spv`
+
 ### 4.13 ModelRegistry（ModelRegistry.hpp）
 
 模型资产注册表：扫描 `res/materials/*.ast`，解析 JSON 提取 `name`、`model` 字段。
@@ -330,7 +392,9 @@ struct ModelAsset {
     uint64_t    id;           // hash of astRelPath
     std::string name;         // display name from .ast's "name" field or stem
     std::string astRelPath;   // e.g. "materials/viking_room.ast"
-    std::string modelRelPath; // e.g. "models/viking_room.obj" (from .ast's "model" field)
+    std::string modelRelPath; // e.g. "models/viking_room.obj" (from .ast's "model" field); empty for Material-type
+    std::string astType;      // e.g. "Mesh" / "Box" / "Material" (from .ast's "type" field)
+    std::string subFolder;    // subdirectory under materials/, e.g. "sci-fi"; empty for root-level
     ModelType   type;         // inferred from modelRelPath extension
     glm::vec3   boundsMin, boundsMax, displaySize;
     bool        hasThumbnail;
@@ -339,10 +403,32 @@ struct ModelAsset {
 
 | 关键方法 | 说明 |
 |---|---|
-| `scan(resRoot)` | 扫描 `resRoot/materials/*.ast`，解析 JSON 填充 assets_ |
+| `scan(resRoot)` | 扫描 `resRoot/materials/**/*.ast`，递归遍历子目录，解析 JSON 填充 assets_ |
 | `refresh()` | 重新扫描（运行时热刷新） |
-| `search(keyword)` | 按名称不区分大小写子串搜索 |
+| `search(keyword, subFolder)` | 按名称不区分大小写子串搜索，限定子文件夹 |
+| `size(subFolder)` | 返回指定子文件夹下的资产数量 |
+| `getFolders()` | 返回已发现的所有子文件夹名（去重排序） |
 | `findById(id)` / `findByPath(astRelPath)` | 按 ID 或 .ast 路径查找 |
+
+### 4.13.1 MaterialAssetLoader（MaterialAssetLoader.hpp）
+
+负责 `.ast` JSON 文件的反序列化，输出 `MaterialAssetDesc` 结构体。
+
+```cpp
+struct MaterialAssetDesc {
+    std::string    name;
+    MaterialType   type = MaterialType::Mesh;
+    std::string    vertSpv, fragSpv;
+    MaterialParams params;
+    std::string    albedoPath, normalPath, metallicRoughnessPath, aoPath, emissivePath;
+    std::string    modelPath;            // resolved path, empty for Material-type
+    std::vector<std::string> subMaterialPaths;  // from "subMaterials" array, e.g. ["materials/xxx_Body.ast", ...]
+};
+```
+
+**type 字段解析：** `"Mesh"` / `"Box"` / `"Material"` 映射到 `MaterialType` 枚举。`"Material"` 类型不要求 `model` 字段。
+
+**subMaterials 解析：** 读取 `.ast` 中的 `"subMaterials"` 字符串数组，原样存入 `subMaterialPaths`（不作路径解析）。该数组在 `SceneSerializer` 的 save/load 和 `Application::beginDragPlace` 中用于逐槽位材质管理。
 
 ### 4.14 SceneSerializer（SceneSerializer.hpp）
 
@@ -360,7 +446,14 @@ struct ModelAsset {
       "rotation": [0, 0, 0, 1],
       "scale": [1, 1, 1],
       "visible": true,
-      "materialOverride": { "baseColor": [0.8, 0.3, 0.3, 1.0], "roughness": 0.2 }
+      "materialOverride": { "baseColor": [0.8, 0.3, 0.3, 1.0], "roughness": 0.2 },
+      "subMaterialOverrides": [
+        {
+          "slot": 0,
+          "astRelPath": "materials/viking_room_body.ast",
+          "override": { "albedoPath": "res/models/.../custom.png", "roughness": 0.8 }
+        }
+      ]
     }
   ],
   "boxes": [
@@ -375,6 +468,8 @@ struct ModelAsset {
 ```
 
 **materialOverride 机制：** 保存时对比当前材质与 `.ast` 参考值（params + albedoPath/normalPath），仅当有差异时写入。加载时先通过 `loadMaterialFromAsset()` 从 `.ast` 重建材质，再叠加 `materialOverride`。
+
+**subMaterialOverrides 机制：** 对于含 `subMaterials` 数组的入口 `.ast`，保存时对比每个槽位当前材质与该槽位 `.ast` 参考值的差异，写入 `subMaterialOverrides` 数组（含 `slot`、`astRelPath`、可选的 `override`）。加载时先逐槽位加载子材质，再叠加各槽位的 `override`。
 
 **兼容性：** load 时优先读 `astRelPath`，回退 `displayName`（扫描 `res/models/`）；优先读 `orientation` 四元数，回退 `pitch/yaw`。
 
@@ -404,7 +499,7 @@ Main Model
   ├── Vertex Buffer     ──→ vkCmdBindVertexBuffers
   ├── Index Buffer      ──→ vkCmdBindIndexBuffer
   └── MaterialId(s)     ──→ DescriptorSet lookup → vkCmdBindDescriptorSets
-                            (per SubMesh)
+                            (per SubMesh, 若蒙皮则用 skinnedPipelineLayout_ + BoneMatricesUBO)
 
 Box Instances
   │
@@ -426,19 +521,23 @@ PickSystem
 res/materials/xxx.ast (JSON)
     │
     ▼ MaterialAssetLoader::load()
-    │   ├── 解析 JSON
-    │   ├── 路径解析（相对于 res/）
-    │   └── 输出 MaterialAssetDesc
+    │   ├── 解析 JSON（type / params / textures / model / subMaterials）
+    │   ├── 路径解析（textures / model 相对于 res/）
+    │   └── 输出 MaterialAssetDesc（含 subMaterialPaths）
     │
     ▼ MaterialManager::loadMaterialFromAsset()
-    │   ├── loadMaterialAssetInto -> MaterialAssetLoader
-    │   └── createMeshMaterial() / createBoxMaterial()
-    │        ├── 加载纹理 → TextureManager
-    │        ├── 创建 UBO buffer (per swapchain image)
-    │        ├── 分配 DescriptorSet
-    │        └── 记录 MaterialEntry → materialMap_
+    │   ├── 材质类型路由：Mesh/Material → createMeshMaterial(), Box → createBoxMaterial()
+    │   ├── 加载纹理 → TextureManager
+    │   ├── 创建 UBO buffer (per swapchain image)
+    │   ├── 分配 DescriptorSet
+    │   └── 记录 MaterialEntry → materialMap_ + assetCache_
     │
     ▼ 返回 MaterialId
+
+For subMaterials (SceneSerializer::load / beginDragPlace):
+    │
+    ▼ 逐槽位调用 loadMaterialFromAsset(subMaterialPaths[i])
+    │   └── 填充 ModelEntity::subMeshMaterials[i]
 ```
 
 ---
@@ -455,6 +554,12 @@ res/materials/xxx.ast (JSON)
 | 3 | — |（跳过） | 保留给 per-instance 数据 |
 | 4 | R32G32B32_SFLOAT | `normal` | 法线向量 |
 | 5 | R32G32B32A32_SFLOAT | `tangent` | xyz=切线, w=bitangent 符号方向 |
+| 6 | R32G32B32A32_SINT | `boneIndices` | 影响该顶点的最多 4 根骨骼索引（默认 {0,0,0,0}） |
+| 7 | R32G32B32A32_SFLOAT | `boneWeights` | 对应骨骼的归一化权重（默认 {1,0,0,0}） |
+
+- `getAttributeDescriptions()` 返回 5 属性描述（location 0/1/2/4/5），用于标准网格管线
+- `getSkinnedAttributeDescriptions()` 返回 7 属性描述（location 0/1/2/4/5/6/7），用于蒙皮网格管线
+- 无蒙皮的模型（OBJ / 无皮肤 glTF）顶点数据填充默认值，与标准管线兼容
 
 ### 6.2 InstanceData（Box 实例化）
 
@@ -484,8 +589,20 @@ struct UniformBufferObject {
 };
 ```
 
----
+### 7.1 BoneMatricesUBO（蒙皮管线专用，set=0 binding=6）
 
+```cpp
+// std140 对齐，16384 字节（256 × 64）
+constexpr int kMaxBones = 256;
+
+struct BoneMatricesUBO {
+    alignas(16) glm::mat4 bones[kMaxBones]; // 按骨骼索引排列的最终变换矩阵
+};
+```
+
+由 `Skeleton::computeFinalMatrices()` 计算，通过 `MaterialManager::updateBoneMatrices()` 每帧上传。多 skin 模型上传的是当前 submesh 所属 skin 的 palette，而不是合并骨架的完整数组。仅在 `skinned_vert.glsl` 中作为 `layout(binding=6) uniform BoneMatricesBlock` 使用。
+
+---
 ## 8. Push Constants
 
 ```cpp
@@ -516,7 +633,11 @@ struct PushConstants {
 
 **当前面板：**
 - **主控制面板（tinyEngineOperationWindow）：** 清屏色、相机速度、下拉切换预设场景、材质列表（创建/删除）、Box 增删
-- **Content Browser：** 扫描 `res/materials/*.ast` 展示缩略图网格，支持搜索、拖拽放置模型到场景。提供 **Import...** 按钮（通过 Windows 原生文件对话框选择 `.obj/.gltf/.glb`，自动拷贝到 `res/models/` 并生成入口 `.ast`；glTF 文件同时预解析材质生成详细 `.ast`）
+- **Content Browser：** 左侧文件夹树 + 右侧缩略图网格。扫描 `res/materials/**/*.ast`，按子文件夹分类浏览。
+  - **文件夹导航：** 左侧面板列出所有子文件夹（从 `materials/` 子目录自动发现），支持创建新文件夹。点击 `/ (root)` 浏览根目录，点击子文件夹切换浏览。
+  - **类型筛选：** 提供 `All` / `Mesh` / `Box` / `Material` 下拉筛选器，根据 `.ast` 的 `type` 字段过滤显示。
+  - **Import 导入：** 支持通过 Windows 原生文件对话框选择 `.obj/.gltf/.glb`，自动拷贝到 `res/models/` 并生成入口 `.ast`。glTF 文件同时预解析材质生成详细 `.ast`。导入生成的 `.ast` 放在当前浏览的文件夹下（`materials/` 或 `materials/<subFolder>/`）。
+  - **拖拽限制：** `Material` 类型资产（无 `model` 引用）不显示拖拽源，禁止拖入场景。
 - **Scene Outliner：** 场景实体列表，单选/多选
 - **Properties：** 选中实体的 Transform 编辑 + Material 材质参数/纹理内联编辑
 - **Box 面板：** 添加/删除 Box、选中 Box 属性
@@ -562,6 +683,7 @@ struct PushConstants {
 | Shader | 阶段 | 用途 |
 |---|---|---|
 | `shader.vert` / `.frag` | Mesh 渲染 | 标准 PBR 模型着色（含纹理） |
+| `skinned_vert.glsl` / `shader.frag` | 蒙皮 Mesh 渲染 | GPU 蒙皮骨骼加权 + PBR 着色（binding 6 BoneMatricesUBO） |
 | `box_instanced.vert` / `box.frag` | Box 实例化 | 实例化 Cube 着色 |
 | `modelVertex.shader` / `modelFrag.shader` | Mesh 变体 | 替代材质 Shader 路径 |
 | `light.shader` | 未使用 | 预留 |
@@ -594,7 +716,7 @@ TINYOBJLOADER_IMPLEMENTATION # tinyobjloader 实现编译
 | 动画数据解析 | 已完成 | Phase A2：cgltf skin/anim → Skeleton / AnimationClip，含关键帧求值 |
 | glTF 模型导入 | 已完成 | Content Browser Import... 按钮：原生文件对话框 + 自动拷贝 + 材质预生成 |
 | 材质资产缓存 | 已完成 | MaterialManager.assetCache_ 同一 .ast 仅创建一次材质，拖入同模型秒加载 |
-| GPU 蒙皮渲染 | 待实现 | Phase A3：skinned_vert + BoneMatricesUBO + SkinnedPipeline |
+| GPU 蒙皮渲染 | 已完成 | Phase A3：skinned_vert + BoneMatricesUBO + SkinnedPipeline + JOINTS_0/WEIGHTS_0 解析 + Application 自动集成。多 skin 模型采用合并骨架 + `SubMesh::skinIndex` + per-skin palette，逐槽位克隆蒙皮材质保留 PBR 纹理；已通过 x64-debug 构建和用户运行时验证。 |
 | 动画运行时播放 | 待实现 | Phase A4：AnimationPlayer + 每帧 UBO 更新 |
 | 动画资产序列化 | 待实现 | Phase A5：.anim.json 保存/加载 |
 | 动画状态机 | 待实现 | Phase B：AnimatorController + 混合 |

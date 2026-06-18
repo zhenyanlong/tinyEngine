@@ -1,0 +1,4 @@
+interface:
+  display_name: "Session Init"
+  short_description: "Initialize tinyEngine sessions from Trae skills"
+  default_prompt: "Use $session-init to initialize the tinyEngine project session."

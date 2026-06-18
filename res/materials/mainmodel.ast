@@ -1,6 +1,6 @@
 {
   "name": "MainModelMat",
-  "type": "Mesh",
+  "type": "Material",
   "shader": {
     "vert": "shaders/vert.spv",
     "frag": "shaders/frag.spv"

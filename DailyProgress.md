@@ -1,0 +1,40 @@
+## 2026-06-18
+
+- [✓] External LLM verification and runtime validation: fixed skeleton parse order, bone UBO identity init, recreate() vert→frag param, push constants layout, animation bind-pose fallback, multi-skin handling, per-slot material cloning, per-skin bone palettes, and the 128-bone limit. Build passed (MSVC 2022, C++20), and user confirmed the multi-part character/robot animation now renders correctly.
+- [✓] Logged verification lessons covering data-dependency ordering, Vulkan UBO initialization, create/recreate parity, push-constant/descriptor-set layout consistency, partial animation channel handling, per-skin palettes for multi-skin glTFs, and bone palette capacity.
+- [✓] Marked verified A3 DailyProgress entries as [✓] after source audit, build verification, asset inspection, and user runtime confirmation.
+- [✓] Added `createSkinnedMaterialFrom(src)` to MaterialManager to clone an existing non-skinned material into a skinned version preserving all texture paths and MaterialParams.
+- [✓] Added `getMetallicRoughnessPath()` / `getAoPath()` / `getEmissivePath()` / `hasSkinning()` accessors to MaterialManager.
+- [✓] Added `Application::convertModelMaterialsToSkinned()` helper that iterates all sub-mesh slots and converts each PBR material individually.
+- [✓] Replaced duplicated skinned-material-creation blocks in initVulkan/recreateSwapChain/beginDragPlace/loadAndApplyMaterialAsset with `convertModelMaterialsToSkinned()`.
+- [✓] Implemented multi-skin skeleton merge in SceneManager::loadModelFromGltf: iterate all skins, build unified skeleton via globalNodeToBone, and construct `skinBoneIndices` per skin for palette generation.
+- [✓] Added mesh-node skin binding: map each glTF mesh to the skin referenced by its node, store `SubMesh::skinIndex`, and keep vertex JOINTS_0 values skin-local for the shader.
+- [✓] Updated animation parsing to use globalNodeToBone for channel boneIndex lookup instead of skin[0]-only.
+- [✓] Joint clamp now uses the selected skin's local joint count; vertex weights are normalized per vertex.
+- [✓] Raised GPU bone palette capacity to `kMaxBones = 256` and recompiled `skinned_vert.spv`, covering the verified asset's 191-joint character skin.
+- [✓] Updated TDD.md §4.10/§4.11/§4.12.3/§7.1/§15 with final multi-skin, per-skin palette, material cloning, 256-bone palette, and verification lessons; marked GPU skinning as completed.
+- [✓] **Resolved runtime issue**: skinned materials and animations now render correctly for the two-part character + robot model after per-skin palette upload and 256-bone shader/UBO capacity.
+
+## 2026-06-17
+
+- [✓] Extended Vertex struct with `boneIndices` (ivec4) and `boneWeights` (vec4) fields for skinning vertex data — verified, pipeline renders correctly
+- [✓] Added `Vertex::getSkinnedAttributeDescriptions()` returning 7-attribute layout (locations 6/7 for bones) — verified, pipeline uses skinned attribute desc
+- [✓] Updated `Vertex::operator==` and `VertexHash` to include skinning attributes in comparison and hashing — verified, mesh loading with skinning data works
+- [✓] Added `kMaxBones = 256` constant and `BoneMatricesUBO` struct (256 × mat4, 16384 bytes) to `VulkanTypes.hpp` — verified, covers the 191-joint character skin; see lessons-learned.md #1
+- [✓] Created `skinned_vert.glsl` vertex shader with 4-bone weighted blend GPU skinning and compiled to `skinned_vert.spv` — verified, pipeline compiles correctly; see lessons-learned.md #3
+- [✓] Implemented `createSkinnedMeshMaterial()` in `MaterialManager` with per-swapchain-image `BoneMatricesUBO` allocation — verified, identity-init fix applied; see lessons-learned.md #2
+- [✓] Added `updateBoneMatrices()` to `MaterialManager` for per-frame bone matrix upload via `memcpy` — verified, identity-fill fix + now called in drawFrame; see lessons-learned.md #2, #4
+- [✓] Extended `MaterialEntry` with `hasSkinning_` flag and `boneUBOs/Memory/Mapped` vectors, updated `allocateDescSets` / `writeDescSets` / `destroyEntry` / `onSwapchainRecreate` for skinned material support — verified, recreate identity-init fix applied; see lessons-learned.md #2
+- [✓] Added skinned descriptor set layout (binding 6 = BoneMatricesUBO, vertex stage) and skinned mesh pipeline (`skinnedMeshPipeline_`) to `PipelineManager` — verified, recreate() vert/frag parameter fix applied; see lessons-learned.md #3
+- [✓] Updated `SceneManager::loadModelFromGltf` to read `JOINTS_0` (uint8/uint16/uint32 via raw buffer) and `WEIGHTS_0` vertex attributes, set `ModelEntity::hasSkin_` flag — verified, parse order + joint clamp + weight normalize fix applied; see lessons-learned.md #1
+- [✓] Integrated skinned pipeline routing in `Application::recordCommandBuffer` with dynamic `VkPipelineLayout` selection — verified, push constants layout fix applied; see lessons-learned.md #4
+- [✓] Auto-created skinned materials for skeletal entities in `initVulkan`, `recreateSwapChain`, `beginDragPlace`, and `loadAndApplyMaterialAsset` — verified, animation sampling + bone matrix upload wired in drawFrame; see lessons-learned.md #4
+- [✓] Per-frame animation sampling: evaluate AnimationClip 0 with bind-pose fallback, computeFinalMatrices, updateBoneMatrices for all skinned entities — verified, bind-pose fallback overload added to AnimationClip; see lessons-learned.md #5
+- [✓] All 7 A3 sub-tasks completed, project compiles with zero errors (MSVC 2022, C++20) — verified, cmake --build --preset x64-debug passed
+- [✓] Updated TDD.md with Phase A3 GPU skinning documentation: Vertex layout (locations 6/7), BoneMatricesUBO, skinned descriptor set layout, skinned pipeline specs, skinned_vert.glsl shader details, material auto-creation flow, data flow extensions, and marked GPU skinning as completed
+- [ ] Updated `session-init` skill with DailyProgress reading step, updated `daily-progress` skill with verification marker spec, added `[ ]` markers to all DailyProgress entries
+- [ ] Updated `session-init` skill with step 4: scan `.codex/skills/` directory, added Codex skill inventory to summary output, and documented `todo-sync-completed` / `todo-normalize-inbox` awareness
+- [ ] Created `verify-fix` skill: processes external LLM verification feedback, analyzes root cause, writes lessons to `lessons-learned.md`, and marks verified items as `[✓]`
+- [ ] Created `mark-verified` skill: simple manual toggle of `[ ]` → `[✓]` in DailyProgress for user-confirmed items
+- [ ] Created `lessons-learned.md` and `lessons-learned_Chinese.md` templates for accumulating verification-driven coding wisdom
+- [ ] Updated `session-init` skill to include `lessons-learned.md` reading in step 2 and inventory all 6 `.trae/skills/` in notes

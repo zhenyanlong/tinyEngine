@@ -148,7 +148,7 @@ struct AnimationClip {
 
 **具体任务：**
 
-- [ ] **A3-1** 在 `vectex.hpp` 扩展 `Vertex` 结构体，新增蒙皮属性：
+- [x] **A3-1** 在 `vectex.hpp` 扩展 `Vertex` 结构体，新增蒙皮属性：
   ```cpp
   glm::ivec4 boneIndices = {0,0,0,0};  // location=6：影响该顶点的最多4根骨骼索引
   glm::vec4  boneWeights = {1,0,0,0};  // location=7：对应权重（归一化）
@@ -156,38 +156,40 @@ struct AnimationClip {
   同时更新 `Vertex::getAttributeDescriptions()` 增加这两个 attribute。
   > **注意：** 现有无蒙皮模型的顶点数据不含这两个字段，需要在加载时区分填充（glTF skinned mesh 填实际值，OBJ/无皮肤 glTF 填默认值 `{0,0,0,0}` / `{1,0,0,0}`）。
 
-- [ ] **A3-2** 在 `VulkanTypes.hpp` 新增骨骼矩阵 UBO：
+- [x] **A3-2** 在 `VulkanTypes.hpp` 新增骨骼矩阵 UBO：
   ```cpp
-  constexpr int kMaxBones = 128;
+  constexpr int kMaxBones = 256;
   struct BoneMatricesUBO {
       glm::mat4 bones[kMaxBones];  // finalBoneMatrices，按骨骼索引排列
   };
   ```
 
-- [ ] **A3-3** 新建 `shaders/skinned_vert.glsl`：
+- [x] **A3-3** 新建 `shaders/skinned_vert.glsl`：
   - 输入 layout 与 `vert.glsl` 一致，额外加 `layout(location=6) in ivec4 boneIndices` 和 `layout(location=7) in vec4 boneWeights`
-  - 新增 `layout(set=0, binding=6) uniform BoneMatricesBlock { mat4 bones[128]; } boneUBO;`
+  - 新增 `layout(set=0, binding=6) uniform BoneMatricesBlock { mat4 bones[256]; } boneUBO;`
   - skinMatrix = `boneWeights.x * bones[boneIndices.x] + boneWeights.y * bones[boneIndices.y] + ...`
   - `gl_Position = proj * view * model * skinMatrix * vec4(pos, 1.0)`
   - 法线变换：`normalMatrix * mat3(skinMatrix) * normal`
   - 编译命令加入 `compile_shaders.ps1`
 
-- [ ] **A3-4** 在 `MaterialManager` 中新增 `createSkinnedMeshMaterial`：
+- [x] **A3-4** 在 `MaterialManager` 中新增 `createSkinnedMeshMaterial`：
   - 额外分配一个 `BoneMatricesUBO` 大小的 VkBuffer（per swapchain image）
   - Descriptor set layout 增加 binding 6（UBO，vertex stage）
   - 新增 `updateBoneMatrices(materialId, imageIndex, const std::vector<glm::mat4>&)` 方法：`memcpy` 到对应 mapped UBO
 
-- [ ] **A3-5** 在 `PipelineManager` 中新增 skinned mesh 管线：
+- [x] **A3-5** 在 `PipelineManager` 中新增 skinned mesh 管线：
   - 复用现有 mesh 管线的所有状态
   - 切换 vert shader 为 `skinned_vert.spv`
   - 使用新的 descriptor set layout（含 binding 6）
   - 新增 `VkPipeline skinnedMeshPipeline_`
 
-- [ ] **A3-6** 在 `SceneManager::loadModelFromGltf` 中，当 `skeleton_ != nullptr` 时，将顶点的 `JOINTS_0` 和 `WEIGHTS_0` accessor 数据读入 `Vertex::boneIndices` / `boneWeights`
+- [x] **A3-6** 在 `SceneManager::loadModelFromGltf` 中，当 `skeleton_ != nullptr` 时，将顶点的 `JOINTS_0` 和 `WEIGHTS_0` accessor 数据读入 `Vertex::boneIndices` / `boneWeights`
 
-- [ ] **A3-7** 在 `Application::recordCommandBuffer` 中，检测当前主模型是否有骨骼，若有则绑定 skinned 管线（代替默认 mesh 管线）
+- [x] **A3-7** 在 `Application::recordCommandBuffer` 中，检测当前主模型是否有骨骼，若有则绑定 skinned 管线（代替默认 mesh 管线）
 
 **验收标准：** `CesiumMan.glb` 在绑定姿势（t=0）下渲染正确，网格不出现扭曲/爆炸。
+
+**验证记录（2026-06-18）：** A3 已通过 `cmake --build --preset x64-debug`，并经用户运行时确认：双 skin 模型（机器人 72 joints、人物 191 joints）在动画播放时不再拉伸，人物下半身不再错误跟随机器人 idle。最终实现采用 glTF node→skin 绑定、`SubMesh::skinIndex`、skin-local JOINTS_0、per-skin bone palette 上传，以及 `kMaxBones = 256`。
 
 ---
 
@@ -917,8 +919,8 @@ A1 → A2 → A3 → A4 → A5
 **解决方案：** 定义两个独立的 VkPipeline（现有 mesh pipeline 保持不变，新增 skinned mesh pipeline）；SceneManager 标记 `hasSkin_` 标志，Application 按此标志选择 pipeline。两套 VkBuffer（无皮肤用旧顶点格式，有皮肤用新顶点格式）。
 
 ### 骨骼矩阵 UBO 大小（⚠️ 中风险）
-`128 * sizeof(mat4) = 8192 bytes`，在大多数 GPU 上没问题（最小保证 16KB UBO），但若模型骨骼超过 128 根需要动态扩容。
-**解决方案：** 解析到骨骼数量后动态计算 UBO 大小；`kMaxBones` 作为上限检查，超过时打印警告。
+`256 * sizeof(mat4) = 16384 bytes`，等于 Vulkan 最小保证的 UBO 范围，覆盖已验证资产中 191-joint 的人物 skin。多 skin 模型不上传合并后骨架总数，而是按 `SubMesh::skinIndex` 上传当前 skin 的局部 palette。
+**解决方案：** `kMaxBones` 作为单 skin 上限检查；超过时打印警告。多 skin glTF 使用 `skinBoneIndices` 将 skin-local palette 映射到合并骨架的最终矩阵。
 
 ### Sequencer 与游戏循环的时序（⚠️ 中风险）
 Sequencer 播放期间，多个系统（AnimationPlayer、Camera、ObjectTransform）同时被驱动，需要明确执行顺序以避免一帧延迟（transform 写完后 UBO 更新才能读到）。

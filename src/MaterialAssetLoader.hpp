@@ -18,6 +18,9 @@ struct MaterialAssetDesc {
     std::string    aoPath;              // grayscale; r channel sampled
     std::string    emissivePath;        // sRGB color
     std::string    modelPath;           // resolved path to .obj/.gltf/.glb, may be empty
+
+    // Sub-material paths (from .ast "subMaterials" array), relative to res/
+    std::vector<std::string> subMaterialPaths;
 };
 
 class MaterialAssetLoader {

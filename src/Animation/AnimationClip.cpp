@@ -1,11 +1,28 @@
 #include "AnimationClip.hpp"
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtx/matrix_decompose.hpp>
 #include <glm/gtx/quaternion.hpp>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 
 namespace {
+
+struct LocalTransformParts {
+	glm::vec3 translation{0.f};
+	glm::quat rotation{1.f, 0.f, 0.f, 0.f};
+	glm::vec3 scale{1.f};
+};
+
+LocalTransformParts decomposeLocalTransform(const glm::mat4& m) {
+	LocalTransformParts parts;
+	glm::vec3 skew{};
+	glm::vec4 perspective{};
+	if (glm::decompose(m, parts.scale, parts.rotation, parts.translation, skew, perspective)) {
+		parts.rotation = glm::normalize(parts.rotation);
+	}
+	return parts;
+}
 
 /** @brief 在已排序的 times 中二分查找 t 所在的区间 [idx, idx+1]，返回 idx */
 int findInterval(const std::vector<float>& times, float t) {
@@ -34,6 +51,11 @@ glm::vec4 cubicSpline(const glm::vec4& v0, const glm::vec4& outTan0,
 } // anonymous namespace
 
 glm::mat4 AnimationClip::evaluateBoneLocalTransform(int boneIndex, float t) const {
+	return evaluateBoneLocalTransform(boneIndex, t, glm::mat4(1.f));
+}
+
+glm::mat4 AnimationClip::evaluateBoneLocalTransform(int boneIndex, float t,
+                                                    const glm::mat4& fallbackLocalTransform) const {
 	// 收集该骨骼的 T/R/S 通道
 	const AnimChannel* chT = nullptr;
 	const AnimChannel* chR = nullptr;
@@ -49,11 +71,20 @@ glm::mat4 AnimationClip::evaluateBoneLocalTransform(int boneIndex, float t) cons
 	auto evalVec = [](const AnimChannel& ch, float tt) -> glm::vec3 {
 		const int n = static_cast<int>(ch.times.size());
 		if (n == 0) return glm::vec3(0.f);
-		if (tt <= ch.times.front()) return glm::vec3(ch.values.front());
-		if (tt >= ch.times.back())  return glm::vec3(ch.values.back());
+		if (ch.interp == AnimInterpolation::CubicSpline) {
+			if (tt <= ch.times.front()) return glm::vec3(ch.values[1]);
+			if (tt >= ch.times.back())  return glm::vec3(ch.values[(n - 1) * 3 + 1]);
+		} else {
+			if (tt <= ch.times.front()) return glm::vec3(ch.values.front());
+			if (tt >= ch.times.back())  return glm::vec3(ch.values.back());
+		}
 
 		const int i = findInterval(ch.times, tt);
-		if (i < 0 || i + 1 >= n) return glm::vec3(ch.values.back());
+		if (i < 0 || i + 1 >= n) {
+			return ch.interp == AnimInterpolation::CubicSpline
+				? glm::vec3(ch.values[(n - 1) * 3 + 1])
+				: glm::vec3(ch.values.back());
+		}
 
 		const float t0 = ch.times[i];
 		const float t1 = ch.times[i + 1];
@@ -83,22 +114,28 @@ glm::mat4 AnimationClip::evaluateBoneLocalTransform(int boneIndex, float t) cons
 	auto evalQuat = [](const AnimChannel& ch, float tt) -> glm::quat {
 		const int n = static_cast<int>(ch.times.size());
 		if (n == 0) return glm::quat(1.f, 0.f, 0.f, 0.f);
-		if (tt <= ch.times.front()) return glm::quat(ch.values.front().w, ch.values.front().x, ch.values.front().y, ch.values.front().z);
-		if (tt >= ch.times.back())  return glm::quat(ch.values.back().w, ch.values.back().x, ch.values.back().y, ch.values.back().z);
+		const auto toQuat = [](const glm::vec4& v) {
+			return glm::quat(v.w, v.x, v.y, v.z);
+		};
+		if (ch.interp == AnimInterpolation::CubicSpline) {
+			if (tt <= ch.times.front()) return toQuat(ch.values[1]);
+			if (tt >= ch.times.back())  return toQuat(ch.values[(n - 1) * 3 + 1]);
+		} else {
+			if (tt <= ch.times.front()) return toQuat(ch.values.front());
+			if (tt >= ch.times.back())  return toQuat(ch.values.back());
+		}
 
 		const int i = findInterval(ch.times, tt);
 		if (i < 0 || i + 1 >= n) {
-			return glm::quat(ch.values.back().w, ch.values.back().x, ch.values.back().y, ch.values.back().z);
+			return ch.interp == AnimInterpolation::CubicSpline
+				? toQuat(ch.values[(n - 1) * 3 + 1])
+				: toQuat(ch.values.back());
 		}
 
 		const float t0 = ch.times[i];
 		const float t1 = ch.times[i + 1];
 		const float dt = t1 - t0;
 		const float alpha = (dt > 1e-8f) ? (tt - t0) / dt : 0.f;
-
-		const auto toQuat = [](const glm::vec4& v) {
-			return glm::quat(v.w, v.x, v.y, v.z);
-		};
 
 		switch (ch.interp) {
 		case AnimInterpolation::Step:
@@ -125,9 +162,10 @@ glm::mat4 AnimationClip::evaluateBoneLocalTransform(int boneIndex, float t) cons
 	};
 
 	// 默认值：T=(0,0,0), R=identity, S=(1,1,1)
-	glm::vec3 tVal = chT ? evalVec(*chT, t) : glm::vec3(0.f);
-	glm::quat rVal = chR ? evalQuat(*chR, t) : glm::quat(1.f, 0.f, 0.f, 0.f);
-	glm::vec3 sVal = chS ? evalVec(*chS, t) : glm::vec3(1.f);
+	const LocalTransformParts fallback = decomposeLocalTransform(fallbackLocalTransform);
+	glm::vec3 tVal = chT ? evalVec(*chT, t) : fallback.translation;
+	glm::quat rVal = chR ? evalQuat(*chR, t) : fallback.rotation;
+	glm::vec3 sVal = chS ? evalVec(*chS, t) : fallback.scale;
 
 	glm::mat4 mT = glm::translate(glm::mat4(1.f), tVal);
 	glm::mat4 mR = glm::mat4_cast(rVal);

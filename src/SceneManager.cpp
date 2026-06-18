@@ -67,14 +67,18 @@ static std::string resolveGltfImageRel(const cgltf_image* img,
 }
 
 static std::string dumpGltfMaterialAstImpl(const cgltf_material& mat,
-                                const std::string& baseName, int primIndex,
-                                const std::filesystem::path& gltfDir,
-                                const std::filesystem::path& resRoot)
+                                 const std::string& baseName, int primIndex,
+                                 const std::filesystem::path& gltfDir,
+                                 const std::filesystem::path& resRoot,
+                                 const std::string& materialSubFolder = "")
 {
     namespace fs = std::filesystem;
     const std::string matName = mat.name ? sanitize(mat.name)
                                          : ("prim" + std::to_string(primIndex));
-    const std::string fileRel = "materials/" + sanitize(baseName) + "_" + matName + ".ast";
+    const std::string folderPrefix = materialSubFolder.empty()
+        ? std::string("materials/")
+        : std::string("materials/") + materialSubFolder + "/";
+    const std::string fileRel = folderPrefix + sanitize(baseName) + "_" + matName + ".ast";
     const fs::path    fileAbs = resRoot / fileRel;
 
     std::error_code ec;
@@ -148,13 +152,14 @@ static std::string dumpGltfMaterialAstImpl(const cgltf_material& mat,
 // ─── Public static: glTF material dump ────────────────────────────────────────
 
 std::string SceneManager::dumpGltfMaterialAst(const void* cgltfMaterial,
-                                              const std::string& baseName,
-                                              int primIndex,
-                                              const std::string& gltfDir,
-                                              const std::string& resRoot)
+                                               const std::string& baseName,
+                                               int primIndex,
+                                               const std::string& gltfDir,
+                                               const std::string& resRoot,
+                                               const std::string& materialSubFolder)
 {
     const auto& mat = *static_cast<const cgltf_material*>(cgltfMaterial);
-    return dumpGltfMaterialAstImpl(mat, baseName, primIndex, gltfDir, resRoot);
+    return dumpGltfMaterialAstImpl(mat, baseName, primIndex, gltfDir, resRoot, materialSubFolder);
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -299,6 +304,108 @@ void SceneManager::loadModelFromGltf(const std::string& path, const glm::vec3& p
         resRoot = fs::absolute(fs::path("res")); // fallback
     const std::string baseName = gltfPath.stem().string();
 
+    skeleton_.reset();
+    animationClips_.clear();
+
+    // 收集所有 skin 中的全部 joint 节点，合并为统一骨架
+    std::unordered_map<const cgltf_node*, int> globalNodeToBone;
+    if (data->skins_count > 0) {
+        auto skel = std::make_shared<Skeleton>();
+        std::vector<const cgltf_node*> boneNodes;
+
+        for (cgltf_size si = 0; si < data->skins_count; ++si) {
+            const cgltf_skin& skin = data->skins[si];
+            for (cgltf_size j = 0; j < skin.joints_count; ++j) {
+                const cgltf_node* node = skin.joints[j];
+                if (globalNodeToBone.count(node)) continue; // 已包含
+                const int boneIndex = static_cast<int>(skel->bones.size());
+                globalNodeToBone[node] = boneIndex;
+
+                Bone bone;
+                bone.name = node->name ? node->name : ("bone_" + std::to_string(si) + "_" + std::to_string(j));
+                skel->boneNameToIndex[bone.name] = boneIndex;
+                bone.parentIndex = -1;
+
+                float local[16];
+                cgltf_node_transform_local(node, local);
+                bone.localBindTransform = glm::make_mat4(local);
+                float world[16];
+                cgltf_node_transform_world(node, world);
+                bone.globalBindTransform = glm::make_mat4(world);
+
+                if (skin.inverse_bind_matrices) {
+                    float ibm[16];
+                    cgltf_accessor_read_float(skin.inverse_bind_matrices, j, ibm, 16);
+                    bone.inverseBindMatrix = glm::make_mat4(ibm);
+                } else {
+                    bone.inverseBindMatrix = glm::mat4(1.f);
+                }
+
+                skel->bones.push_back(std::move(bone));
+                boneNodes.push_back(node);
+            }
+        }
+
+        for (size_t i = 0; i < boneNodes.size(); ++i) {
+            const cgltf_node* parent = boneNodes[i] ? boneNodes[i]->parent : nullptr;
+            while (parent) {
+                auto it = globalNodeToBone.find(parent);
+                if (it != globalNodeToBone.end()) {
+                    skel->bones[i].parentIndex = it->second;
+                    break;
+                }
+                parent = parent->parent;
+            }
+        }
+
+        const int totalBones = static_cast<int>(skel->bones.size());
+        for (cgltf_size si = 0; si < data->skins_count; ++si) {
+            if (data->skins[si].joints_count > static_cast<cgltf_size>(kMaxBones)) {
+                std::cerr << "[glTF] skin " << si << " has "
+                          << data->skins[si].joints_count
+                          << " joints, but GPU skinning supports only "
+                          << kMaxBones << " per skin; extra joints will be clamped.\n";
+            }
+        }
+
+        skeleton_ = skel;
+        std::cout << "[glTF] parsed combined skeleton with " << totalBones
+                  << " bones from " << data->skins_count << " skin(s)\n";
+    }
+
+    // 为每个 cgltf_skin 构建 skin-local-index → global-bone-index 的映射表
+    // 用于将 JOINTS_0 中基于皮肤局部的索引重定向到合并骨架
+    std::vector<std::vector<int>> skinRemap(data->skins_count);
+    for (cgltf_size si = 0; si < data->skins_count; ++si) {
+        const cgltf_skin& skin = data->skins[si];
+        skinRemap[si].resize(skin.joints_count);
+        for (cgltf_size j = 0; j < skin.joints_count; ++j) {
+            auto it = globalNodeToBone.find(skin.joints[j]);
+            skinRemap[si][j] = (it != globalNodeToBone.end()) ? it->second : 0;
+        }
+    }
+    if (skeleton_) {
+        skeleton_->skinBoneIndices = skinRemap;
+    }
+
+    std::unordered_map<const cgltf_mesh*, int> meshToSkin;
+    bool warnedSharedMeshMultipleSkins = false;
+    for (cgltf_size ni = 0; ni < data->nodes_count; ++ni) {
+        const cgltf_node& node = data->nodes[ni];
+        if (!node.mesh || !node.skin) continue;
+
+        const int skinIndex = static_cast<int>(node.skin - data->skins);
+        if (skinIndex < 0 || skinIndex >= static_cast<int>(data->skins_count))
+            continue;
+
+        auto [it, inserted] = meshToSkin.emplace(node.mesh, skinIndex);
+        if (!inserted && it->second != skinIndex && !warnedSharedMeshMultipleSkins) {
+            std::cerr << "[glTF] mesh is referenced by multiple skins; "
+                      << "using the first skin for merged geometry\n";
+            warnedSharedMeshMultipleSkins = true;
+        }
+    }
+
     ent.vertices.clear();
     ent.indices.clear();
     ent.subMeshes.clear();
@@ -318,18 +425,67 @@ void SceneManager::loadModelFromGltf(const std::string& path, const glm::vec3& p
             const cgltf_accessor* uvAcc  = nullptr;
             const cgltf_accessor* nrmAcc = nullptr;
             const cgltf_accessor* tanAcc = nullptr;
+            const cgltf_accessor* jntAcc = nullptr;
+            const cgltf_accessor* wgtAcc = nullptr;
             for (cgltf_size a = 0; a < prim.attributes_count; ++a) {
                 const cgltf_attribute& at = prim.attributes[a];
                 if      (at.type == cgltf_attribute_type_position && !posAcc) posAcc = at.data;
                 else if (at.type == cgltf_attribute_type_texcoord && !uvAcc)  uvAcc  = at.data;
                 else if (at.type == cgltf_attribute_type_normal   && !nrmAcc) nrmAcc = at.data;
                 else if (at.type == cgltf_attribute_type_tangent  && !tanAcc) tanAcc = at.data;
+                else if (at.type == cgltf_attribute_type_joints   && !jntAcc) jntAcc = at.data;
+                else if (at.type == cgltf_attribute_type_weights  && !wgtAcc) wgtAcc = at.data;
             }
             if (!posAcc) continue;
 
             const uint32_t baseVertex = static_cast<uint32_t>(ent.vertices.size());
             const cgltf_size vcount = posAcc->count;
             ent.vertices.reserve(ent.vertices.size() + vcount);
+            const int boneLimit = skeleton_
+                ? std::min(static_cast<int>(skeleton_->bones.size()), kMaxBones)
+                : 0;
+            bool warnedBoneIndexOutOfRange = false;
+
+            // 检测当前 primitive 使用的是哪个 skin（对多 skin 模型的自动匹配）
+            int primSkinIdx = 0;
+            if (auto it = meshToSkin.find(&mesh); it != meshToSkin.end()) {
+                primSkinIdx = it->second;
+            } else if (skeleton_ && jntAcc && wgtAcc && skinRemap.size() > 1) {
+                std::cerr << "[glTF] primitive has skinning attributes but no node skin binding for "
+                          << baseName << "; falling back to skin 0\n";
+            }
+            const std::vector<int> usedRemap = skinRemap.empty() ? std::vector<int>{} : skinRemap[primSkinIdx];
+            const int skinBoneLimit = !usedRemap.empty()
+                ? std::min(static_cast<int>(usedRemap.size()), kMaxBones)
+                : boneLimit;
+
+            auto clampJointIndex = [&](int joint) -> int {
+                if (joint < 0 || joint >= skinBoneLimit) {
+                    if (!warnedBoneIndexOutOfRange) {
+                        std::cerr << "[glTF] joint index exceeds supported bone range for "
+                                  << baseName << "; clamping to bone 0\n";
+                        warnedBoneIndexOutOfRange = true;
+                    }
+                    return 0;
+                }
+                return joint;
+            };
+
+            // 读取 JOINTS_0 的辅助 lambda（cgltf 无内置整数读取函数）
+            auto readJoints = [&](const cgltf_accessor* acc, cgltf_size idx) -> glm::ivec4 {
+                if (!acc || idx >= acc->count || !acc->buffer_view || boneLimit <= 0) return {0, 0, 0, 0};
+                cgltf_uint joints[4]{};
+                if (!cgltf_accessor_read_uint(acc, idx, joints, 4)) return {0, 0, 0, 0};
+                glm::ivec4 r(static_cast<int>(joints[0]), static_cast<int>(joints[1]),
+                             static_cast<int>(joints[2]), static_cast<int>(joints[3]));
+                // 将 skin-local joint index 重映射到合并骨架的 bone index
+                for (int c = 0; c < 4; ++c) {
+                    r[c] = clampJointIndex(r[c]);
+                }
+                return r;
+            };
+            const bool hasSkinData = (skeleton_ != nullptr) && jntAcc && wgtAcc;
+
             for (cgltf_size i = 0; i < vcount; ++i) {
                 Vertex v{};
                 float p[3]{};
@@ -352,9 +508,25 @@ void SceneManager::loadModelFromGltf(const std::string& path, const glm::vec3& p
                     cgltf_accessor_read_float(tanAcc, i, t, 4);
                     v.tangent = { t[0], t[1], t[2], t[3] };
                 }
+                if (hasSkinData) {
+                    v.boneIndices = readJoints(jntAcc, i);
+                    cgltf_accessor_read_float(wgtAcc, i, glm::value_ptr(v.boneWeights), 4);
+                    const float weightSum = v.boneWeights.x + v.boneWeights.y
+                                          + v.boneWeights.z + v.boneWeights.w;
+                    if (weightSum > 1e-6f)
+                        v.boneWeights /= weightSum;
+                    else
+                        v.boneWeights = {1.f, 0.f, 0.f, 0.f};
+                }
                 ent.vertices.push_back(v);
                 modelLocalBoundsMin_ = glm::min(modelLocalBoundsMin_, v.pos);
                 modelLocalBoundsMax_ = glm::max(modelLocalBoundsMax_, v.pos);
+            }
+
+            if (hasSkinData) {
+                ent.hasSkin_ = true;
+                std::cout << "[glTF] loaded skinning data for " << baseName
+                          << " (primitive " << pi << ")\n";
             }
 
             const uint32_t indexOffset = static_cast<uint32_t>(ent.indices.size());
@@ -390,79 +562,14 @@ void SceneManager::loadModelFromGltf(const std::string& path, const glm::vec3& p
             SubMesh sm{};
             sm.indexOffset  = indexOffset;
             sm.indexCount   = indexCount;
+            sm.skinIndex    = hasSkinData ? primSkinIdx : -1;
             sm.materialSlot = slot;
             ent.subMeshes.push_back(sm);
         }
     }
 
-    // ── Parse skin ───────────────────────────────────────────────────────────
-    skeleton_.reset();
-    animationClips_.clear();
-
-    if (data->skins_count > 0) {
-        const cgltf_skin& skin = data->skins[0];
-        auto skel = std::make_shared<Skeleton>();
-        const int numBones = static_cast<int>(skin.joints_count);
-        skel->bones.resize(numBones);
-
-        // 构建 cgltf_node* → boneIndex 映射
-        std::unordered_map<const cgltf_node*, int> nodeToBone;
-        for (cgltf_size j = 0; j < skin.joints_count; ++j) {
-            nodeToBone[skin.joints[j]] = static_cast<int>(j);
-        }
-
-        for (cgltf_size j = 0; j < skin.joints_count; ++j) {
-            const cgltf_node* node = skin.joints[j];
-            Bone& bone = skel->bones[j];
-
-            bone.name = node->name ? node->name : ("bone_" + std::to_string(j));
-            skel->boneNameToIndex[bone.name] = static_cast<int>(j);
-
-            // parentIndex：若父节点也在 joints 中则取对应索引，否则为根骨骼
-            if (node->parent && nodeToBone.count(node->parent)) {
-                bone.parentIndex = nodeToBone[node->parent];
-            } else {
-                bone.parentIndex = -1;
-            }
-
-            // localBindTransform：从 cgltf_node 的 TRS 或 matrix 提取
-            if (node->has_matrix) {
-                bone.localBindTransform = glm::make_mat4(node->matrix);
-            } else {
-                const glm::vec3 translate(node->translation[0], node->translation[1], node->translation[2]);
-                const glm::quat  rotate(node->rotation[3], node->rotation[0], node->rotation[1], node->rotation[2]);
-                const glm::vec3 scale(node->scale[0], node->scale[1], node->scale[2]);
-                const glm::mat4 T = glm::translate(glm::mat4(1.f), translate);
-                const glm::mat4 R = glm::mat4_cast(rotate);
-                const glm::mat4 S = glm::scale(glm::mat4(1.f), scale);
-                bone.localBindTransform = T * R * S;
-            }
-
-            // inverseBindMatrix
-            if (skin.inverse_bind_matrices) {
-                float ibm[16];
-                cgltf_accessor_read_float(skin.inverse_bind_matrices, j, ibm, 16);
-                bone.inverseBindMatrix = glm::make_mat4(ibm);
-            } else {
-                bone.inverseBindMatrix = glm::mat4(1.f);
-            }
-        }
-
-        skeleton_ = skel;
-        std::cout << "[glTF] parsed skeleton with " << numBones << " bones\n";
-    }
-
     // ── Parse animations ─────────────────────────────────────────────────────
     if (skeleton_) {
-        // 构建 node→boneIndex 映射供动画解析用
-        std::unordered_map<const cgltf_node*, int> nodeToBone;
-        if (data->skins_count > 0) {
-            const cgltf_skin& skin = data->skins[0];
-            for (cgltf_size j = 0; j < skin.joints_count; ++j) {
-                nodeToBone[skin.joints[j]] = static_cast<int>(j);
-            }
-        }
-
         for (cgltf_size ai = 0; ai < data->animations_count; ++ai) {
             const cgltf_animation& anim = data->animations[ai];
             AnimationClip clip;
@@ -473,9 +580,9 @@ void SceneManager::loadModelFromGltf(const std::string& path, const glm::vec3& p
                 const cgltf_animation_channel& ch = anim.channels[ci];
                 const cgltf_animation_sampler&   sm = anim.samplers[ch.sampler - anim.samplers];
 
-                // 查找 boneIndex
-                auto it = nodeToBone.find(ch.target_node);
-                if (it == nodeToBone.end()) continue; // 不是骨骼节点
+                // 查找 boneIndex（使用合并后的全局映射）
+                auto it = globalNodeToBone.find(ch.target_node);
+                if (it == globalNodeToBone.end()) continue;
 
                 AnimChannel ac;
                 ac.boneIndex = it->second;

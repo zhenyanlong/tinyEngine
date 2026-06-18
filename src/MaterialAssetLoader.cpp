@@ -47,7 +47,9 @@ bool MaterialAssetLoader::load(const std::string& astRelPath,
     desc.name = j.value("name", std::string{});
 
     const std::string typeStr = j.value("type", std::string("Mesh"));
-    desc.type = (typeStr == "Box") ? MaterialType::Box : MaterialType::Mesh;
+    if (typeStr == "Material")      desc.type = MaterialType::Material;
+    else if (typeStr == "Box")      desc.type = MaterialType::Box;
+    else                            desc.type = MaterialType::Mesh;
 
     if (j.contains("shader") && j["shader"].is_object()) {
         const auto& s = j["shader"];
@@ -83,6 +85,14 @@ bool MaterialAssetLoader::load(const std::string& astRelPath,
             desc.modelPath = resolveRel(m.get<std::string>());
         } else if (m.is_object()) {
             desc.modelPath = resolveRel(m.value("path", std::string{}));
+        }
+    }
+
+    // Optional: subMaterials array of relative .ast paths
+    if (j.contains("subMaterials") && j["subMaterials"].is_array()) {
+        for (const auto& item : j["subMaterials"]) {
+            if (item.is_string())
+                desc.subMaterialPaths.push_back(item.get<std::string>());
         }
     }
 

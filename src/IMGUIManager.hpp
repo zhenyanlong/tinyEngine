@@ -198,6 +198,9 @@ private:
 	bool                     showContentBrowser_ = false;
 	char                     contentBrowserSearch_[256]{};
 	float                    placementDistance_ = 5.0f;
+	std::string              currentFolder_;             ///< 当前浏览的子文件夹（空 = 根目录）
+	char                     newFolderName_[128]{};       ///< 新文件夹名输入缓冲
+	int                      typeFilterIdx_ = 0;          ///< 类型筛选: 0=All, 1=Mesh, 2=Box, 3=Material
 
 	/** @brief 绘制 Content Browser 面板 */
 	void drawContentBrowser();

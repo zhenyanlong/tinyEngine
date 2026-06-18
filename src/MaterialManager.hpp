@@ -13,7 +13,7 @@
 using MaterialId = uint32_t;
 constexpr MaterialId kInvalidMaterialId = 0;
 
-enum class MaterialType { Mesh, Box };
+enum class MaterialType { Mesh, Box, Material };
 
 struct MaterialParams {
     glm::vec4 baseColor         = { 1.f, 1.f, 1.f, 1.f };
@@ -65,6 +65,28 @@ public:
     MaterialId createBoxMaterial(const std::string& name, const MaterialParams& params,
                                  const VulkanContext& ctx, const BufferManager& bufMgr,
                                  const PipelineManager& pipeMgr);
+
+    /** @brief 创建蒙皮网格材质（含 BoneMatricesUBO，binding=6） */
+    MaterialId createSkinnedMeshMaterial(const std::string& name,
+                                         const std::string& albedoPath,
+                                         const std::string& normalPath,
+                                         const std::string& metallicRoughnessPath,
+                                         const std::string& aoPath,
+                                         const std::string& emissivePath,
+                                         const MaterialParams& params,
+                                         const VulkanContext& ctx, const CommandManager& cmdMgr,
+                                         const BufferManager& bufMgr, const FramebufferManager& fbMgr,
+                                         const PipelineManager& pipeMgr);
+
+    /** @brief 从现有（非蒙皮）材质克隆一个带 BoneMatricesUBO 的蒙皮版本，保留纹理和参数 */
+    MaterialId createSkinnedMaterialFrom(MaterialId src,
+                                         const VulkanContext& ctx, const CommandManager& cmdMgr,
+                                         const BufferManager& bufMgr, const FramebufferManager& fbMgr,
+                                         const PipelineManager& pipeMgr);
+
+    /** @brief 更新骨骼矩阵 UBO（每帧调用） */
+    void updateBoneMatrices(MaterialId id, uint32_t imageIndex,
+                            const std::vector<glm::mat4>& finalBoneMatrices);
 
     // Load a material from a .ast (JSON) asset file.
     //   astRelPath: relative to res/, e.g. "materials/mainmodel.ast".
@@ -121,6 +143,10 @@ public:
     void                setMaterialName(MaterialId id, const std::string& name);
     const std::string&  getAlbedoPath(MaterialId id) const;
     const std::string&  getNormalPath(MaterialId id) const;
+    const std::string&  getMetallicRoughnessPath(MaterialId id) const;
+    const std::string&  getAoPath(MaterialId id) const;
+    const std::string&  getEmissivePath(MaterialId id) const;
+    bool                hasSkinning(MaterialId id) const;
     bool                isValid(MaterialId id) const;
     bool                isDeletable(MaterialId id) const;
     MaterialId          getDefaultMeshMaterialId() const { return defaultMeshId_; }
@@ -161,6 +187,11 @@ private:
         // Empty -> use the default pipeline for this MaterialType.
         std::string vertSpvPath;
         std::string fragSpvPath;
+
+        bool hasSkinning_ = false;
+        std::vector<VkBuffer>       boneUBOs;
+        std::vector<VkDeviceMemory> boneUBOMemory;
+        std::vector<void*>          boneUBOMapped;
     };
 
     std::unordered_map<MaterialId, MaterialEntry> materials_;

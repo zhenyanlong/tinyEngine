@@ -11,6 +11,7 @@
 #include "Transform.hpp"
 #include "camera.hpp"
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -128,6 +129,47 @@ bool SceneSerializer::save(const std::string& path,
 
                 if (paramCount > 0)
                     e["materialOverride"] = ov;
+
+                // ── 子材质覆写：对比 subMeshMaterials 与 subMaterials 参考 ──
+                if (!ent.subMeshMaterials.empty() && !ref.subMaterialPaths.empty()) {
+                    json smo = json::array();
+                    const size_t slotCount = std::min(ent.subMeshMaterials.size(), ref.subMaterialPaths.size());
+                    for (size_t si = 0; si < slotCount; ++si) {
+                        const uint32_t slotMatId = ent.subMeshMaterials[si];
+                        if (slotMatId == 0 || !matMgr.isValid(slotMatId)) continue;
+
+                        // 加载该槽位的 .ast 参考
+                        const std::string& slotAstRel = ref.subMaterialPaths[si];
+                        if (slotAstRel.empty()) continue;
+
+                        MaterialAssetDesc slotRef;
+                        json slotOv;
+                        int overrideCount = 0;
+
+                        if (MaterialAssetLoader::load(slotAstRel, slotRef)) {
+                            const MaterialParams& slotCur = matMgr.getParams(slotMatId);
+                            overrideCount = writeParamOverride(slotOv, slotCur, slotRef.params);
+
+                            const std::string sAlbedo = matMgr.getAlbedoPath(slotMatId);
+                            const std::string sNormal = matMgr.getNormalPath(slotMatId);
+                            if (sAlbedo != slotRef.albedoPath && (!sAlbedo.empty() || !slotRef.albedoPath.empty())) {
+                                slotOv["albedoPath"] = sAlbedo; ++overrideCount;
+                            }
+                            if (sNormal != slotRef.normalPath && (!sNormal.empty() || !slotRef.normalPath.empty())) {
+                                slotOv["normalPath"] = sNormal; ++overrideCount;
+                            }
+                        }
+
+                        json entry;
+                        entry["slot"] = static_cast<int>(si);
+                        entry["astRelPath"] = slotAstRel;
+                        if (overrideCount > 0)
+                            entry["override"] = slotOv;
+                        smo.push_back(entry);
+                    }
+                    if (!smo.empty())
+                        e["subMaterialOverrides"] = smo;
+                }
             }
         } else if (ent.astRelPath.empty()) {
             // 无 .ast 的实体：保存 materialId
@@ -287,10 +329,10 @@ bool SceneSerializer::load(const std::string& path,
                     ent->astRelPath, ctx, cmdMgr, bufMgr, fbMgr, pipeMgr);
                 if (mid != kInvalidMaterialId) {
                     ent->materialId = mid;
-                    if (!ent->subMeshes.empty())
-                        ent->subMeshMaterials.resize(ent->subMeshes.size(), mid);
+                    for (auto& slotMat : ent->subMeshMaterials)
+                        slotMat = mid;
 
-                    // 应用材质覆写
+                    // 应用主材质覆写
                     if (ej.contains("materialOverride") && ej["materialOverride"].is_object()) {
                         const auto& ov = ej["materialOverride"];
                         applyParamOverride(ov, matMgr.getParamsMut(mid));
@@ -301,6 +343,48 @@ bool SceneSerializer::load(const std::string& path,
                         if (ov.contains("normalPath") && ov["normalPath"].is_string())
                             matMgr.setNormalPath(mid, ov["normalPath"].get<std::string>(),
                                                   ctx, cmdMgr, bufMgr, fbMgr, pipeMgr);
+                    }
+
+                    // ── 加载子材质（subMaterials）───────────────────────
+                    // 读取入口 .ast 获取 subMaterials 列表
+                    {
+                        MaterialAssetDesc entryDesc;
+                        if (MaterialAssetLoader::load(ent->astRelPath, entryDesc)
+                            && !entryDesc.subMaterialPaths.empty()) {
+                            if (ent->subMeshMaterials.size() < entryDesc.subMaterialPaths.size())
+                                ent->subMeshMaterials.resize(entryDesc.subMaterialPaths.size(), mid);
+                            for (size_t si = 0; si < entryDesc.subMaterialPaths.size()
+                                              && si < ent->subMeshMaterials.size(); ++si) {
+                                const MaterialId smMid = matMgr.loadMaterialFromAsset(
+                                    entryDesc.subMaterialPaths[si],
+                                    ctx, cmdMgr, bufMgr, fbMgr, pipeMgr);
+                                if (smMid != kInvalidMaterialId)
+                                    ent->subMeshMaterials[si] = smMid;
+                            }
+                        }
+                    }
+
+                    // ── 应用子材质覆写（来自场景文件）───────────────────
+                    if (ej.contains("subMaterialOverrides") && ej["subMaterialOverrides"].is_array()) {
+                        for (const auto& se : ej["subMaterialOverrides"]) {
+                            if (!se.contains("slot")) continue;
+                            const int slot = se["slot"].get<int>();
+                            if (slot < 0 || static_cast<size_t>(slot) >= ent->subMeshMaterials.size())
+                                continue;
+                            const uint32_t smId = ent->subMeshMaterials[slot];
+                            if (smId == 0 || !matMgr.isValid(smId)) continue;
+
+                            if (se.contains("override") && se["override"].is_object()) {
+                                const auto& sov = se["override"];
+                                applyParamOverride(sov, matMgr.getParamsMut(smId));
+                                if (sov.contains("albedoPath") && sov["albedoPath"].is_string())
+                                    matMgr.setAlbedoPath(smId, sov["albedoPath"].get<std::string>(),
+                                                          ctx, cmdMgr, bufMgr, fbMgr, pipeMgr);
+                                if (sov.contains("normalPath") && sov["normalPath"].is_string())
+                                    matMgr.setNormalPath(smId, sov["normalPath"].get<std::string>(),
+                                                          ctx, cmdMgr, bufMgr, fbMgr, pipeMgr);
+                            }
+                        }
                     }
                 }
             }

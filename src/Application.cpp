@@ -10,12 +10,14 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <cstring>
 #include "cgltf.h"
 #include <stdexcept>
+#include <vector>
 
 // STB_IMAGE_IMPLEMENTATION defined globally; only TextureManager.cpp implements it
 #undef STB_IMAGE_IMPLEMENTATION
@@ -178,6 +180,9 @@ void Application::initVulkan()
                     sceneMgr_.setModelSubMeshMaterialId(slot, mid);
             }
         }
+
+        // 若有骨骼数据，为每个实体的槽位材质创建蒙皮版本
+        convertModelMaterialsToSkinned();
     }
 
     descMgr_.create(ctx_, swapChain_, pipeMgr_, bufMgr_);
@@ -262,6 +267,40 @@ void Application::gameLoop()
     cleanUp();
 }
 
+// ─── Skinned material conversion ──────────────────────────────────────────────
+
+void Application::convertModelMaterialsToSkinned()
+{
+    for (auto& ent : sceneMgr_.getModelEntities()) {
+        if (!ent.hasSkin_) continue;
+
+        auto convert = [&](MaterialId srcId) -> MaterialId {
+            if (srcId == kInvalidMaterialId || !matMgr_.isValid(srcId))
+                return kInvalidMaterialId;
+            if (matMgr_.hasSkinning(srcId)) return srcId;
+            return matMgr_.createSkinnedMaterialFrom(
+                srcId, ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_);
+        };
+
+        // 逐槽位克隆 — 保留每个 sub-mesh 的原始纹理和参数
+        for (size_t i = 0; i < ent.subMeshMaterials.size(); ++i) {
+            if (ent.subMeshMaterials[i] == 0u) continue;
+            const MaterialId newId = convert(ent.subMeshMaterials[i]);
+            if (newId != kInvalidMaterialId)
+                ent.subMeshMaterials[i] = newId;
+        }
+
+        // 实体回退材质也转换为蒙皮版本
+        const MaterialId newId = convert(ent.materialId);
+        if (newId != kInvalidMaterialId)
+            ent.materialId = newId;
+
+        std::cout << "[tinyEngine] converted materials to skinned for entity "
+                  << ent.entityId << " (" << ent.subMeshMaterials.size()
+                  << " slots)\n";
+    }
+}
+
 // ─── Draw frame ───────────────────────────────────────────────────────────────
 
 void Application::drawFrame()
@@ -280,6 +319,71 @@ void Application::drawFrame()
     const glm::mat4 view = camera_.GetViewMatrix();
     const glm::mat4 proj = camera_.GetProjectionMatrix();
     matMgr_.updateAllUBOs(imageIndex, view, proj);
+
+    if (const auto skeleton = sceneMgr_.getSkeleton()) {
+        if (!skeleton->bones.empty()) {
+            const auto& clips = sceneMgr_.getAnimationClips();
+            std::vector<glm::mat4> localTransforms(skeleton->bones.size());
+            const bool hasPlayableClip = !clips.empty() && clips.front().duration > 1e-6f;
+            const float animTime = hasPlayableClip
+                ? std::fmod(static_cast<float>(glfwGetTime()), clips.front().duration)
+                : 0.f;
+            for (size_t i = 0; i < skeleton->bones.size(); ++i) {
+                localTransforms[i] = hasPlayableClip
+                    ? clips.front().evaluateBoneLocalTransform(
+                        static_cast<int>(i), animTime, skeleton->bones[i].localBindTransform)
+                    : skeleton->bones[i].localBindTransform;
+            }
+
+            std::vector<glm::mat4> finalBoneMatrices;
+            skeleton->computeFinalMatrices(localTransforms, finalBoneMatrices);
+
+            std::vector<MaterialId> updatedMaterials;
+            auto makeSkinPalette = [&](int skinIndex) -> std::vector<glm::mat4> {
+                if (skinIndex >= 0
+                    && skinIndex < static_cast<int>(skeleton->skinBoneIndices.size())) {
+                    const auto& map = skeleton->skinBoneIndices[skinIndex];
+                    std::vector<glm::mat4> palette;
+                    palette.reserve(std::min(map.size(), static_cast<size_t>(kMaxBones)));
+                    for (size_t i = 0; i < map.size() && i < static_cast<size_t>(kMaxBones); ++i) {
+                        const int globalBone = map[i];
+                        palette.push_back((globalBone >= 0
+                                           && globalBone < static_cast<int>(finalBoneMatrices.size()))
+                            ? finalBoneMatrices[globalBone]
+                            : glm::mat4(1.f));
+                    }
+                    return palette;
+                }
+                return finalBoneMatrices;
+            };
+
+            auto updateSkinMaterial = [&](MaterialId id, const std::vector<glm::mat4>& palette) {
+                if (id == kInvalidMaterialId || !matMgr_.isValid(id)) return;
+                if (std::find(updatedMaterials.begin(), updatedMaterials.end(), id) != updatedMaterials.end())
+                    return;
+                matMgr_.updateBoneMatrices(id, imageIndex, palette);
+                updatedMaterials.push_back(id);
+            };
+
+            for (const auto& ent : sceneMgr_.getModelEntities()) {
+                if (!ent.hasSkin_) continue;
+                if (ent.subMeshes.empty()) {
+                    updateSkinMaterial(ent.materialId, makeSkinPalette(0));
+                    continue;
+                }
+
+                for (const auto& sm : ent.subMeshes) {
+                    MaterialId matId = ent.materialId;
+                    if (sm.materialSlot >= 0
+                        && sm.materialSlot < static_cast<int>(ent.subMeshMaterials.size())
+                        && ent.subMeshMaterials[sm.materialSlot] != kInvalidMaterialId) {
+                        matId = ent.subMeshMaterials[sm.materialSlot];
+                    }
+                    updateSkinMaterial(matId, makeSkinPalette(sm.skinIndex));
+                }
+            }
+        }
+    }
 
     VkFence& imgFence = cmdMgr_.getImageInFlight(imageIndex);
     if (imgFence != VK_NULL_HANDLE)
@@ -376,15 +480,19 @@ void Application::recordCommandBuffer(VkCommandBuffer cb, uint32_t imageIndex)
                 PushConstants push = (ei == 0)
                     ? PushConstants{ mainModelTransform.GetModelMatrix(), mainModelTransform.GetNormalMatrix() }
                     : PushConstants{ ent.transform.GetModelMatrix(), ent.transform.GetNormalMatrix() };
-                vkCmdPushConstants(cb, pipeMgr_.getMainPipelineLayout(),
-                                   VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &push);
 
                 const MaterialId useMat = matMgr_.isValid(ent.materialId) ? ent.materialId : fallbackMat;
                 VkPipeline pipe = matMgr_.getPipeline(useMat, ctx_, pipeMgr_);
                 vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
                 VkDescriptorSet ds = matMgr_.getDescriptorSet(useMat, imageIndex);
+                const bool isSkinned = (pipe == pipeMgr_.getSkinnedPipeline());
+                VkPipelineLayout pipeLayout = isSkinned
+                    ? pipeMgr_.getSkinnedPipelineLayout()
+                    : pipeMgr_.getMainPipelineLayout();
+                vkCmdPushConstants(cb, pipeLayout,
+                                   VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &push);
                 vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                        pipeMgr_.getMainPipelineLayout(), 0, 1, &ds, 0, nullptr);
+                                        pipeLayout, 0, 1, &ds, 0, nullptr);
 
                 if (ent.subMeshes.empty()) {
                     vkCmdDrawIndexed(cb, ent.indexCount, 1, 0, 0, 0);
@@ -400,8 +508,14 @@ void Application::recordCommandBuffer(VkCommandBuffer cb, uint32_t imageIndex)
                             pipe = matMgr_.getPipeline(smMat, ctx_, pipeMgr_);
                             vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
                             ds = matMgr_.getDescriptorSet(smMat, imageIndex);
+                            const bool smIsSkinned = (pipe == pipeMgr_.getSkinnedPipeline());
+                            VkPipelineLayout smPipeLayout = smIsSkinned
+                                ? pipeMgr_.getSkinnedPipelineLayout()
+                                : pipeMgr_.getMainPipelineLayout();
+                            vkCmdPushConstants(cb, smPipeLayout,
+                                               VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &push);
                             vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                                    pipeMgr_.getMainPipelineLayout(), 0, 1, &ds, 0, nullptr);
+                                                    smPipeLayout, 0, 1, &ds, 0, nullptr);
                         }
                         vkCmdDrawIndexed(cb, sm.indexCount, 1, sm.indexOffset, 0, 0);
                     }
@@ -509,6 +623,9 @@ void Application::recreateSwapChain()
                 sceneMgr_.setModelSubMeshMaterialId(slot, mid);
         }
     }
+
+    // 若有骨骼数据，为每个实体的槽位材质创建蒙皮版本
+    convertModelMaterialsToSkinned();
 
     descMgr_.create(ctx_, swapChain_, pipeMgr_, bufMgr_);
     pickSys_.create(ctx_, cmdMgr_);
@@ -658,13 +775,21 @@ bool Application::loadAndApplyMaterialAsset(const std::string& astRelPath)
     // are applied immediately without requiring a swapchain recreate.
     if (modelSwapped) {
         const auto& autoPaths = sceneMgr_.getModelAutoAstPaths();
-        for (int slot = 0; slot < static_cast<int>(autoPaths.size()); ++slot) {
-            if (autoPaths[slot].empty()) continue;
+        const auto& materialPaths = !peeked.subMaterialPaths.empty()
+            ? peeked.subMaterialPaths
+            : autoPaths;
+        for (int slot = 0; slot < static_cast<int>(materialPaths.size()); ++slot) {
+            if (materialPaths[slot].empty()) continue;
             const MaterialId smMid = matMgr_.loadMaterialFromAsset(
-                autoPaths[slot], ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_);
+                materialPaths[slot], ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_);
             if (smMid != kInvalidMaterialId)
                 sceneMgr_.setModelSubMeshMaterialId(slot, smMid);
         }
+
+        // 若有骨骼数据，为实体的槽位材质创建蒙皮版本
+        auto& ents = sceneMgr_.getModelEntities();
+        if (!ents.empty() && ents[0].hasSkin_)
+            convertModelMaterialsToSkinned();
     }
 
     if (mainModelSelected) selectedMaterialId = firstRenderedModelMaterialId();
@@ -727,6 +852,13 @@ void Application::beginDragPlace(uint64_t assetId)
     const ModelAsset* asset = modelRegistry_.findById(assetId);
     if (!asset) return;
 
+    // Material 类型的资产不包含模型引用，禁止拖入场景
+    if (asset->astType == "Material") {
+        dragPlace.active   = true;  // 标记为 active 但无 entity，updateDragPlace/endDragPlace 不做实质操作
+        dragPlace.assetId  = assetId;
+        return;
+    }
+
     // 使用 .ast 中的 modelRelPath 拼接模型文件完整路径
     const std::string fullPath = modelRegistry_.getResRoot() + "/" + asset->modelRelPath;
 
@@ -738,13 +870,19 @@ void Application::beginDragPlace(uint64_t assetId)
     // 记录 .ast 资产路径，供 SceneSerializer 保存
     ent->astRelPath = asset->astRelPath;
 
-    // glTF 模型在 loadModelFromGltf 中已为每个 primitive 生成详细 .ast 文件
-    // （存储在 ent->autoAstPaths 中），逐槽位加载这些材质
-    if (!ent->autoAstPaths.empty()) {
-        ent->subMeshMaterials.resize(ent->subMeshes.size(), 0u);
-        for (size_t slot = 0; slot < ent->autoAstPaths.size(); ++slot) {
+    MaterialAssetDesc entryDesc;
+    const bool hasEntryDesc = MaterialAssetLoader::load(asset->astRelPath, entryDesc, nullptr);
+    const auto& materialPaths = (hasEntryDesc && !entryDesc.subMaterialPaths.empty())
+        ? entryDesc.subMaterialPaths
+        : ent->autoAstPaths;
+
+    // glTF 入口 .ast 可显式声明 subMaterials；否则回退到 loadModelFromGltf 自动生成的路径。
+    if (!materialPaths.empty()) {
+        if (ent->subMeshMaterials.size() < materialPaths.size())
+            ent->subMeshMaterials.resize(materialPaths.size(), 0u);
+        for (size_t slot = 0; slot < materialPaths.size(); ++slot) {
             const MaterialId mid = matMgr_.loadMaterialFromAsset(
-                ent->autoAstPaths[slot], ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_);
+                materialPaths[slot], ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_);
             if (mid != kInvalidMaterialId && slot < ent->subMeshMaterials.size()) {
                 ent->subMeshMaterials[slot] = mid;
             }
@@ -764,12 +902,16 @@ void Application::beginDragPlace(uint64_t assetId)
         }
     }
 
+    // 若有骨骼数据，为实体的槽位材质创建蒙皮版本
+    if (ent->hasSkin_)
+        convertModelMaterialsToSkinned();
+
     dragPlace.active   = true;
 }
 
 void Application::updateDragPlace(float mx, float my)
 {
-    if (!dragPlace.active) return;
+    if (!dragPlace.active || dragPlace.entityId == 0) return;
     const glm::vec3 pos = screenToWorld(mx, my, dragPlace.distance);
     sceneMgr_.setEntityTransform(dragPlace.entityId, ObjectTransform{pos});
 }
@@ -985,7 +1127,8 @@ bool Application::loadScene(const std::string& path)
 
 // ─── Import Model ─────────────────────────────────────────────────────────────
 
-bool Application::importModel(const std::string& sourcePath)
+bool Application::importModel(const std::string& sourcePath,
+                                const std::string& subFolder)
 {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -1090,7 +1233,7 @@ bool Application::importModel(const std::string& sourcePath)
                             if (prim.material) {
                                 const std::string astRel = SceneManager::dumpGltfMaterialAst(
                                     prim.material, stem, globalPrimIndex,
-                                    gltfDir.string(), resRoot);
+                                    gltfDir.string(), resRoot, subFolder);
                                 if (!astRel.empty())
                                     subMaterials.push_back(astRel);
                             }
@@ -1104,7 +1247,8 @@ bool Application::importModel(const std::string& sourcePath)
         }
 
         // ── 创建入口 .ast（含 subMaterials）────────────────────────────
-        const std::string astRelPath = "materials/" + stem + ".ast";
+        const std::string astRelDir  = subFolder.empty() ? "materials" : ("materials/" + subFolder);
+        const std::string astRelPath = astRelDir + "/" + stem + ".ast";
         const fs::path astAbs = fs::path(resRoot) / astRelPath;
         fs::create_directories(astAbs.parent_path(), ec);
 
@@ -1137,8 +1281,9 @@ bool Application::importModel(const std::string& sourcePath)
         return false;
     }
 
-    // 创建入口 .ast 文件
-    const std::string astRelPath = "materials/" + stem + ".ast";
+    // 创建入口 .ast 文件（.obj 格式）
+    const std::string astRelDir  = subFolder.empty() ? "materials" : ("materials/" + subFolder);
+    const std::string astRelPath = astRelDir + "/" + stem + ".ast";
     const fs::path astAbs = fs::path(resRoot) / astRelPath;
     fs::create_directories(astAbs.parent_path(), ec);
 

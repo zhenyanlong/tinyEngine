@@ -13,6 +13,8 @@ struct Vertex {
     glm::vec2 texCoord;
     glm::vec3 normal{0.f, 0.f, 0.f};   // location=4 (location=3 reserved for InstanceData)
     glm::vec4 tangent{0.f, 0.f, 0.f, 0.f}; // xyz=tangent, w=bitangent sign; (0,0,0,0) means "absent"
+    glm::ivec4 boneIndices{0, 0, 0, 0};   // location=6：影响该顶点的最多4根骨骼索引
+    glm::vec4  boneWeights{1.f, 0.f, 0.f, 0.f}; // location=7：对应权重（归一化）
 
     ~Vertex() = default;
 
@@ -59,9 +61,52 @@ struct Vertex {
         return attributeDescriptions;
     }
 
+    /** @brief 蒙皮网格顶点属性描述（含 boneIndices/boneWeights，location 6/7） */
+    static std::array<VkVertexInputAttributeDescription, 7> getSkinnedAttributeDescriptions() {
+        std::array<VkVertexInputAttributeDescription, 7> attributeDescriptions{};
+
+        attributeDescriptions[0].binding = 0;
+        attributeDescriptions[0].location = 0;
+        attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+        attributeDescriptions[0].offset = offsetof(Vertex, pos);
+
+        attributeDescriptions[1].binding = 0;
+        attributeDescriptions[1].location = 1;
+        attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+        attributeDescriptions[1].offset = offsetof(Vertex, color);
+
+        attributeDescriptions[2].binding = 0;
+        attributeDescriptions[2].location = 2;
+        attributeDescriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
+        attributeDescriptions[2].offset = offsetof(Vertex, texCoord);
+
+        attributeDescriptions[3].binding = 0;
+        attributeDescriptions[3].location = 4;
+        attributeDescriptions[3].format = VK_FORMAT_R32G32B32_SFLOAT;
+        attributeDescriptions[3].offset = offsetof(Vertex, normal);
+
+        attributeDescriptions[4].binding = 0;
+        attributeDescriptions[4].location = 5;
+        attributeDescriptions[4].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        attributeDescriptions[4].offset = offsetof(Vertex, tangent);
+
+        attributeDescriptions[5].binding = 0;
+        attributeDescriptions[5].location = 6;
+        attributeDescriptions[5].format = VK_FORMAT_R32G32B32A32_SINT;
+        attributeDescriptions[5].offset = offsetof(Vertex, boneIndices);
+
+        attributeDescriptions[6].binding = 0;
+        attributeDescriptions[6].location = 7;
+        attributeDescriptions[6].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        attributeDescriptions[6].offset = offsetof(Vertex, boneWeights);
+
+        return attributeDescriptions;
+    }
+
     bool operator==(const Vertex& other) const {
         return pos == other.pos && color == other.color && texCoord == other.texCoord
-            && normal == other.normal && tangent == other.tangent;
+            && normal == other.normal && tangent == other.tangent
+            && boneIndices == other.boneIndices && boneWeights == other.boneWeights;
     }
 };
 
@@ -71,7 +116,9 @@ struct VertexHash {
         auto hash2 = std::hash<glm::vec2>()(vertex.texCoord);
         auto hash3 = std::hash<glm::vec3>()(vertex.color);
         auto hash4 = std::hash<glm::vec3>()(vertex.normal);
-        return hash1 ^ (hash2 << 1) ^ (hash3 << 2) ^ (hash4 << 3);
+        auto hash5 = std::hash<glm::ivec4>()(vertex.boneIndices);
+        auto hash6 = std::hash<glm::vec4>()(vertex.boneWeights);
+        return hash1 ^ (hash2 << 1) ^ (hash3 << 2) ^ (hash4 << 3) ^ (hash5 << 4) ^ (hash6 << 5);
     }
 };
 

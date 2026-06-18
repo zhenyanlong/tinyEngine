@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <cstdint>
 
 void Skeleton::computeFinalMatrices(
 	const std::vector<glm::mat4>& localTransforms,
@@ -13,14 +14,36 @@ void Skeleton::computeFinalMatrices(
 	finalBoneMatrices.resize(n);
 
 	std::vector<glm::mat4> globalTransforms(n);
+	std::vector<uint8_t> state(n, 0);
+
+	auto localAt = [&](int i) -> glm::mat4 {
+		return (i >= 0 && i < static_cast<int>(localTransforms.size()))
+			? localTransforms[i]
+			: glm::mat4(1.f);
+	};
+
+	auto computeGlobal = [&](auto&& self, int i) -> glm::mat4 {
+		if (i < 0 || i >= n) return glm::mat4(1.f);
+		if (state[i] == 2) return globalTransforms[i];
+		if (state[i] == 1) {
+			globalTransforms[i] = bones[i].globalBindTransform;
+			state[i] = 2;
+			return globalTransforms[i];
+		}
+
+		state[i] = 1;
+		const int parent = bones[i].parentIndex;
+		const glm::mat4 bindToAnimatedLocal =
+			bones[i].globalBindTransform * glm::inverse(bones[i].localBindTransform) * localAt(i);
+		globalTransforms[i] = (parent >= 0 && parent < n)
+			? self(self, parent) * glm::inverse(bones[parent].globalBindTransform) * bindToAnimatedLocal
+			: bindToAnimatedLocal;
+		state[i] = 2;
+		return globalTransforms[i];
+	};
 
 	for (int i = 0; i < n; ++i) {
-		if (bones[i].parentIndex < 0) {
-			globalTransforms[i] = localTransforms[i];
-		} else {
-			globalTransforms[i] = globalTransforms[bones[i].parentIndex] * localTransforms[i];
-		}
-		finalBoneMatrices[i] = globalTransforms[i] * bones[i].inverseBindMatrix;
+		finalBoneMatrices[i] = computeGlobal(computeGlobal, i) * bones[i].inverseBindMatrix;
 	}
 }
 

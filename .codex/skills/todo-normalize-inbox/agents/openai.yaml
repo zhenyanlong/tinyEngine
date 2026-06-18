@@ -1,0 +1,4 @@
+interface:
+  display_name: "Todo Normalize Inbox"
+  short_description: "Normalize hand-written todo notes into pending items"
+  default_prompt: "Use $todo-normalize-inbox to organize raw notes from todolist.md into formal todos."

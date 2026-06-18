@@ -1,0 +1,15 @@
+{
+  "name": "Lashes",
+  "type": "Material",
+  "params": {
+    "baseColor": [0, 0, 0, 1],
+    "metallic":  1,
+    "roughness": 1,
+    "emissiveColor": [0, 0, 0, 1.0],
+    "emissiveIntensity": 0
+  },
+  "textures": {
+    "albedo": "models/8f882a96eb3b49a29cba9b87c71209cc/baseColor_5.jpg",
+    "normal": "models/8f882a96eb3b49a29cba9b87c71209cc/normal_5.jpg"
+  }
+}

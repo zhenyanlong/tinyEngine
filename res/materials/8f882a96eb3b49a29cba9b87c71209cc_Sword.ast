@@ -1,0 +1,15 @@
+{
+  "name": "Sword",
+  "type": "Material",
+  "params": {
+    "baseColor": [1, 1, 1, 1],
+    "metallic":  0.8,
+    "roughness": 1,
+    "emissiveColor": [0, 0, 0, 1.0],
+    "emissiveIntensity": 0
+  },
+  "textures": {
+    "albedo": "models/8f882a96eb3b49a29cba9b87c71209cc/baseColor_7.jpg",
+    "normal": "models/8f882a96eb3b49a29cba9b87c71209cc/normal_7.jpg"
+  }
+}

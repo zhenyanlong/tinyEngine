@@ -47,6 +47,13 @@ struct PushConstants {
     glm::mat4 normalMatrix; ///< transpose(inverse(mat3(model))) (offset  64, 64 bytes)
 };
 
+constexpr int kMaxBones = 256;
+
+/** @brief 骨骼最终变换矩阵 UBO（std140，8192 字节），binding=6，vertex stage */
+struct BoneMatricesUBO {
+    alignas(16) glm::mat4 bones[kMaxBones];
+};
+
 struct QueueFamilyIndices {
     std::optional<uint32_t> graphicsFamily;
     std::optional<uint32_t> presentFamily;

@@ -39,6 +39,7 @@ void ModelRegistry::refresh()
 {
     assets_.clear();
     pathToId_.clear();
+    folders_.clear();
 
     const std::filesystem::path materialsDir =
         std::filesystem::path(resRoot_) / "materials";
@@ -46,20 +47,45 @@ void ModelRegistry::refresh()
     if (!std::filesystem::is_directory(materialsDir, ec))
         return;
 
+    auto addFolder = [&](const std::string& folder) {
+        if (folder.empty()) return;
+        if (std::find(folders_.begin(), folders_.end(), folder) == folders_.end())
+            folders_.push_back(folder);
+    };
+
     for (const auto& entry : std::filesystem::recursive_directory_iterator(materialsDir, ec)) {
+        if (entry.is_directory(ec)) {
+            const std::filesystem::path relDir = std::filesystem::relative(entry.path(), materialsDir, ec);
+            if (!ec && !relDir.empty() && relDir.generic_string() != ".")
+                addFolder(relDir.generic_string());
+            continue;
+        }
+
         if (!entry.is_regular_file(ec))
             continue;
 
         if (entry.path().extension() != ".ast")
             continue;
 
-        // 构建 .ast 相对路径：materials/xxx.ast
+        // 构建 .ast 相对路径：materials/xxx.ast 或 materials/sub/xxx.ast
         const std::filesystem::path rel = std::filesystem::relative(entry.path(), resRoot_, ec);
         const std::string astRelPath = rel.generic_string();
 
-        // 读取 .ast 提取 name 和 model 字段
+        // 提取子文件夹：materials/sub/xxx.ast → "sub"，materials/xxx.ast → ""
+        std::string subFolder;
+        {
+            const std::filesystem::path astP(astRelPath);
+            const auto parent = astP.parent_path();  // "materials" 或 "materials/sub"
+            const std::string parentStr = parent.generic_string();
+            if (parentStr != "materials" && parentStr.size() > std::string("materials/").size()
+                && parentStr.compare(0, std::string("materials/").size(), "materials/") == 0)
+                subFolder = parentStr.substr(std::string("materials/").size());
+        }
+
+        // 读取 .ast 提取 name、model 和 type 字段
         std::string displayName = makeDisplayName(entry.path().stem().string());
         std::string modelRelPath;
+        std::string astType = "Mesh";
         ModelType   type = ModelType::Unknown;
 
         {
@@ -71,6 +97,9 @@ void ModelRegistry::refresh()
                     // 优先使用 .ast 中的 name 字段
                     if (j.contains("name") && j["name"].is_string())
                         displayName = j["name"].get<std::string>();
+                    // 读取 type 字段
+                    if (j.contains("type") && j["type"].is_string())
+                        astType = j["type"].get<std::string>();
                     // 读取 model 字段
                     if (j.contains("model")) {
                         const auto& m = j["model"];
@@ -90,6 +119,8 @@ void ModelRegistry::refresh()
         asset.id           = std::hash<std::string>{}(astRelPath);
         asset.name         = displayName;
         asset.astRelPath   = astRelPath;
+        asset.astType      = astType;
+        asset.subFolder    = subFolder;
         asset.modelRelPath = modelRelPath;
         asset.type         = type;
 
@@ -106,6 +137,13 @@ void ModelRegistry::refresh()
     // 按名称排序
     std::sort(assets_.begin(), assets_.end(),
               [](const ModelAsset& a, const ModelAsset& b) { return a.name < b.name; });
+
+    // 收集去重子文件夹
+    for (const auto& a : assets_) {
+        if (!a.subFolder.empty())
+            addFolder(a.subFolder);
+    }
+    std::sort(folders_.begin(), folders_.end());
 
     // 重建查找表：key = astRelPath
     for (const auto& a : assets_)
@@ -128,13 +166,21 @@ const ModelAsset* ModelRegistry::findById(uint64_t id) const
     return nullptr;
 }
 
-std::vector<const ModelAsset*> ModelRegistry::search(const std::string& keyword) const
+std::vector<const ModelAsset*> ModelRegistry::search(const std::string& keyword,
+                                                      const std::string& subFolder) const
 {
     std::vector<const ModelAsset*> result;
+
+    auto matchesFolder = [&](const ModelAsset& a) {
+        return subFolder.empty() ? a.subFolder.empty() : (a.subFolder == subFolder);
+    };
+
     if (keyword.empty()) {
         result.reserve(assets_.size());
-        for (const auto& a : assets_)
-            result.push_back(&a);
+        for (const auto& a : assets_) {
+            if (matchesFolder(a))
+                result.push_back(&a);
+        }
         return result;
     }
 
@@ -143,10 +189,27 @@ std::vector<const ModelAsset*> ModelRegistry::search(const std::string& keyword)
     std::transform(lowerKeyword.begin(), lowerKeyword.end(), lowerKeyword.begin(), ::tolower);
 
     for (const auto& a : assets_) {
+        if (!matchesFolder(a)) continue;
         std::string lowerName = a.name;
         std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
         if (lowerName.find(lowerKeyword) != std::string::npos)
             result.push_back(&a);
     }
     return result;
+}
+
+size_t ModelRegistry::size(const std::string& subFolder) const
+{
+    if (subFolder.empty()) {
+        size_t cnt = 0;
+        for (const auto& a : assets_) {
+            if (a.subFolder.empty()) ++cnt;
+        }
+        return cnt;
+    }
+    size_t cnt = 0;
+    for (const auto& a : assets_) {
+        if (a.subFolder == subFolder) ++cnt;
+    }
+    return cnt;
 }

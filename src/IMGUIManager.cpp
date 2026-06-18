@@ -419,9 +419,11 @@ void UIManager::prepareFrame()
             for (MaterialId id : allIds) {
                 const bool sel = (id == editingMaterialId_);
                 char label[256];
+                const MaterialType matType = matMgr.getMaterialType(id);
+                const char* typeName = matType == MaterialType::Mesh ? "Mesh"
+                    : (matType == MaterialType::Box ? "Box" : "Material");
                 snprintf(label, sizeof(label), "[%u] %s (%s)",
-                         id, matMgr.getMaterialName(id).c_str(),
-                         matMgr.getMaterialType(id) == MaterialType::Mesh ? "Mesh" : "Box");
+                         id, matMgr.getMaterialName(id).c_str(), typeName);
                 if (ImGui::Selectable(label, sel)) {
                     editingMaterialId_ = id;
                     // Sync texture path buffers to this material
@@ -561,11 +563,67 @@ void UIManager::drawContentBrowser()
 {
     ModelRegistry* reg = vulkanRender ? &vulkanRender->getModelRegistry() : nullptr;
 
-    ImGui::SetNextWindowSize(ImVec2(360, 400), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(460, 400), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Content Browser", &showContentBrowser_)) {
         ImGui::End();
         return;
     }
+
+    // ── 左侧文件夹列表 ──────────────────────────────────────────────────
+    ImGui::BeginChild("##cbFolders", ImVec2(130, 0), true);
+    ImGui::TextUnformatted("Folders");
+    ImGui::Separator();
+
+    // "Root" (/) 按钮
+    if (ImGui::Selectable("/ (root)", currentFolder_.empty()))
+        currentFolder_.clear();
+
+    if (reg) {
+        for (const auto& folder : reg->getFolders()) {
+            const bool isCur = (currentFolder_ == folder);
+            if (ImGui::Selectable(folder.c_str(), isCur))
+                currentFolder_ = folder;
+        }
+    }
+
+    ImGui::Separator();
+
+    // 新建文件夹输入
+    ImGui::InputTextWithHint("##newFolder", "New folder...", newFolderName_, sizeof(newFolderName_));
+    if (ImGui::Button("Create##mkfolder")) {
+        std::string name(newFolderName_);
+        // trim whitespace
+        name.erase(0, name.find_first_not_of(" \t"));
+        name.erase(name.find_last_not_of(" \t") + 1);
+        std::replace(name.begin(), name.end(), '\\', '/');
+        while (!name.empty() && name.front() == '/') name.erase(name.begin());
+        while (!name.empty() && name.back() == '/') name.pop_back();
+        if (!name.empty() && vulkanRender) {
+            const std::filesystem::path rel(name);
+            if (!rel.is_absolute() && name.find("..") == std::string::npos) {
+                const std::string dirPath = vulkanRender->getResRoot() + "/materials/" + name;
+                std::error_code ec;
+                std::filesystem::create_directories(dirPath, ec);
+                if (!ec) {
+                    currentFolder_ = name;
+                    newFolderName_[0] = '\0';
+                    if (reg) reg->refresh();
+                }
+            }
+        }
+    }
+
+    ImGui::EndChild();
+    ImGui::SameLine();
+
+    // ── 右侧内容区 ──────────────────────────────────────────────────────
+    ImGui::BeginChild("##cbContent", ImVec2(0, 0), false);
+
+    // 当前路径面包屑
+    if (currentFolder_.empty())
+        ImGui::TextDisabled("/ materials /");
+    else
+        ImGui::TextDisabled("/ materials / %s /", currentFolder_.c_str());
 
     // 搜索框 + 刷新按钮 + 导入按钮
     ImGui::InputTextWithHint("##cbSearch", "Search...", contentBrowserSearch_, sizeof(contentBrowserSearch_));
@@ -579,7 +637,7 @@ void UIManager::drawContentBrowser()
         if (vulkanRender) {
             const std::string selected = openFileDialog(vulkanRender->getMainWindow());
             if (!selected.empty()) {
-                if (vulkanRender->importModel(selected)) {
+                if (vulkanRender->importModel(selected, currentFolder_)) {
                     if (reg) reg->refresh();
                 }
             }
@@ -589,10 +647,29 @@ void UIManager::drawContentBrowser()
 #endif
     }
 
-    // 过滤模型列表（通过 ModelRegistry::search）
-    std::vector<const ModelAsset*> filtered;
+    // 类型筛选下拉框
+    const char* typeItems[] = { "All", "Mesh", "Box", "Material" };
+    {
+        ImGui::SetNextItemWidth(100);
+        ImGui::Combo("##typeFilter", &typeFilterIdx_, typeItems, IM_ARRAYSIZE(typeItems));
+    }
+
+    // 过滤模型列表（限定当前文件夹 + 关键词）
+    std::vector<const ModelAsset*> filteredRaw;
     if (reg)
-        filtered = reg->search(contentBrowserSearch_);
+        filteredRaw = reg->search(contentBrowserSearch_, currentFolder_);
+
+    // 按类型筛选
+    std::vector<const ModelAsset*> filtered;
+    for (const auto* a : filteredRaw) {
+        if (typeFilterIdx_ == 0) {
+            filtered.push_back(a);
+        } else {
+            const char* want = typeItems[typeFilterIdx_];
+            if (a->astType == want)
+                filtered.push_back(a);
+        }
+    }
 
     ImGui::Separator();
 
@@ -620,7 +697,6 @@ void UIManager::drawContentBrowser()
         }
         // 2. 尝试从磁盘加载专属缩略图
         else if (reg) {
-            // 从 astRelPath 的 stem 推导缩略图文件名
             const std::string stem = std::filesystem::path(asset->astRelPath).stem().string();
             const std::string thumbPath = reg->getResRoot() + "/thumbnails/" + stem + ".png";
             if (std::filesystem::exists(thumbPath) && vulkanRender) {
@@ -641,19 +717,20 @@ void UIManager::drawContentBrowser()
             ImGui::ImageButton(("##thumb" + std::to_string(n)).c_str(),
                                thumbnailIcon_, ImVec2(thumbSize, thumbSize));
         } else {
-            // 纯色占位方块
             const ImVec2 p0 = ImGui::GetCursorScreenPos();
             const ImU32 col = IM_COL32(60, 90, 140, 255);
             ImGui::GetWindowDrawList()->AddRectFilled(p0, ImVec2(p0.x + thumbSize, p0.y + thumbSize), col, 4.f);
             ImGui::InvisibleButton(("##thumb" + std::to_string(n)).c_str(), ImVec2(thumbSize, thumbSize));
         }
 
-        // 拖拽源
-        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
-            uint64_t id = asset->id;
-            ImGui::SetDragDropPayload("MODEL_ASSET", &id, sizeof(uint64_t));
-            ImGui::Text("%s", asset->name.c_str());
-            ImGui::EndDragDropSource();
+        // 拖拽源：Material 类型资产（无 model 引用）不参与拖拽放置
+        if (asset->astType != "Material") {
+            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+                uint64_t id = asset->id;
+                ImGui::SetDragDropPayload("MODEL_ASSET", &id, sizeof(uint64_t));
+                ImGui::Text("%s", asset->name.c_str());
+                ImGui::EndDragDropSource();
+            }
         }
 
         // 文件名
@@ -670,17 +747,17 @@ void UIManager::drawContentBrowser()
     // 状态栏
     ImGui::Separator();
 
-    // Place Distance 滑块
     if (vulkanRender) {
         ImGui::SliderFloat("Place Distance", &placementDistance_, 1.0f, 50.0f);
         vulkanRender->dragPlace.distance = placementDistance_;
     }
 
     if (reg)
-        ImGui::Text("Models: %zu", reg->size());
+        ImGui::Text("Models: %zu", reg->size(currentFolder_));
     else
         ImGui::TextDisabled("(unavailable)");
 
+    ImGui::EndChild();
     ImGui::End();
 }
 

@@ -24,4 +24,6 @@ struct AnimationClip {
 
 	/** @brief 对单根骨骼求值某一时间点的局部 TRS 矩阵（4x4） */
 	glm::mat4 evaluateBoneLocalTransform(int boneIndex, float t) const;
+	glm::mat4 evaluateBoneLocalTransform(int boneIndex, float t,
+	                                     const glm::mat4& fallbackLocalTransform) const;
 };
