@@ -66,28 +66,6 @@ public:
                                  const VulkanContext& ctx, const BufferManager& bufMgr,
                                  const PipelineManager& pipeMgr);
 
-    /** @brief 创建蒙皮网格材质（含 BoneMatricesUBO，binding=6） */
-    MaterialId createSkinnedMeshMaterial(const std::string& name,
-                                         const std::string& albedoPath,
-                                         const std::string& normalPath,
-                                         const std::string& metallicRoughnessPath,
-                                         const std::string& aoPath,
-                                         const std::string& emissivePath,
-                                         const MaterialParams& params,
-                                         const VulkanContext& ctx, const CommandManager& cmdMgr,
-                                         const BufferManager& bufMgr, const FramebufferManager& fbMgr,
-                                         const PipelineManager& pipeMgr);
-
-    /** @brief 从现有（非蒙皮）材质克隆一个带 BoneMatricesUBO 的蒙皮版本，保留纹理和参数 */
-    MaterialId createSkinnedMaterialFrom(MaterialId src,
-                                         const VulkanContext& ctx, const CommandManager& cmdMgr,
-                                         const BufferManager& bufMgr, const FramebufferManager& fbMgr,
-                                         const PipelineManager& pipeMgr);
-
-    /** @brief 更新骨骼矩阵 UBO（每帧调用） */
-    void updateBoneMatrices(MaterialId id, uint32_t imageIndex,
-                            const std::vector<glm::mat4>& finalBoneMatrices);
-
     // Load a material from a .ast (JSON) asset file.
     //   astRelPath: relative to res/, e.g. "materials/mainmodel.ast".
     // On success returns a valid MaterialId; on failure returns kInvalidMaterialId
@@ -111,6 +89,16 @@ public:
                              const VulkanContext& ctx, const CommandManager& cmdMgr,
                              const BufferManager& bufMgr, const FramebufferManager& fbMgr,
                              const PipelineManager& pipeMgr);
+    MaterialId createSkinnedMaterialFrom(MaterialId src,
+                                         const VulkanContext& ctx,
+                                         const CommandManager& cmdMgr,
+                                         const BufferManager& bufMgr,
+                                         const FramebufferManager& fbMgr,
+                                         const PipelineManager& pipeMgr);
+    bool hasSkinning(MaterialId id) const;
+    void updateBoneMatrices(MaterialId id,
+                            uint32_t imageIndex,
+                            const std::vector<glm::mat4>& bones);
 
     void destroyMaterial(MaterialId id, const VulkanContext& ctx);
 
@@ -143,10 +131,6 @@ public:
     void                setMaterialName(MaterialId id, const std::string& name);
     const std::string&  getAlbedoPath(MaterialId id) const;
     const std::string&  getNormalPath(MaterialId id) const;
-    const std::string&  getMetallicRoughnessPath(MaterialId id) const;
-    const std::string&  getAoPath(MaterialId id) const;
-    const std::string&  getEmissivePath(MaterialId id) const;
-    bool                hasSkinning(MaterialId id) const;
     bool                isValid(MaterialId id) const;
     bool                isDeletable(MaterialId id) const;
     MaterialId          getDefaultMeshMaterialId() const { return defaultMeshId_; }
@@ -178,7 +162,11 @@ private:
         std::vector<VkBuffer>        ubos;
         std::vector<VkDeviceMemory>  uboMemory;
         std::vector<void*>           uboMapped;
+        std::vector<VkBuffer>        boneUbos;
+        std::vector<VkDeviceMemory>  boneUboMemory;
+        std::vector<void*>           boneUboMapped;
         std::vector<VkDescriptorSet> descSets;
+        bool                         skinned = false;
 
         TextureGPU albedo, normal; // Mesh material textures (legacy)
         TextureGPU metallicRoughness, ao, emissive; // PBR additions
@@ -187,11 +175,6 @@ private:
         // Empty -> use the default pipeline for this MaterialType.
         std::string vertSpvPath;
         std::string fragSpvPath;
-
-        bool hasSkinning_ = false;
-        std::vector<VkBuffer>       boneUBOs;
-        std::vector<VkDeviceMemory> boneUBOMemory;
-        std::vector<void*>          boneUBOMapped;
     };
 
     std::unordered_map<MaterialId, MaterialEntry> materials_;
@@ -203,6 +186,7 @@ private:
 
     // 资产缓存：已加载的 .ast → MaterialId，避免重复创建
     std::unordered_map<std::string, MaterialId> assetCache_;
+    std::unordered_map<MaterialId, MaterialId> skinnedCache_;
 
     // Shared 1x1 fallback textures
     TextureGPU defaultAlbedo_, defaultNormal_;

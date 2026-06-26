@@ -1,0 +1,25 @@
+{
+  "name": "Violin",
+  "type": "Material",
+  "params": {
+    "baseColor": [
+      1,
+      1,
+      1,
+      1
+    ],
+    "metallic": 0.08,
+    "roughness": 1,
+    "emissiveColor": [
+      0,
+      0,
+      0,
+      1.0
+    ],
+    "emissiveIntensity": 0
+  },
+  "textures": {
+    "albedo": "bin/texture/baseColor_6.jpg",
+    "normal": "bin/texture/normal_6.jpg"
+  }
+}

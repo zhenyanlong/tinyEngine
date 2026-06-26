@@ -1,13 +1,19 @@
 #include "ModelRegistry.hpp"
+
 #include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 
 ModelType ModelRegistry::classifyModelType(const std::string& modelRelPath)
 {
-    const std::string lower = modelRelPath;
+    std::string lower = modelRelPath;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
     auto endsWith = [&](const char* suffix) {
         const size_t slen = std::strlen(suffix);
         return lower.size() >= slen && lower.compare(lower.size() - slen, slen, suffix) == 0;
@@ -21,7 +27,6 @@ ModelType ModelRegistry::classifyModelType(const std::string& modelRelPath)
 std::string ModelRegistry::makeDisplayName(const std::string& stem)
 {
     std::string name = stem;
-    // 下划线替换空格
     std::replace(name.begin(), name.end(), '_', ' ');
     return name;
 }
@@ -41,10 +46,15 @@ void ModelRegistry::refresh()
     pathToId_.clear();
     folders_.clear();
 
-    const std::filesystem::path materialsDir =
-        std::filesystem::path(resRoot_) / "materials";
     std::error_code ec;
-    if (!std::filesystem::is_directory(materialsDir, ec))
+    std::filesystem::path assetDir = std::filesystem::path(resRoot_) / "content";
+    std::string assetRootName = "content";
+
+    if (!std::filesystem::is_directory(assetDir, ec)) {
+        assetDir = std::filesystem::path(resRoot_) / "materials";
+        assetRootName = "materials";
+    }
+    if (!std::filesystem::is_directory(assetDir, ec))
         return;
 
     auto addFolder = [&](const std::string& folder) {
@@ -53,40 +63,36 @@ void ModelRegistry::refresh()
             folders_.push_back(folder);
     };
 
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(materialsDir, ec)) {
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(assetDir, ec)) {
         if (entry.is_directory(ec)) {
-            const std::filesystem::path relDir = std::filesystem::relative(entry.path(), materialsDir, ec);
+            const std::filesystem::path relDir = std::filesystem::relative(entry.path(), assetDir, ec);
             if (!ec && !relDir.empty() && relDir.generic_string() != ".")
                 addFolder(relDir.generic_string());
             continue;
         }
 
-        if (!entry.is_regular_file(ec))
+        if (!entry.is_regular_file(ec) || entry.path().extension() != ".ast")
             continue;
 
-        if (entry.path().extension() != ".ast")
-            continue;
-
-        // 构建 .ast 相对路径：materials/xxx.ast 或 materials/sub/xxx.ast
         const std::filesystem::path rel = std::filesystem::relative(entry.path(), resRoot_, ec);
+        if (ec) continue;
         const std::string astRelPath = rel.generic_string();
 
-        // 提取子文件夹：materials/sub/xxx.ast → "sub"，materials/xxx.ast → ""
         std::string subFolder;
         {
             const std::filesystem::path astP(astRelPath);
-            const auto parent = astP.parent_path();  // "materials" 或 "materials/sub"
-            const std::string parentStr = parent.generic_string();
-            if (parentStr != "materials" && parentStr.size() > std::string("materials/").size()
-                && parentStr.compare(0, std::string("materials/").size(), "materials/") == 0)
-                subFolder = parentStr.substr(std::string("materials/").size());
+            const std::string parentStr = astP.parent_path().generic_string();
+            const std::string prefix = assetRootName + "/";
+            if (parentStr != assetRootName && parentStr.size() > prefix.size()
+                && parentStr.compare(0, prefix.size(), prefix) == 0) {
+                subFolder = parentStr.substr(prefix.size());
+            }
         }
 
-        // 读取 .ast 提取 name、model 和 type 字段
         std::string displayName = makeDisplayName(entry.path().stem().string());
         std::string modelRelPath;
         std::string astType = "Mesh";
-        ModelType   type = ModelType::Unknown;
+        ModelType type = ModelType::Unknown;
 
         {
             std::ifstream f(entry.path());
@@ -94,13 +100,10 @@ void ModelRegistry::refresh()
                 try {
                     nlohmann::json j;
                     f >> j;
-                    // 优先使用 .ast 中的 name 字段
                     if (j.contains("name") && j["name"].is_string())
                         displayName = j["name"].get<std::string>();
-                    // 读取 type 字段
                     if (j.contains("type") && j["type"].is_string())
                         astType = j["type"].get<std::string>();
-                    // 读取 model 字段
                     if (j.contains("model")) {
                         const auto& m = j["model"];
                         if (m.is_string())
@@ -108,23 +111,24 @@ void ModelRegistry::refresh()
                         else if (m.is_object() && m.contains("path"))
                             modelRelPath = m["path"].get<std::string>();
                         type = classifyModelType(modelRelPath);
+                    } else if (j.contains("binary") && j["binary"].is_string()) {
+                        modelRelPath = j["binary"].get<std::string>();
                     }
                 } catch (...) {
-                    // JSON 解析失败，保持 fallback 值
+                    // Keep fallback metadata for malformed assets.
                 }
             }
         }
 
         ModelAsset asset;
-        asset.id           = std::hash<std::string>{}(astRelPath);
-        asset.name         = displayName;
-        asset.astRelPath   = astRelPath;
-        asset.astType      = astType;
-        asset.subFolder    = subFolder;
+        asset.id = std::hash<std::string>{}(astRelPath);
+        asset.name = displayName;
+        asset.astRelPath = astRelPath;
+        asset.astType = astType;
+        asset.subFolder = subFolder;
         asset.modelRelPath = modelRelPath;
-        asset.type         = type;
+        asset.type = type;
 
-        // 检测缩略图：res/thumbnails/<stem>.png
         const std::string stem = entry.path().stem().string();
         const std::filesystem::path thumbPath =
             std::filesystem::path(resRoot_) / "thumbnails" / (stem + ".png");
@@ -134,18 +138,15 @@ void ModelRegistry::refresh()
         assets_.push_back(std::move(asset));
     }
 
-    // 按名称排序
     std::sort(assets_.begin(), assets_.end(),
               [](const ModelAsset& a, const ModelAsset& b) { return a.name < b.name; });
 
-    // 收集去重子文件夹
     for (const auto& a : assets_) {
         if (!a.subFolder.empty())
             addFolder(a.subFolder);
     }
     std::sort(folders_.begin(), folders_.end());
 
-    // 重建查找表：key = astRelPath
     for (const auto& a : assets_)
         pathToId_[a.astRelPath] = a.id;
 }
@@ -184,7 +185,6 @@ std::vector<const ModelAsset*> ModelRegistry::search(const std::string& keyword,
         return result;
     }
 
-    // 不区分大小写
     std::string lowerKeyword = keyword;
     std::transform(lowerKeyword.begin(), lowerKeyword.end(), lowerKeyword.begin(), ::tolower);
 
@@ -200,16 +200,13 @@ std::vector<const ModelAsset*> ModelRegistry::search(const std::string& keyword,
 
 size_t ModelRegistry::size(const std::string& subFolder) const
 {
-    if (subFolder.empty()) {
-        size_t cnt = 0;
-        for (const auto& a : assets_) {
-            if (a.subFolder.empty()) ++cnt;
-        }
-        return cnt;
-    }
     size_t cnt = 0;
     for (const auto& a : assets_) {
-        if (a.subFolder == subFolder) ++cnt;
+        if (subFolder.empty()) {
+            if (a.subFolder.empty()) ++cnt;
+        } else if (a.subFolder == subFolder) {
+            ++cnt;
+        }
     }
     return cnt;
 }

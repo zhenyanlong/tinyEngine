@@ -1,0 +1,296 @@
+{
+  "assets": [
+    {
+      "from": "materials/8f882a96eb3b49a29cba9b87c71209cc.ast",
+      "to": "content/8f882a96eb3b49a29cba9b87c71209cc.mesh.ast",
+      "copiedPayloads": [
+        {
+          "from": "models/8f882a96eb3b49a29cba9b87c71209cc/8f882a96eb3b49a29cba9b87c71209cc.gltf",
+          "to": "bin/mesh/8f882a96eb3b49a29cba9b87c71209cc.gltf"
+        }
+      ]
+    },
+    {
+      "from": "materials/8f882a96eb3b49a29cba9b87c71209cc_Body.ast",
+      "to": "content/8f882a96eb3b49a29cba9b87c71209cc_Body.material.ast",
+      "copiedPayloads": [
+        {
+          "from": "models/8f882a96eb3b49a29cba9b87c71209cc/baseColor_3.jpg",
+          "to": "bin/texture/baseColor_3.jpg"
+        },
+        {
+          "from": "models/8f882a96eb3b49a29cba9b87c71209cc/normal_3.jpg",
+          "to": "bin/texture/normal_3.jpg"
+        }
+      ]
+    },
+    {
+      "from": "materials/8f882a96eb3b49a29cba9b87c71209cc_Face.ast",
+      "to": "content/8f882a96eb3b49a29cba9b87c71209cc_Face.material.ast",
+      "copiedPayloads": [
+        {
+          "from": "models/8f882a96eb3b49a29cba9b87c71209cc/baseColor_4.jpg",
+          "to": "bin/texture/baseColor_4.jpg"
+        },
+        {
+          "from": "models/8f882a96eb3b49a29cba9b87c71209cc/normal_4.jpg",
+          "to": "bin/texture/normal_4.jpg"
+        }
+      ]
+    },
+    {
+      "from": "materials/8f882a96eb3b49a29cba9b87c71209cc_Hair.ast",
+      "to": "content/8f882a96eb3b49a29cba9b87c71209cc_Hair.material.ast",
+      "copiedPayloads": [
+        {
+          "from": "models/8f882a96eb3b49a29cba9b87c71209cc/baseColor_5.jpg",
+          "to": "bin/texture/baseColor_5.jpg"
+        },
+        {
+          "from": "models/8f882a96eb3b49a29cba9b87c71209cc/normal_5.jpg",
+          "to": "bin/texture/normal_5.jpg"
+        }
+      ]
+    },
+    {
+      "from": "materials/8f882a96eb3b49a29cba9b87c71209cc_Lashes.ast",
+      "to": "content/8f882a96eb3b49a29cba9b87c71209cc_Lashes.material.ast",
+      "copiedPayloads": [
+        {
+          "from": "models/8f882a96eb3b49a29cba9b87c71209cc/baseColor_5.jpg",
+          "to": "bin/texture/baseColor_5_001.jpg"
+        },
+        {
+          "from": "models/8f882a96eb3b49a29cba9b87c71209cc/normal_5.jpg",
+          "to": "bin/texture/normal_5_001.jpg"
+        }
+      ]
+    },
+    {
+      "from": "materials/8f882a96eb3b49a29cba9b87c71209cc_Pod.ast",
+      "to": "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+      "copiedPayloads": [
+        {
+          "from": "models/8f882a96eb3b49a29cba9b87c71209cc/baseColor_1.jpg",
+          "to": "bin/texture/baseColor_1.jpg"
+        },
+        {
+          "from": "models/8f882a96eb3b49a29cba9b87c71209cc/normal_1.jpg",
+          "to": "bin/texture/normal_1.jpg"
+        },
+        {
+          "from": "models/8f882a96eb3b49a29cba9b87c71209cc/Pod_013_Pod_Metallic.png",
+          "to": "bin/texture/Pod_013_Pod_Metallic.png"
+        },
+        {
+          "from": "models/8f882a96eb3b49a29cba9b87c71209cc/emissive_1.jpg",
+          "to": "bin/texture/emissive_1.jpg"
+        }
+      ]
+    },
+    {
+      "from": "materials/8f882a96eb3b49a29cba9b87c71209cc_Pod_001.ast",
+      "to": "content/8f882a96eb3b49a29cba9b87c71209cc_Pod_001.material.ast",
+      "copiedPayloads": [
+        {
+          "from": "models/8f882a96eb3b49a29cba9b87c71209cc/baseColor_1.jpg",
+          "to": "bin/texture/baseColor_1_001.jpg"
+        },
+        {
+          "from": "models/8f882a96eb3b49a29cba9b87c71209cc/normal_1.jpg",
+          "to": "bin/texture/normal_1_001.jpg"
+        },
+        {
+          "from": "models/8f882a96eb3b49a29cba9b87c71209cc/Pod_013_Pod_Metallic.png",
+          "to": "bin/texture/Pod_013_Pod_Metallic_001.png"
+        },
+        {
+          "from": "models/8f882a96eb3b49a29cba9b87c71209cc/emissive_1.jpg",
+          "to": "bin/texture/emissive_1_001.jpg"
+        }
+      ]
+    },
+    {
+      "from": "materials/8f882a96eb3b49a29cba9b87c71209cc_Skirt.ast",
+      "to": "content/8f882a96eb3b49a29cba9b87c71209cc_Skirt.material.ast",
+      "copiedPayloads": [
+        {
+          "from": "models/8f882a96eb3b49a29cba9b87c71209cc/baseColor_2.jpg",
+          "to": "bin/texture/baseColor_2.jpg"
+        },
+        {
+          "from": "models/8f882a96eb3b49a29cba9b87c71209cc/normal_2.jpg",
+          "to": "bin/texture/normal_2.jpg"
+        }
+      ]
+    },
+    {
+      "from": "materials/8f882a96eb3b49a29cba9b87c71209cc_Sword.ast",
+      "to": "content/8f882a96eb3b49a29cba9b87c71209cc_Sword.material.ast",
+      "copiedPayloads": [
+        {
+          "from": "models/8f882a96eb3b49a29cba9b87c71209cc/baseColor_7.jpg",
+          "to": "bin/texture/baseColor_7.jpg"
+        },
+        {
+          "from": "models/8f882a96eb3b49a29cba9b87c71209cc/normal_7.jpg",
+          "to": "bin/texture/normal_7.jpg"
+        }
+      ]
+    },
+    {
+      "from": "materials/8f882a96eb3b49a29cba9b87c71209cc_Violin.ast",
+      "to": "content/8f882a96eb3b49a29cba9b87c71209cc_Violin.material.ast",
+      "copiedPayloads": [
+        {
+          "from": "models/8f882a96eb3b49a29cba9b87c71209cc/baseColor_6.jpg",
+          "to": "bin/texture/baseColor_6.jpg"
+        },
+        {
+          "from": "models/8f882a96eb3b49a29cba9b87c71209cc/normal_6.jpg",
+          "to": "bin/texture/normal_6.jpg"
+        }
+      ]
+    },
+    {
+      "from": "materials/cyber_room.ast",
+      "to": "content/cyber_room.mesh.ast",
+      "copiedPayloads": [
+        {
+          "from": "models/cyber_room.obj",
+          "to": "bin/mesh/cyber_room.obj"
+        },
+        {
+          "from": "textures/cyber_room.png",
+          "to": "bin/texture/cyber_room.png"
+        }
+      ]
+    },
+    {
+      "from": "materials/fantasy_game_inn.ast",
+      "to": "content/fantasy_game_inn.mesh.ast",
+      "copiedPayloads": [
+        {
+          "from": "models/fantasy_game_inn.obj",
+          "to": "bin/mesh/fantasy_game_inn.obj"
+        },
+        {
+          "from": "textures/fantasy_game_inn.png",
+          "to": "bin/texture/fantasy_game_inn.png"
+        }
+      ]
+    },
+    {
+      "from": "materials/industrial_pipe_lamp_4k.ast",
+      "to": "content/industrial_pipe_lamp_4k.mesh.ast",
+      "copiedPayloads": [
+        {
+          "from": "models/industrial_pipe_lamp_4k.gltf/industrial_pipe_lamp_4k.gltf",
+          "to": "bin/mesh/industrial_pipe_lamp_4k.gltf"
+        },
+        {
+          "from": "models/industrial_pipe_lamp_4k.gltf/textures/industrial_pipe_lamp_diff_4k.jpg",
+          "to": "bin/texture/industrial_pipe_lamp_diff_4k.jpg"
+        },
+        {
+          "from": "models/industrial_pipe_lamp_4k.gltf/textures/industrial_pipe_lamp_nor_gl_4k.jpg",
+          "to": "bin/texture/industrial_pipe_lamp_nor_gl_4k.jpg"
+        },
+        {
+          "from": "models/industrial_pipe_lamp_4k.gltf/textures/industrial_pipe_lamp_arm_4k.jpg",
+          "to": "bin/texture/industrial_pipe_lamp_arm_4k.jpg"
+        },
+        {
+          "from": "models/industrial_pipe_lamp_4k.gltf/textures/industrial_pipe_lamp_arm_4k.jpg",
+          "to": "bin/texture/industrial_pipe_lamp_arm_4k_001.jpg"
+        },
+        {
+          "from": "models/industrial_pipe_lamp_4k.gltf/textures/industrial_pipe_lamp_emission_4k.jpg",
+          "to": "bin/texture/industrial_pipe_lamp_emission_4k.jpg"
+        }
+      ]
+    },
+    {
+      "from": "materials/industrial_pipe_lamp_4k_industrial_pipe_lamp.ast",
+      "to": "content/industrial_pipe_lamp_4k_industrial_pipe_lamp.material.ast",
+      "copiedPayloads": [
+        {
+          "from": "models/industrial_pipe_lamp_4k.gltf/textures/industrial_pipe_lamp_diff_4k.jpg",
+          "to": "bin/texture/industrial_pipe_lamp_diff_4k_001.jpg"
+        },
+        {
+          "from": "models/industrial_pipe_lamp_4k.gltf/textures/industrial_pipe_lamp_nor_gl_4k.jpg",
+          "to": "bin/texture/industrial_pipe_lamp_nor_gl_4k_001.jpg"
+        },
+        {
+          "from": "models/industrial_pipe_lamp_4k.gltf/textures/industrial_pipe_lamp_arm_4k.jpg",
+          "to": "bin/texture/industrial_pipe_lamp_arm_4k_002.jpg"
+        },
+        {
+          "from": "models/industrial_pipe_lamp_4k.gltf/textures/industrial_pipe_lamp_emission_4k.jpg",
+          "to": "bin/texture/industrial_pipe_lamp_emission_4k_001.jpg"
+        }
+      ]
+    },
+    {
+      "from": "materials/industrial_pipe_lamp_4k_industrial_pipe_lamp_glass.ast",
+      "to": "content/industrial_pipe_lamp_4k_industrial_pipe_lamp_glass.material.ast",
+      "copiedPayloads": [
+        {
+          "from": "models/industrial_pipe_lamp_4k.gltf/textures/industrial_pipe_lamp_diff_4k.jpg",
+          "to": "bin/texture/industrial_pipe_lamp_diff_4k_002.jpg"
+        },
+        {
+          "from": "models/industrial_pipe_lamp_4k.gltf/textures/industrial_pipe_lamp_nor_gl_4k.jpg",
+          "to": "bin/texture/industrial_pipe_lamp_nor_gl_4k_002.jpg"
+        },
+        {
+          "from": "models/industrial_pipe_lamp_4k.gltf/textures/industrial_pipe_lamp_arm_4k.jpg",
+          "to": "bin/texture/industrial_pipe_lamp_arm_4k_003.jpg"
+        },
+        {
+          "from": "models/industrial_pipe_lamp_4k.gltf/textures/industrial_pipe_lamp_emission_4k.jpg",
+          "to": "bin/texture/industrial_pipe_lamp_emission_4k_002.jpg"
+        }
+      ]
+    },
+    {
+      "from": "materials/mainmodel.ast",
+      "to": "content/mainmodel.material.ast",
+      "copiedPayloads": [
+        {
+          "from": "textures/viking_room.png",
+          "to": "bin/texture/viking_room.png"
+        }
+      ]
+    },
+    {
+      "from": "materials/texture.ast",
+      "to": "content/texture.mesh.ast",
+      "copiedPayloads": [
+        {
+          "from": "models/viking_room.obj",
+          "to": "bin/mesh/viking_room.obj"
+        },
+        {
+          "from": "textures/texture.jpg",
+          "to": "bin/texture/texture.jpg"
+        }
+      ]
+    },
+    {
+      "from": "materials/viking_room.ast",
+      "to": "content/viking_room.mesh.ast",
+      "copiedPayloads": [
+        {
+          "from": "models/viking_room.obj",
+          "to": "bin/mesh/viking_room_001.obj"
+        },
+        {
+          "from": "textures/viking_room.png",
+          "to": "bin/texture/viking_room_001.png"
+        }
+      ]
+    }
+  ]
+}

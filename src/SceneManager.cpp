@@ -76,9 +76,9 @@ static std::string dumpGltfMaterialAstImpl(const cgltf_material& mat,
     const std::string matName = mat.name ? sanitize(mat.name)
                                          : ("prim" + std::to_string(primIndex));
     const std::string folderPrefix = materialSubFolder.empty()
-        ? std::string("materials/")
-        : std::string("materials/") + materialSubFolder + "/";
-    const std::string fileRel = folderPrefix + sanitize(baseName) + "_" + matName + ".ast";
+        ? std::string("content/")
+        : std::string("content/") + materialSubFolder + "/";
+    const std::string fileRel = folderPrefix + sanitize(baseName) + "_" + matName + ".material.ast";
     const fs::path    fileAbs = resRoot / fileRel;
 
     std::error_code ec;
@@ -120,7 +120,7 @@ static std::string dumpGltfMaterialAstImpl(const cgltf_material& mat,
     }
     out << "{\n";
     out << "  \"name\": " << q(matName) << ",\n";
-    out << "  \"type\": \"Mesh\",\n";
+    out << "  \"type\": \"Material\",\n";
     out << "  \"params\": {\n";
     out << "    \"baseColor\": [" << baseColor.r << ", " << baseColor.g << ", "
                                   << baseColor.b << ", " << baseColor.a << "],\n";
@@ -171,6 +171,102 @@ void SceneManager::destroyBuf(const VulkanContext& ctx, VkBuffer& buf, VkDeviceM
     if (mem != VK_NULL_HANDLE) { vkFreeMemory(dev, mem, nullptr);    mem = VK_NULL_HANDLE; }
 }
 
+std::string SceneManager::normalizeModelPath(const std::string& path)
+{
+    std::error_code ec;
+    auto p = std::filesystem::weakly_canonical(std::filesystem::path(path), ec);
+    if (ec)
+        p = std::filesystem::absolute(std::filesystem::path(path), ec);
+    return ec ? std::filesystem::path(path).lexically_normal().generic_string()
+              : p.lexically_normal().generic_string();
+}
+
+bool SceneManager::applyCachedModelResource(ModelEntity& ent,
+                                            const std::string& key,
+                                            const glm::vec3& position)
+{
+    auto it = modelResourceCache_.find(key);
+    if (it == modelResourceCache_.end())
+        return false;
+
+    const CachedModelResource& res = it->second;
+    ent.transform.position = position;
+    ent.vertices.clear();
+    ent.indices.clear();
+    ent.vertexBuffer = res.vertexBuffer;
+    ent.vertexMemory = res.vertexMemory;
+    ent.indexBuffer = res.indexBuffer;
+    ent.indexMemory = res.indexMemory;
+    ent.ownsMeshBuffers = false;
+    ent.meshResourceKey = key;
+    ent.indexCount = res.indexCount;
+    ent.subMeshes = res.subMeshes;
+    ent.subMeshMaterials.assign(res.autoAstPaths.size(), 0u);
+    ent.autoAstPaths = res.autoAstPaths;
+    ent.hasSkin_ = res.hasSkin;
+    ent.skeleton = res.skeleton;          // 共享 skeleton（shared_ptr 引用计数）
+    ent.animationClips = res.animationClips; // 复制 clips（轻量）
+    modelLocalBoundsMin_ = res.boundsMin;
+    modelLocalBoundsMax_ = res.boundsMax;
+    return true;
+}
+
+void SceneManager::cacheModelResourceFromEntity(const std::string& key, ModelEntity& ent)
+{
+    if (key.empty() || modelResourceCache_.count(key))
+        return;
+    if (ent.vertexBuffer == VK_NULL_HANDLE || ent.indexBuffer == VK_NULL_HANDLE)
+        return;
+
+    CachedModelResource res;
+    res.vertexBuffer = ent.vertexBuffer;
+    res.vertexMemory = ent.vertexMemory;
+    res.indexBuffer = ent.indexBuffer;
+    res.indexMemory = ent.indexMemory;
+    res.indexCount = ent.indexCount;
+    res.subMeshes = ent.subMeshes;
+    res.autoAstPaths = ent.autoAstPaths;
+    res.hasSkin = ent.hasSkin_;
+    res.boundsMin = modelLocalBoundsMin_;
+    res.boundsMax = modelLocalBoundsMax_;
+    modelResourceCache_[key] = std::move(res);
+
+    ent.vertices.clear();
+    ent.vertices.shrink_to_fit();
+    ent.indices.clear();
+    ent.indices.shrink_to_fit();
+    ent.ownsMeshBuffers = false;
+    ent.meshResourceKey = key;
+}
+
+void SceneManager::releaseEntityMeshBuffers(const VulkanContext& ctx, ModelEntity& ent)
+{
+    if (ent.ownsMeshBuffers) {
+        destroyBuf(ctx, ent.vertexBuffer, ent.vertexMemory);
+        destroyBuf(ctx, ent.indexBuffer, ent.indexMemory);
+    } else {
+        ent.vertexBuffer = VK_NULL_HANDLE;
+        ent.vertexMemory = VK_NULL_HANDLE;
+        ent.indexBuffer = VK_NULL_HANDLE;
+        ent.indexMemory = VK_NULL_HANDLE;
+    }
+    ent.vertices.clear();
+    ent.vertices.shrink_to_fit();
+    ent.indices.clear();
+    ent.indices.shrink_to_fit();
+    ent.meshResourceKey.clear();
+    ent.ownsMeshBuffers = true;
+}
+
+void SceneManager::destroyCachedModelResources(const VulkanContext& ctx)
+{
+    for (auto& [_, res] : modelResourceCache_) {
+        destroyBuf(ctx, res.vertexBuffer, res.vertexMemory);
+        destroyBuf(ctx, res.indexBuffer, res.indexMemory);
+    }
+    modelResourceCache_.clear();
+}
+
 // ─── Model Loading ───────────────────────────────────────────────────────────
 
 void SceneManager::loadModel(const std::string& path, const glm::vec3& position,
@@ -189,8 +285,10 @@ void SceneManager::loadModel(const std::string& path, const glm::vec3& position,
     }
 }
 
-uint64_t SceneManager::createModelEntity(const std::string& path, const glm::vec3& position,
-                                          const BufferManager& bufMgr)
+uint64_t SceneManager::createModelEntity(const std::string& path,
+                                          const glm::vec3& position,
+                                          const BufferManager& bufMgr,
+                                          bool useResourceCache)
 {
     // 先创建一个空的 ModelEntity 并加入列表，再将数据填入
     static uint64_t nextEntityId = 1000;
@@ -202,10 +300,17 @@ uint64_t SceneManager::createModelEntity(const std::string& path, const glm::vec
     modelEntities_.push_back(std::move(ent));
     ModelEntity& ref = modelEntities_.back();
 
+    const std::string resourceKey = useResourceCache ? normalizeModelPath(path) : std::string{};
+    if (useResourceCache && applyCachedModelResource(ref, resourceKey, position))
+        return ref.entityId;
+
     if (endsWithIgnoreCase(path, ".gltf") || endsWithIgnoreCase(path, ".glb"))
         loadModelFromGltf(path, position, bufMgr);
     else
         loadModelFromObj(path, position, bufMgr);
+
+    if (useResourceCache)
+        cacheModelResourceFromEntity(resourceKey, ref);
 
     return ref.entityId;
 }
@@ -218,8 +323,8 @@ void SceneManager::loadModelFromObj(const std::string& path, const glm::vec3& po
     ent.transform.position = position;
 
     // OBJ 不支持骨骼动画
-    skeleton_.reset();
-    animationClips_.clear();
+    ent.skeleton.reset();
+    ent.animationClips.clear();
 
     tinyobj::attrib_t attrib;
     std::vector<tinyobj::shape_t> shapes;
@@ -233,6 +338,8 @@ void SceneManager::loadModelFromObj(const std::string& path, const glm::vec3& po
     ent.subMeshes.clear();
     ent.subMeshMaterials.clear();
     ent.autoAstPaths.clear();
+    ent.ownsMeshBuffers = true;
+    ent.meshResourceKey.clear();
     modelLocalBoundsMin_ = glm::vec3(FLT_MAX);
     modelLocalBoundsMax_ = glm::vec3(-FLT_MAX);
 
@@ -304,8 +411,8 @@ void SceneManager::loadModelFromGltf(const std::string& path, const glm::vec3& p
         resRoot = fs::absolute(fs::path("res")); // fallback
     const std::string baseName = gltfPath.stem().string();
 
-    skeleton_.reset();
-    animationClips_.clear();
+    ent.skeleton.reset();
+    ent.animationClips.clear();
 
     // 收集所有 skin 中的全部 joint 节点，合并为统一骨架
     std::unordered_map<const cgltf_node*, int> globalNodeToBone;
@@ -368,7 +475,7 @@ void SceneManager::loadModelFromGltf(const std::string& path, const glm::vec3& p
             }
         }
 
-        skeleton_ = skel;
+        ent.skeleton = skel;
         std::cout << "[glTF] parsed combined skeleton with " << totalBones
                   << " bones from " << data->skins_count << " skin(s)\n";
     }
@@ -384,8 +491,8 @@ void SceneManager::loadModelFromGltf(const std::string& path, const glm::vec3& p
             skinRemap[si][j] = (it != globalNodeToBone.end()) ? it->second : 0;
         }
     }
-    if (skeleton_) {
-        skeleton_->skinBoneIndices = skinRemap;
+    if (ent.skeleton) {
+        ent.skeleton->skinBoneIndices = skinRemap;
     }
 
     std::unordered_map<const cgltf_mesh*, int> meshToSkin;
@@ -411,6 +518,8 @@ void SceneManager::loadModelFromGltf(const std::string& path, const glm::vec3& p
     ent.subMeshes.clear();
     ent.subMeshMaterials.clear();
     ent.autoAstPaths.clear();
+    ent.ownsMeshBuffers = true;
+    ent.meshResourceKey.clear();
     modelLocalBoundsMin_ = glm::vec3(FLT_MAX);
     modelLocalBoundsMax_ = glm::vec3(-FLT_MAX);
 
@@ -441,8 +550,8 @@ void SceneManager::loadModelFromGltf(const std::string& path, const glm::vec3& p
             const uint32_t baseVertex = static_cast<uint32_t>(ent.vertices.size());
             const cgltf_size vcount = posAcc->count;
             ent.vertices.reserve(ent.vertices.size() + vcount);
-            const int boneLimit = skeleton_
-                ? std::min(static_cast<int>(skeleton_->bones.size()), kMaxBones)
+            const int boneLimit = ent.skeleton
+                ? std::min(static_cast<int>(ent.skeleton->bones.size()), kMaxBones)
                 : 0;
             bool warnedBoneIndexOutOfRange = false;
 
@@ -450,7 +559,7 @@ void SceneManager::loadModelFromGltf(const std::string& path, const glm::vec3& p
             int primSkinIdx = 0;
             if (auto it = meshToSkin.find(&mesh); it != meshToSkin.end()) {
                 primSkinIdx = it->second;
-            } else if (skeleton_ && jntAcc && wgtAcc && skinRemap.size() > 1) {
+            } else if (ent.skeleton && jntAcc && wgtAcc && skinRemap.size() > 1) {
                 std::cerr << "[glTF] primitive has skinning attributes but no node skin binding for "
                           << baseName << "; falling back to skin 0\n";
             }
@@ -484,7 +593,7 @@ void SceneManager::loadModelFromGltf(const std::string& path, const glm::vec3& p
                 }
                 return r;
             };
-            const bool hasSkinData = (skeleton_ != nullptr) && jntAcc && wgtAcc;
+            const bool hasSkinData = (ent.skeleton != nullptr) && jntAcc && wgtAcc;
 
             for (cgltf_size i = 0; i < vcount; ++i) {
                 Vertex v{};
@@ -569,7 +678,7 @@ void SceneManager::loadModelFromGltf(const std::string& path, const glm::vec3& p
     }
 
     // ── Parse animations ─────────────────────────────────────────────────────
-    if (skeleton_) {
+    if (ent.skeleton) {
         for (cgltf_size ai = 0; ai < data->animations_count; ++ai) {
             const cgltf_animation& anim = data->animations[ai];
             AnimationClip clip;
@@ -642,10 +751,10 @@ void SceneManager::loadModelFromGltf(const std::string& path, const glm::vec3& p
             }
 
             if (!clip.channels.empty()) {
-                animationClips_.push_back(std::move(clip));
-                std::cout << "[glTF] parsed animation \"" << animationClips_.back().name
-                          << "\" with " << animationClips_.back().channels.size()
-                          << " channels, duration=" << animationClips_.back().duration << "s\n";
+                ent.animationClips.push_back(std::move(clip));
+                std::cout << "[glTF] parsed animation \"" << ent.animationClips.back().name
+                          << "\" with " << ent.animationClips.back().channels.size()
+                          << " channels, duration=" << ent.animationClips.back().duration << "s\n";
             }
         }
     }
@@ -680,8 +789,7 @@ bool SceneManager::removeModelEntity(uint64_t entityId, const VulkanContext& ctx
 {
     for (auto it = modelEntities_.begin(); it != modelEntities_.end(); ++it) {
         if (it->entityId == entityId) {
-            destroyBuf(ctx, it->vertexBuffer, it->vertexMemory);
-            destroyBuf(ctx, it->indexBuffer,  it->indexMemory);
+            releaseEntityMeshBuffers(ctx, *it);
             modelEntities_.erase(it);
             return true;
         }
@@ -691,10 +799,10 @@ bool SceneManager::removeModelEntity(uint64_t entityId, const VulkanContext& ctx
 
 void SceneManager::destroyModelBuffers(const VulkanContext& ctx)
 {
+    destroyCachedModelResources(ctx);
     // 销毁所有模型实体的 GPU 缓冲
     for (auto& ent : modelEntities_) {
-        destroyBuf(ctx, ent.vertexBuffer, ent.vertexMemory);
-        destroyBuf(ctx, ent.indexBuffer,  ent.indexMemory);
+        releaseEntityMeshBuffers(ctx, ent);
         ent.indexCount = 0;
     }
 }
@@ -751,6 +859,31 @@ const std::vector<std::string>& SceneManager::getModelAutoAstPaths() const
 {
     static const std::vector<std::string> kEmpty;
     return modelEntities_.empty() ? kEmpty : modelEntities_[0].autoAstPaths;
+}
+
+void SceneManager::setEntityAnimationData(uint64_t entityId,
+                                         std::shared_ptr<Skeleton> skeleton,
+                                         std::vector<AnimationClip> clips)
+{
+    if (auto* e = getModelEntity(entityId)) {
+        e->skeleton = std::move(skeleton);
+        e->animationClips = std::move(clips);
+    }
+}
+
+std::shared_ptr<Skeleton> SceneManager::getEntitySkeleton(uint64_t entityId) const
+{
+    for (const auto& e : modelEntities_)
+        if (e.entityId == entityId) return e.skeleton;
+    return nullptr;
+}
+
+const std::vector<AnimationClip>& SceneManager::getEntityAnimationClips(uint64_t entityId) const
+{
+    static const std::vector<AnimationClip> kEmpty;
+    for (const auto& e : modelEntities_)
+        if (e.entityId == entityId) return e.animationClips;
+    return kEmpty;
 }
 
 uint32_t SceneManager::getModelMaterialId() const
@@ -816,9 +949,9 @@ void SceneManager::destroy(const VulkanContext& ctx)
     destroyBuf(ctx, instanceBuffer_,   instanceMemory_);
     destroyBuf(ctx, cubeIndexBuffer_,  cubeIndexMemory_);
     destroyBuf(ctx, cubeVertexBuffer_, cubeVertexMemory_);
+    destroyCachedModelResources(ctx);
     for (auto& ent : modelEntities_) {
-        destroyBuf(ctx, ent.vertexBuffer, ent.vertexMemory);
-        destroyBuf(ctx, ent.indexBuffer,  ent.indexMemory);
+        releaseEntityMeshBuffers(ctx, ent);
     }
 }
 

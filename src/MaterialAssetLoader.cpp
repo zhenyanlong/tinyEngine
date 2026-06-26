@@ -89,12 +89,19 @@ bool MaterialAssetLoader::load(const std::string& astRelPath,
     }
 
     // Optional: subMaterials array of relative .ast paths
-    if (j.contains("subMaterials") && j["subMaterials"].is_array()) {
-        for (const auto& item : j["subMaterials"]) {
-            if (item.is_string())
-                desc.subMaterialPaths.push_back(item.get<std::string>());
+    // 兼容两种字段名：旧格式 "subMaterials" 和新格式 "materials"
+    // （迁移脚本 migrate_assets_to_content.py 将 subMaterials 重命名为 materials）
+    auto readMaterialArray = [&](const char* key) {
+        if (j.contains(key) && j[key].is_array()) {
+            for (const auto& item : j[key]) {
+                if (item.is_string())
+                    desc.subMaterialPaths.push_back(item.get<std::string>());
+            }
         }
-    }
+    };
+    readMaterialArray("subMaterials");
+    if (desc.subMaterialPaths.empty())
+        readMaterialArray("materials");
 
     out = std::move(desc);
     return true;

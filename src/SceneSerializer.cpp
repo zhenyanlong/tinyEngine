@@ -11,7 +11,6 @@
 #include "Transform.hpp"
 #include "camera.hpp"
 #include <nlohmann/json.hpp>
-#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -46,6 +45,46 @@ void applyParamOverride(const json& ov, MaterialParams& p)
         p.emissiveColor = { ov["emissiveColor"][0].get<float>(), ov["emissiveColor"][1].get<float>(),
                             ov["emissiveColor"][2].get<float>(), 1.f };
     }
+}
+
+// 将旧 materials/xxx.ast 路径迁移到新 content/xxx.mesh.ast
+// 在 content/ 下递归搜索同名 stem 的 .mesh.ast；找不到则回退旧路径
+std::string resolveLegacyAstPath(const std::string& astRel, const std::string& resRoot)
+{
+    if (astRel.empty()) return astRel;
+
+    // 已经是 content/ 路径，无需迁移
+    if (astRel.rfind("content/", 0) == 0 || astRel.rfind("content\\", 0) == 0)
+        return astRel;
+
+    // 只迁移 materials/ 开头的旧路径
+    if (astRel.rfind("materials/", 0) != 0 && astRel.rfind("materials\\", 0) != 0)
+        return astRel;
+
+    const std::filesystem::path p(astRel);
+    const std::string stem = p.stem().string();
+    const std::string targetName = stem + ".mesh.ast";
+
+    const std::filesystem::path contentDir = std::filesystem::path(resRoot) / "content";
+    std::error_code ec;
+    if (!std::filesystem::is_directory(contentDir, ec)) return astRel;
+
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(contentDir, ec)) {
+        if (ec) break;
+        if (!entry.is_regular_file(ec)) continue;
+        if (entry.path().filename() == targetName) {
+            const auto rel = std::filesystem::relative(entry.path(), resRoot, ec);
+            if (!ec && !rel.empty()) {
+                std::cout << "[SceneSerializer] migrated ast path: " << astRel
+                          << " -> " << rel.generic_string() << "\n";
+                return rel.generic_string();
+            }
+        }
+    }
+
+    std::cerr << "[SceneSerializer] no content/ migration for " << astRel
+              << ", using legacy path\n";
+    return astRel;
 }
 
 } // namespace
@@ -131,10 +170,9 @@ bool SceneSerializer::save(const std::string& path,
                     e["materialOverride"] = ov;
 
                 // ── 子材质覆写：对比 subMeshMaterials 与 subMaterials 参考 ──
-                if (!ent.subMeshMaterials.empty() && !ref.subMaterialPaths.empty()) {
+                if (!ent.subMeshMaterials.empty() && ref.subMaterialPaths.size() == ent.subMeshMaterials.size()) {
                     json smo = json::array();
-                    const size_t slotCount = std::min(ent.subMeshMaterials.size(), ref.subMaterialPaths.size());
-                    for (size_t si = 0; si < slotCount; ++si) {
+                    for (size_t si = 0; si < ent.subMeshMaterials.size(); ++si) {
                         const uint32_t slotMatId = ent.subMeshMaterials[si];
                         if (slotMatId == 0 || !matMgr.isValid(slotMatId)) continue;
 
@@ -144,26 +182,26 @@ bool SceneSerializer::save(const std::string& path,
 
                         MaterialAssetDesc slotRef;
                         json slotOv;
-                        int overrideCount = 0;
+                        int slotCount = 0;
 
                         if (MaterialAssetLoader::load(slotAstRel, slotRef)) {
                             const MaterialParams& slotCur = matMgr.getParams(slotMatId);
-                            overrideCount = writeParamOverride(slotOv, slotCur, slotRef.params);
+                            slotCount = writeParamOverride(slotOv, slotCur, slotRef.params);
 
                             const std::string sAlbedo = matMgr.getAlbedoPath(slotMatId);
                             const std::string sNormal = matMgr.getNormalPath(slotMatId);
                             if (sAlbedo != slotRef.albedoPath && (!sAlbedo.empty() || !slotRef.albedoPath.empty())) {
-                                slotOv["albedoPath"] = sAlbedo; ++overrideCount;
+                                slotOv["albedoPath"] = sAlbedo; ++slotCount;
                             }
                             if (sNormal != slotRef.normalPath && (!sNormal.empty() || !slotRef.normalPath.empty())) {
-                                slotOv["normalPath"] = sNormal; ++overrideCount;
+                                slotOv["normalPath"] = sNormal; ++slotCount;
                             }
                         }
 
                         json entry;
                         entry["slot"] = static_cast<int>(si);
                         entry["astRelPath"] = slotAstRel;
-                        if (overrideCount > 0)
+                        if (slotCount > 0)
                             entry["override"] = slotOv;
                         smo.push_back(entry);
                     }
@@ -294,9 +332,9 @@ bool SceneSerializer::load(const std::string& path,
             auto* ent = sceneMgr.getModelEntity(eid);
             if (!ent) continue;
 
-            // 恢复 .ast 资产路径（如果来自 astRelPath 加载）
+            // 恢复 .ast 资产路径（使用迁移后的新路径，确保 save 时写新路径）
             if (ej.contains("astRelPath") && ej["astRelPath"].is_string())
-                ent->astRelPath = ej["astRelPath"].get<std::string>();
+                ent->astRelPath = resolveLegacyAstPath(ej["astRelPath"].get<std::string>(), resRoot);
 
             // Restore transform
             if (ej.contains("rotation")) {
@@ -329,8 +367,8 @@ bool SceneSerializer::load(const std::string& path,
                     ent->astRelPath, ctx, cmdMgr, bufMgr, fbMgr, pipeMgr);
                 if (mid != kInvalidMaterialId) {
                     ent->materialId = mid;
-                    for (auto& slotMat : ent->subMeshMaterials)
-                        slotMat = mid;
+                    if (!ent->subMeshes.empty())
+                        ent->subMeshMaterials.resize(ent->subMeshes.size(), mid);
 
                     // 应用主材质覆写
                     if (ej.contains("materialOverride") && ej["materialOverride"].is_object()) {
@@ -351,8 +389,7 @@ bool SceneSerializer::load(const std::string& path,
                         MaterialAssetDesc entryDesc;
                         if (MaterialAssetLoader::load(ent->astRelPath, entryDesc)
                             && !entryDesc.subMaterialPaths.empty()) {
-                            if (ent->subMeshMaterials.size() < entryDesc.subMaterialPaths.size())
-                                ent->subMeshMaterials.resize(entryDesc.subMaterialPaths.size(), mid);
+                            ent->subMeshMaterials.resize(ent->subMeshes.size(), mid);
                             for (size_t si = 0; si < entryDesc.subMaterialPaths.size()
                                               && si < ent->subMeshMaterials.size(); ++si) {
                                 const MaterialId smMid = matMgr.loadMaterialFromAsset(

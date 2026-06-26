@@ -146,6 +146,10 @@ private:
     void tryPickMainModel(float cx, float cy);
     void tryBeginCameraFocusOnPick();
     void cleanUp();
+    bool ensureAnimationAssetForMeshAst(const std::string& meshAstRelPath,
+                                        const std::string& modelPathOrRel,
+                                        bool refreshRegistryAfterWrite,
+                                        uint64_t entityId = 0);
 
     /** @brief 将含骨骼实体的所有槽位材质转换为蒙皮版本（保留原有纹理和参数） */
     void convertModelMaterialsToSkinned();

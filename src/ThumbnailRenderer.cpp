@@ -319,9 +319,12 @@ bool ThumbnailRenderer::renderAndSave(const std::string& modelPath, const std::s
 
     std::cout << "[Thumbnail] Generating: " << modelPath << " -> " << pngOutputPath << "\n";
 
+    // 动画状态已下沉到每实体（ModelEntity::skeleton/animationClips），
+    // 临时实体的加载不会污染主场景的其他实体，无需 save/restore。
+
     // 1. Load model temporarily
     vkDeviceWaitIdle(ctx_->getDevice());
-    const uint64_t eid = sceneMgr_->createModelEntity(modelPath, glm::vec3(0.f), *bufMgr_);
+    const uint64_t eid = sceneMgr_->createModelEntity(modelPath, glm::vec3(0.f), *bufMgr_, false);
     SceneManager::ModelEntity* ent = sceneMgr_->getModelEntity(eid);
     if (!ent || ent->indexCount == 0) {
         std::cerr << "[Thumbnail] Failed to load model: " << modelPath << "\n";
@@ -503,24 +506,8 @@ int ThumbnailRenderer::generateAll(const std::string& resRoot)
     if (!std::filesystem::is_directory(modelsDir, ec))
         return 0;
 
+    // resRoot 已是项目根/res/，thumbnails 直接写入唯一基准路径，无需双写。
     std::filesystem::create_directories(thumbDir, ec);
-
-    // 向上查找源 res/thumbnails/ 目录，写入两份确保 clean build 后仍存在
-    // exe 在 out/build/x64-debug/Debug/ 下，向上 4 级到项目根 → res/thumbnails/
-    std::filesystem::path srcThumbDir;
-    {
-        const std::filesystem::path resP(resRoot); // e.g. out/build/x64-debug/Debug/res
-        // 去掉末尾 "res" → Debug/ → x64-debug/ → build/ → out/ → project root
-        std::filesystem::path probe = resP.parent_path(); // Debug/
-        for (int i = 0; i < 3 && probe.has_parent_path(); ++i)
-            probe = probe.parent_path();
-        srcThumbDir = probe / "res" / "thumbnails";
-        if (!std::filesystem::is_directory(probe / "res", ec))
-            srcThumbDir.clear(); // 找不到源 res/，不额外写入
-    }
-
-    if (!srcThumbDir.empty())
-        std::filesystem::create_directories(srcThumbDir, ec);
 
     int generated = 0;
     for (const auto& entry : std::filesystem::directory_iterator(modelsDir, ec)) {
@@ -534,12 +521,6 @@ int ThumbnailRenderer::generateAll(const std::string& resRoot)
 
         if (renderAndSave(entry.path().string(), pngPath)) {
             ++generated;
-            // 同步到源 res/thumbnails/，使 clean build 后缩略图仍保留
-            if (!srcThumbDir.empty()) {
-                const std::filesystem::path srcPng = srcThumbDir / (stem + ".png");
-                std::filesystem::copy_file(pngPath, srcPng,
-                    std::filesystem::copy_options::overwrite_existing, ec);
-            }
         }
     }
 

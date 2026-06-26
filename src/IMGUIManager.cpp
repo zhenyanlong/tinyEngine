@@ -1,6 +1,7 @@
 #include "IMGUIManager.hpp"
 #include "Application.hpp"
 #include "ImGuizmo.h"
+#include "nlohmann/json.hpp"
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -17,7 +18,11 @@
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
+#include <functional>
+#include <fstream>
 #include <iostream>
+#include <map>
+#include <set>
 /** @brief ImGui Vulkan 后端的错误回调：非 0 打印并中止（教学：发布版可改为日志） */
 static void check_vk_result(VkResult err)
 {
@@ -53,17 +58,32 @@ static std::string openFileDialog(GLFWwindow* window)
 }
 #endif
 
-/** @brief 返回 exe 所在目录，用于拼接 res/shaders 等相对路径 */
+/**
+ * @brief 返回项目根目录（包含 CMakeLists.txt 和 res/ 的目录）。
+ *
+ * 以前返回 exe 所在目录，依赖 CMake post-build 把 res/ 复制到 exe 旁，
+ * 导致场景/资产保存后被源 res/ 覆盖。现在从 exe 路径向上查找项目根，
+ * 所有 res 读写都以项目根/res/ 为唯一基准，彻底消除双份 res 问题。
+ */
 static std::string applicationResourceRoot()
 {
+    namespace fs = std::filesystem;
 #ifdef _WIN32
-	char path[MAX_PATH]{};
-	if (GetModuleFileNameA(nullptr, path, MAX_PATH) != 0) {
-		std::filesystem::path p(path);
-		return p.parent_path().string();
-	}
+    char path[MAX_PATH]{};
+    if (GetModuleFileNameA(nullptr, path, MAX_PATH) != 0) {
+        fs::path p(path);
+        // 从 exe 所在目录向上查找项目根：同时含 CMakeLists.txt 和 res/ 的目录
+        for (fs::path probe = p.parent_path(); probe.has_parent_path(); probe = probe.parent_path()) {
+            std::error_code ec;
+            if (fs::is_regular_file(probe / "CMakeLists.txt", ec)
+                && fs::is_directory(probe / "res", ec)) {
+                return probe.string();
+            }
+        }
+        return p.parent_path().string();
+    }
 #endif
-	return std::filesystem::current_path().string();
+    return fs::current_path().string();
 }
 
 /** @brief 在目录中按主文件名与若干 fallback 查找第一个存在的模型文件 */
@@ -312,7 +332,7 @@ void UIManager::prepareFrame()
         if (!astAssetScanned_) scanMaterialAssets();
 
         if (astAssetFiles_.empty()) {
-            ImGui::TextDisabled("(no .ast files in res/materials)");
+            ImGui::TextDisabled("(no .ast files in res/content)");
             if (ImGui::Button("Rescan##ast")) scanMaterialAssets();
         } else {
             std::vector<const char*> items;
@@ -323,7 +343,7 @@ void UIManager::prepareFrame()
             ImGui::Combo("##astpick", &astAssetIndex_, items.data(), static_cast<int>(items.size()));
 
             if (ImGui::Button("Apply##ast")) {
-                const std::string rel = std::string("materials/") + astAssetFiles_[astAssetIndex_];
+                const std::string rel = astAssetFiles_[astAssetIndex_];
                 if (vulkanRender->loadAndApplyMaterialAsset(rel)) {
                     astStatusMsg_ = std::string("Loaded: ") + astAssetFiles_[astAssetIndex_];
                 } else {
@@ -540,13 +560,30 @@ void UIManager::loadThumbnailIcon()
 void UIManager::scanMaterialAssets()
 {
     astAssetFiles_.clear();
-    const std::filesystem::path matDir =
-        std::filesystem::path(applicationResourceRoot()) / "res" / "materials";
+    const std::filesystem::path resRoot =
+        std::filesystem::path(applicationResourceRoot()) / "res";
+    std::filesystem::path matDir = resRoot / "content";
     std::error_code ec;
+    if (!std::filesystem::is_directory(matDir, ec))
+        matDir = resRoot / "materials";
     if (std::filesystem::is_directory(matDir, ec)) {
-        for (const auto& entry : std::filesystem::directory_iterator(matDir, ec)) {
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(matDir, ec)) {
             if (entry.is_regular_file(ec) && entry.path().extension() == ".ast") {
-                astAssetFiles_.push_back(entry.path().filename().string());
+                bool include = true;
+                std::ifstream f(entry.path());
+                if (f.is_open()) {
+                    try {
+                        nlohmann::json j;
+                        f >> j;
+                        include = j.value("type", std::string("Mesh")) != "Anim";
+                    } catch (...) {
+                        include = true;
+                    }
+                }
+                if (include) {
+                    const auto rel = std::filesystem::relative(entry.path(), resRoot, ec);
+                    if (!ec) astAssetFiles_.push_back(rel.generic_string());
+                }
             }
         }
         std::sort(astAssetFiles_.begin(), astAssetFiles_.end());
@@ -575,15 +612,53 @@ void UIManager::drawContentBrowser()
     ImGui::Separator();
 
     // "Root" (/) 按钮
-    if (ImGui::Selectable("/ (root)", currentFolder_.empty()))
+    if (ImGui::Selectable("Content", currentFolder_.empty()))
         currentFolder_.clear();
 
     if (reg) {
+        std::set<std::string> folderSet;
         for (const auto& folder : reg->getFolders()) {
-            const bool isCur = (currentFolder_ == folder);
-            if (ImGui::Selectable(folder.c_str(), isCur))
-                currentFolder_ = folder;
+            std::filesystem::path path(folder);
+            std::string prefix;
+            for (const auto& part : path) {
+                if (!prefix.empty()) prefix += "/";
+                prefix += part.generic_string();
+                folderSet.insert(prefix);
+            }
         }
+
+        std::function<void(const std::string&)> drawTree =
+            [&](const std::string& parent) {
+                for (const auto& folder : folderSet) {
+                    const std::filesystem::path folderPath(folder);
+                    if (folderPath.parent_path().generic_string() != parent)
+                        continue;
+
+                    const std::string childPrefix = folder + "/";
+                    bool hasChild = false;
+                    for (const auto& candidate : folderSet) {
+                        if (candidate.rfind(childPrefix, 0) == 0) {
+                            hasChild = true;
+                            break;
+                        }
+                    }
+
+                    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow
+                                             | ImGuiTreeNodeFlags_SpanAvailWidth;
+                    if (!hasChild) flags |= ImGuiTreeNodeFlags_Leaf;
+                    if (currentFolder_ == folder) flags |= ImGuiTreeNodeFlags_Selected;
+
+                    const std::string label = folderPath.filename().generic_string();
+                    const bool open = ImGui::TreeNodeEx(folder.c_str(), flags, "%s", label.c_str());
+                    if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen())
+                        currentFolder_ = folder;
+                    if (open) {
+                        if (hasChild) drawTree(folder);
+                        ImGui::TreePop();
+                    }
+                }
+            };
+        drawTree("");
     }
 
     ImGui::Separator();
@@ -601,11 +676,15 @@ void UIManager::drawContentBrowser()
         if (!name.empty() && vulkanRender) {
             const std::filesystem::path rel(name);
             if (!rel.is_absolute() && name.find("..") == std::string::npos) {
-                const std::string dirPath = vulkanRender->getResRoot() + "/materials/" + name;
+                // 在当前浏览的子文件夹下创建：currentFolder_ 为空则在 content/ 根
+                std::string fullRel = currentFolder_.empty()
+                    ? name
+                    : (currentFolder_ + "/" + name);
+                const std::string dirPath = vulkanRender->getResRoot() + "/content/" + fullRel;
                 std::error_code ec;
                 std::filesystem::create_directories(dirPath, ec);
                 if (!ec) {
-                    currentFolder_ = name;
+                    currentFolder_ = fullRel;
                     newFolderName_[0] = '\0';
                     if (reg) reg->refresh();
                 }
@@ -621,9 +700,9 @@ void UIManager::drawContentBrowser()
 
     // 当前路径面包屑
     if (currentFolder_.empty())
-        ImGui::TextDisabled("/ materials /");
+        ImGui::TextDisabled("/ content /");
     else
-        ImGui::TextDisabled("/ materials / %s /", currentFolder_.c_str());
+        ImGui::TextDisabled("/ content / %s /", currentFolder_.c_str());
 
     // 搜索框 + 刷新按钮 + 导入按钮
     ImGui::InputTextWithHint("##cbSearch", "Search...", contentBrowserSearch_, sizeof(contentBrowserSearch_));
@@ -648,7 +727,7 @@ void UIManager::drawContentBrowser()
     }
 
     // 类型筛选下拉框
-    const char* typeItems[] = { "All", "Mesh", "Box", "Material" };
+    const char* typeItems[] = { "All", "Mesh", "Box", "Material", "Anim" };
     {
         ImGui::SetNextItemWidth(100);
         ImGui::Combo("##typeFilter", &typeFilterIdx_, typeItems, IM_ARRAYSIZE(typeItems));
@@ -724,7 +803,7 @@ void UIManager::drawContentBrowser()
         }
 
         // 拖拽源：Material 类型资产（无 model 引用）不参与拖拽放置
-        if (asset->astType != "Material") {
+        if (asset->astType != "Material" && asset->astType != "Anim") {
             if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
                 uint64_t id = asset->id;
                 ImGui::SetDragDropPayload("MODEL_ASSET", &id, sizeof(uint64_t));
@@ -732,6 +811,13 @@ void UIManager::drawContentBrowser()
                 ImGui::EndDragDropSource();
             }
         }
+
+        const ImVec4 typeColor =
+            asset->astType == "Mesh" ? ImVec4(0.35f, 0.72f, 1.00f, 1.0f) :
+            asset->astType == "Anim" ? ImVec4(1.00f, 0.72f, 0.30f, 1.0f) :
+            asset->astType == "Material" ? ImVec4(0.55f, 0.88f, 0.55f, 1.0f) :
+            ImVec4(0.78f, 0.78f, 0.78f, 1.0f);
+        ImGui::TextColored(typeColor, "%s", asset->astType.c_str());
 
         // 文件名
         const std::string displayName = asset->name.size() > 16
@@ -753,7 +839,7 @@ void UIManager::drawContentBrowser()
     }
 
     if (reg)
-        ImGui::Text("Models: %zu", reg->size(currentFolder_));
+        ImGui::Text("Assets: %zu", reg->size(currentFolder_));
     else
         ImGui::TextDisabled("(unavailable)");
 

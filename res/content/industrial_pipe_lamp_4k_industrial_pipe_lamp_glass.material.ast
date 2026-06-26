@@ -1,0 +1,27 @@
+{
+  "name": "industrial_pipe_lamp_glass",
+  "type": "Material",
+  "params": {
+    "baseColor": [
+      1,
+      1,
+      1,
+      0.2
+    ],
+    "metallic": 1,
+    "roughness": 1,
+    "emissiveColor": [
+      1,
+      1,
+      1,
+      1.0
+    ],
+    "emissiveIntensity": 1
+  },
+  "textures": {
+    "albedo": "bin/texture/industrial_pipe_lamp_diff_4k_002.jpg",
+    "normal": "bin/texture/industrial_pipe_lamp_nor_gl_4k_002.jpg",
+    "metallicRoughness": "bin/texture/industrial_pipe_lamp_arm_4k_003.jpg",
+    "emissive": "bin/texture/industrial_pipe_lamp_emission_4k_002.jpg"
+  }
+}

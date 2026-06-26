@@ -1,0 +1,33 @@
+{
+  "name": "industrial_pipe_lamp_4kMat",
+  "type": "Mesh",
+  "shader": {
+    "vert": "shaders/vert.spv",
+    "frag": "shaders/frag.spv"
+  },
+  "params": {
+    "baseColor": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "roughness": 0.5,
+    "metallic": 0.0,
+    "emissiveIntensity": 1.0,
+    "emissiveColor": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  },
+  "textures": {
+    "albedo": "bin/texture/industrial_pipe_lamp_diff_4k.jpg",
+    "normal": "bin/texture/industrial_pipe_lamp_nor_gl_4k.jpg",
+    "metallicRoughness": "bin/texture/industrial_pipe_lamp_arm_4k.jpg",
+    "ao": "bin/texture/industrial_pipe_lamp_arm_4k_001.jpg",
+    "emissive": "bin/texture/industrial_pipe_lamp_emission_4k.jpg"
+  },
+  "model": "bin/mesh/industrial_pipe_lamp_4k.gltf"
+}

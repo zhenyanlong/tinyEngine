@@ -15,7 +15,7 @@
 │   ├── A2. cgltf 动画数据解析
 │   ├── A3. 蒙皮 Shader（GPU Skinning）
 │   ├── A4. AnimationClip 运行时求值
-│   └── A5. 动画资产序列化（.anim.json）
+│   └── A5. 动画资产化（Anim .ast + .anim.bin）
 │
 ├── B. 状态机动画系统（Animator / State Machine）
 │   ├── B1. AnimatorState / AnimatorTransition 数据结构
@@ -232,39 +232,50 @@ private:
 
 **具体任务：**
 
-- [ ] **A4-1** 新建 `AnimationPlayer.hpp` / `AnimationPlayer.cpp`，实现上述接口
-- [ ] **A4-2** 实现 `AnimationPlayer::update`：
+- [x] **A4-1** 新建 `AnimationPlayer.hpp` / `AnimationPlayer.cpp`，实现上述接口
+  > 实际实现：未引入独立 AnimationPlayer 类，动画求值逻辑直接集成在 `Application::drawFrame` 的逐实体循环中。功能等价，且更适合每实体独立 animation state 的架构。
+- [x] **A4-2** 实现 `AnimationPlayer::update`：
+  > 实际实现：`drawFrame` 中逐实体执行 `currentTime = fmod(glfwGetTime(), clip.duration)` → `evaluateBoneLocalTransform` → `computeFinalMatrices` → `updateBoneMatrices`。
   1. `currentTime_ += dt`；若 `loop_` 则对 `clip->duration` 取模，否则 clamp
   2. 遍历所有骨骼 index，调用 `clip->evaluateBoneLocalTransform(i, currentTime_)` 填入 `localTransforms_[i]`
   3. 调用 `skeleton_->computeFinalMatrices(localTransforms_, finalBoneMatrices_)`
   4. 调用 `matMgr.updateBoneMatrices(skinnedMatId_, imageIndex, finalBoneMatrices_)`
-- [ ] **A4-3** 在 `Application` 中增加 `std::unique_ptr<AnimationPlayer> animPlayer_` 成员
-- [ ] **A4-4** 在 `Application::gameLoop` 中，于 `camera_.UpdataCameraPosition` 之后调用 `animPlayer_->update(dt, imageIndex, matMgr_)`
-- [ ] **A4-5** 在 `Application::initVulkan` 末尾，若模型有骨骼动画，自动调用 `animPlayer_->bind(...)` 并播放第一条 clip
+- [x] **A4-3** 在 `Application` 中增加 `std::unique_ptr<AnimationPlayer> animPlayer_` 成员
+  > 实际实现：animation state 存储在每个 `ModelEntity::skeleton` / `animationClips`，无需全局 animPlayer_ 成员。
+- [x] **A4-4** 在 `Application::gameLoop` 中，于 `camera_.UpdataCameraPosition` 之后调用 `animPlayer_->update(dt, imageIndex, matMgr_)`
+  > 实际实现：`drawFrame` 内逐实体求值，等价于每帧 update。
+- [x] **A4-5** 在 `Application::initVulkan` 末尾，若模型有骨骼动画，自动调用 `animPlayer_->bind(...)` 并播放第一条 clip
+  > 实际实现：`initVulkan`/`loadScene`/`beginDragPlace` 通过 `ensureAnimationAssetForMeshAst` 按实体绑定 skeleton/clips，`drawFrame` 自动播放 clips[0]。
 
 **验收标准：** `CesiumMan.glb` 能在屏幕上实时播放行走动画，关节正确驱动网格变形。
 
 ---
 
-### A5. 动画资产序列化（.anim.json）
+### A5. 动画资产化（Anim .ast + .anim.bin）
 
-**目标：** 将 Skeleton + AnimationClips 保存为引擎自有格式，下次直接加载，不依赖原始 glTF。
+**目标：** 将 Skeleton + AnimationClips 保存为引擎自有资产格式，下次直接加载，不依赖原始 glTF。`.ast` 作为可读的资产 Header/Meta，实际关键帧和矩阵重数据写入 `res/bin/anim/*.anim.bin`。
 
 **新建文件：** `src/Animation/AnimationAssetLoader.hpp` / `.cpp`
 
-**文件格式设计（`res/animations/<name>.anim.json`）：**
+**文件格式设计（`res/content/<folder>/<name>.anim.ast`）：**
 
 ```json
 {
   "version": 1,
+  "type": "Anim",
+  "name": "Robot_Walk",
+  "rootModel": "content/Characters/Robot/Robot.mesh.ast",
+  "binary": "bin/anim/Robot_Walk.anim.bin",
   "skeleton": {
+    "boneCount": 191,
     "bones": [
       {
         "name": "Hips",
-        "parentIndex": -1,
-        "inverseBindMatrix": [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1],
-        "localBindTransform": [...]
+        "parentIndex": -1
       }
+    ],
+    "skins": [
+      { "boneIndices": [0, 1, 2] }
     ]
   },
   "clips": [
@@ -276,8 +287,8 @@ private:
           "boneIndex": 0,
           "target": "Translation",
           "interpolation": "Linear",
-          "times": [0.0, 0.033, 0.067, ...],
-          "values": [[0,0,0,0], [0.01,0,0,0], ...]
+          "timeCount": 32,
+          "valueCount": 32
         }
       ]
     }
@@ -287,19 +298,22 @@ private:
 
 **具体任务：**
 
-- [ ] **A5-1** 新建 `AnimationAssetLoader.hpp` / `.cpp`
-- [ ] **A5-2** 实现 `AnimationAssetLoader::save(path, skeleton, clips)`：
-  - 用 nlohmann/json 序列化 Skeleton（逐骨骼写 name/parentIndex/inverseBindMatrix/localBindTransform）
-  - 序列化每个 AnimationClip（写 name/duration/channels，每个 channel 写 boneIndex/target/interp/times/values）
-  - 写入 `res/animations/<name>.anim.json`
-- [ ] **A5-3** 实现 `AnimationAssetLoader::load(path)`：
-  - 反序列化得到 `Skeleton` 和 `std::vector<AnimationClip>`
+- [x] **A5-1** 新建 `AnimationAssetLoader.hpp` / `.cpp`
+- [x] **A5-2** 定义 `type="Anim"` 的 `.ast` 元数据格式：记录 `rootModel`、`binary`、bone name/parent、skin palette remap、clip/channel 描述
+- [x] **A5-3** 定义 `.anim.bin` 二进制布局：写入 magic/version、bone matrices、channel times、channel values
+- [x] **A5-4** 实现 `AnimationAssetLoader::save(astPath, binPath, rootModel, skeleton, clips)`：
+  - `.ast` 写 Header/Meta，不写大型 keyframe 数组
+  - `.anim.bin` 写 `inverseBindMatrix` / `localBindTransform` / `globalBindTransform` / `times` / `values`
+- [x] **A5-5** 实现 `AnimationAssetLoader::load(astPath)`：
+  - 读取 `.ast` 元数据和 `.anim.bin`
   - 返回 `AnimationAsset { skeleton, clips }` 结构体
-- [ ] **A5-4** 在 `SceneManager::loadModelFromGltf` 末尾，在解析完动画数据后自动调用 `AnimationAssetLoader::save`，在 `res/animations/` 目录下生成 `.anim.json`
-- [ ] **A5-5** 在 `MaterialAssetLoader` 解析的 `.ast` 文件中新增可选字段 `"animation": "animations/foo.anim.json"`，使材质资产能引用对应的动画资产
-- [ ] **A5-6** 在 `Application::loadAndApplyMaterialAsset` 中，检测 `.ast` 的 `animation` 字段，若存在则调用 `AnimationAssetLoader::load` 并初始化 `animPlayer_`
+- [x] **A5-6** 在导入带动画 glTF 时，生成 `res/content/<当前目录>/<模型名>/<模型名>.anim.ast` 和 `res/bin/anim/<模型名>.anim.bin`
+- [x] **A5-7** Mesh `.ast` 新增 `animations` 字段，引用一个或多个 Anim `.ast`
+- [x] **A5-8** Anim `.ast` 新增 `rootModel` 字段，指回所属 Mesh `.ast`
+- [x] **A5-9** Content Browser 扫描 `res/content/**/*.ast`，支持 `Anim` 类型显示与过滤；二进制重数据按 ast type 存放到 `res/bin/<type>/`
+- [x] **A5-10** 提供复制式迁移工具：将旧 `res/materials/**/*.ast`、`res/models`、`res/textures` 复制到 `res/content` / `res/bin` 新结构，保留旧文件不删除
 
-**验收标准：** 先加载 glTF 生成 `.anim.json`，然后直接从 `.anim.json` 加载，动画播放结果与从原始 glTF 加载完全一致。
+**验收标准：** 导入带动画 glTF 后生成 Mesh/Material/Anim `.ast` 和 `.anim.bin`；直接从 Mesh `.ast` 加载时能通过 `animations` 字段恢复 Skeleton + AnimationClip，骨骼数、skin palette、clip/channel 数、duration 与原始 glTF 一致。
 
 ---
 
@@ -902,7 +916,7 @@ A1 → A2 → A3 → A4 → A5
 | 里程碑 | 完成条件 | 预计子任务数 |
 |--------|----------|-------------|
 | M1 基础骨骼播放 | CesiumMan.glb 实时播放行走动画 | A1-A4（约 18 个任务） |
-| M2 骨骼资产化 | 从 .anim.json 加载后动画正常 | A5（约 6 个任务） |
+| M2 骨骼资产化 | 从 Anim .ast + .anim.bin 加载后动画正常 | A5（约 10 个任务） |
 | M3 状态机 | Idle ↔ Walk 按参数自动切换 | B1-B4（约 14 个任务） |
 | M4 状态机编辑器 | 在 ImGui 里改状态机并保存 | B5（约 5 个任务） |
 | M5 Sequencer 基础 | 时间轴驱动动画片段和 Transform 补间 | C1-C4（约 16 个任务） |
@@ -926,9 +940,9 @@ A1 → A2 → A3 → A4 → A5
 Sequencer 播放期间，多个系统（AnimationPlayer、Camera、ObjectTransform）同时被驱动，需要明确执行顺序以避免一帧延迟（transform 写完后 UBO 更新才能读到）。
 **解决方案：** 严格执行顺序：`seqPlayer_->update → animPlayer_->updateWithBlend → matMgr_.updateAllUBOs → recordCommandBuffer`。
 
-### nlohmann/json 大文件性能（⚠️ 低风险）
-骨骼动画数据量大（1000 帧 * 50 骨骼 * 3 channel），序列化为 JSON 文件可能较大（~3-5MB）。
-**解决方案：** A5 阶段先用 JSON 确保正确性；M8 后可选地将 `.anim.json` 改为二进制格式（如 msgpack）。
+### 动画资产二进制兼容性（⚠️ 中风险）
+骨骼动画数据量大（1000 帧 * 50 骨骼 * 3 channel），不再把关键帧数组写进 JSON；`.ast` 只保存 Header/Meta，`.anim.bin` 保存矩阵、times 和 values。
+**解决方案：** `.anim.bin` 写入 magic/version，Anim `.ast` 记录 `binary` 路径、bone/channel 计数和 `rootModel`，加载时校验格式版本与数据数量。
 
 ---
 
@@ -951,7 +965,11 @@ shaders/
 └── skinned_vert.glsl  （+ 编译为 skinned_vert.spv）
 
 res/
-├── animations/          (.anim.json 存放目录)
+├── content/             (.ast 资产描述文件根目录)
+├── bin/
+│   ├── mesh/            (Mesh payload: .obj/.gltf/.glb)
+│   ├── anim/            (Animation payload: .anim.bin)
+│   └── texture/         (Texture payload)
 ├── animators/           (.animctrl.json 存放目录)
 └── sequences/
     └── paths/           (.campath.json 存放目录)

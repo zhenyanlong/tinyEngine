@@ -22,8 +22,7 @@
 
 > 在这里随手写不规范需求。之后调用 `$todo-normalize-inbox`，将本区内容整理为正式待办项。
 
-动画出现重复加载的问题，需要修复。
-
+（当前为空）
 ---
 
 ## 待办
@@ -36,6 +35,16 @@
 - [ ] TODO-007 【动画/资产】将动画模型资产和动画序列资产分离为不同文件
   - 上下文：从手动收集区整理；当前动画数据随 glTF 一起加载，动画片段无独立文件格式存储和复用。参考 Phase A5 计划，需要实现 .anim.json 或 .anim 格式的独立动画资产文件，支持序列化/反序列化 AnimationClip
   - 日期：2026-06-18
+  - 来源：手动收集
+
+- [ ] TODO-009 【Content Browser】新建文件夹应在当前浏览的子文件夹下创建
+  - 上下文：从手动收集区整理；当前 Create 按钮固定在 content/ 根下创建目录，未拼接 currentFolder_。用户在子文件夹浏览时点 Create，新文件夹应创建在当前子文件夹内而非 content 根
+  - 日期：2026-06-26
+  - 来源：手动收集
+
+- [ ] TODO-010 【Content Browser】添加删除资产文件功能，联动清理无引用的 bin payload
+  - 上下文：从手动收集区整理；当前 Content Browser 无删除功能，废弃 .ast 文件需手动到文件系统删除。需求：在 Content Browser 中选中资产后提供删除按钮，删除 .ast 同时检查其引用的 bin/mesh、bin/texture、bin/anim 文件是否被其他 .ast 引用，若无引用则一并删除
+  - 日期：2026-06-26
   - 来源：手动收集
 
 ---
@@ -72,3 +81,24 @@
   - 日期：2026-06-11
   - 完成日期：2026-06-17
   - 完成依据：SceneSerializer 保存/加载 subMaterialOverrides，加载入口 .ast 的 subMaterials，并放宽槽位数量边界；x64-debug 构建通过
+
+- [x] TODO-008 【动画/加载】修复重新打开 scene 后 mesh 渲染异常（动画重复加载）
+  - 上下文：手动收集区整理；重新打开 scene 后 mesh 渲染异常，但删掉重新拖拽出来恢复正常
+  - 日期：2026-06-26
+  - 来源：手动收集
+  - 完成日期：2026-06-26
+  - 完成依据：根因是迁移脚本将 .mesh.ast 的 subMaterials 重命名为 materials，但 MaterialAssetLoader 只读 subMaterials，导致 loadScene 跳过子材质加载。修复 MaterialAssetLoader::load 兼容 materials 字段（subMaterials 为空时回退）；x64-debug 构建通过，用户确认重新打开场景后 mesh 渲染正常
+
+- [x] TODO-011 【引擎/构建】res 文件夹不再编译时复制，以项目根 res/ 为唯一基准
+  - 上下文：手动收集区整理；此前 CMake post-build 把 res/ 复制到 exe 旁，导致保存的场景被源 res/ 覆盖，且存在双份 res 造成路径混乱
+  - 日期：2026-06-26
+  - 来源：手动收集
+  - 完成日期：2026-06-26
+  - 完成依据：重构 applicationResourceRoot() 从 exe 路径向上查找项目根（CMakeLists.txt + res/），所有 res 读写以项目根/res/ 为基准；移除 CMakeLists.txt 的 copy_directory post-build 步骤；x64-debug 构建通过
+
+- [x] TODO-009 【Content Browser】新建文件夹应在当前浏览的子文件夹下创建
+  - 上下文：手动收集区整理；当前 Create 按钮固定在 content/ 根下创建目录，未拼接 currentFolder_。用户在子文件夹浏览时点 Create，新文件夹应创建在当前子文件夹内而非 content 根
+  - 日期：2026-06-26
+  - 来源：手动收集
+  - 完成日期：2026-06-26
+  - 完成依据：IMGUIManager Create 按钮逻辑改为拼接 currentFolder_ + name 作为完整相对路径，create_directories 在 content/<currentFolder_>/<name> 下创建；currentFolder_ 为空时回退到 content/ 根；x64-debug 构建通过

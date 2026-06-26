@@ -42,15 +42,23 @@ public:
         VkDeviceMemory vertexMemory{};
         VkBuffer indexBuffer{};
         VkDeviceMemory indexMemory{};
+        bool ownsMeshBuffers = true;
+        std::string meshResourceKey;
         uint32_t indexCount = 0;
         std::vector<SubMesh> subMeshes;
         std::vector<uint32_t> subMeshMaterials;
         std::vector<std::string> autoAstPaths;
         bool hasSkin_ = false;
+        // 每实体独立的动画状态（下沉自 SceneManager 全局单例）
+        std::shared_ptr<Skeleton> skeleton;
+        std::vector<AnimationClip> animationClips;
     };
 
     void loadModel(const std::string& path, const glm::vec3& position, const BufferManager& bufMgr);
-    uint64_t createModelEntity(const std::string& path, const glm::vec3& position, const BufferManager& bufMgr);
+    uint64_t createModelEntity(const std::string& path,
+                               const glm::vec3& position,
+                               const BufferManager& bufMgr,
+                               bool useResourceCache = true);
     bool removeModelEntity(uint64_t entityId, const VulkanContext& ctx);
     void destroyModelBuffers(const VulkanContext& ctx);
     void destroy(const VulkanContext& ctx);
@@ -78,8 +86,11 @@ public:
     uint32_t getModelSubMeshMaterialId(int slot) const;
     void setModelSubMeshMaterialId(int slot, uint32_t id);
 
-    std::shared_ptr<Skeleton> getSkeleton() const { return skeleton_; }
-    const std::vector<AnimationClip>& getAnimationClips() const { return animationClips_; }
+    std::shared_ptr<Skeleton> getEntitySkeleton(uint64_t entityId) const;
+    const std::vector<AnimationClip>& getEntityAnimationClips(uint64_t entityId) const;
+    void setEntityAnimationData(uint64_t entityId,
+                                std::shared_ptr<Skeleton> skeleton,
+                                std::vector<AnimationClip> clips);
 
     void createCubeTemplate(const BufferManager& bufMgr);
     RenderEntityId addBox(const glm::vec3& position, const VulkanContext& ctx, const BufferManager& bufMgr);
@@ -109,8 +120,23 @@ private:
     std::vector<ModelEntity> modelEntities_;
     glm::vec3 modelLocalBoundsMin_{};
     glm::vec3 modelLocalBoundsMax_{};
-    std::shared_ptr<Skeleton> skeleton_;
-    std::vector<AnimationClip> animationClips_;
+
+    struct CachedModelResource {
+        VkBuffer vertexBuffer{};
+        VkDeviceMemory vertexMemory{};
+        VkBuffer indexBuffer{};
+        VkDeviceMemory indexMemory{};
+        uint32_t indexCount = 0;
+        std::vector<SubMesh> subMeshes;
+        std::vector<std::string> autoAstPaths;
+        bool hasSkin = false;
+        glm::vec3 boundsMin{};
+        glm::vec3 boundsMax{};
+        // 缓存动画状态，重复加载同模型时共享
+        std::shared_ptr<Skeleton> skeleton;
+        std::vector<AnimationClip> animationClips;
+    };
+    std::unordered_map<std::string, CachedModelResource> modelResourceCache_;
 
     std::vector<Vertex> cubeTemplateVertices_;
     std::vector<uint32_t> cubeTemplateIndices_;
@@ -130,6 +156,13 @@ private:
 
     void rebuildInstanceBuffer(const VulkanContext& ctx, const BufferManager& bufMgr);
     static void destroyBuf(const VulkanContext& ctx, VkBuffer& buf, VkDeviceMemory& mem);
+    static std::string normalizeModelPath(const std::string& path);
+    bool applyCachedModelResource(ModelEntity& ent,
+                                  const std::string& key,
+                                  const glm::vec3& position);
+    void cacheModelResourceFromEntity(const std::string& key, ModelEntity& ent);
+    void releaseEntityMeshBuffers(const VulkanContext& ctx, ModelEntity& ent);
+    void destroyCachedModelResources(const VulkanContext& ctx);
     void loadModelFromObj(const std::string& path, const glm::vec3& position, const BufferManager& bufMgr);
     void loadModelFromGltf(const std::string& path, const glm::vec3& position, const BufferManager& bufMgr);
 };

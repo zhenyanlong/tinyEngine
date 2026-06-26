@@ -12,16 +12,6 @@
 #include <array>
 #include <algorithm>
 
-namespace {
-BoneMatricesUBO makeIdentityBoneMatricesUBO()
-{
-    BoneMatricesUBO ubo{};
-    for (int i = 0; i < kMaxBones; ++i)
-        ubo.bones[i] = glm::mat4(1.f);
-    return ubo;
-}
-}
-
 // ── Static helpers ─────────────────────────────────────────────────────────────
 
 void MaterialManager::transitionLayout(const VulkanContext& ctx, const CommandManager& cmdMgr,
@@ -222,7 +212,7 @@ void MaterialManager::createPool(const VulkanContext& ctx)
 {
     std::array<VkDescriptorPoolSize, 2> sizes{};
     sizes[0].type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    sizes[0].descriptorCount = 1000;
+    sizes[0].descriptorCount = 2000;
     sizes[1].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     sizes[1].descriptorCount = 1000;
 
@@ -264,15 +254,8 @@ void MaterialManager::onSwapchainRecreate(const VulkanContext& ctx, const Comman
     imageCount_ = imageCount;
     vkDeviceWaitIdle(ctx.getDevice());
 
-    auto dev = ctx.getDevice();
     for (auto& [id, e] : materials_) {
         destroyUBOs(e, ctx);
-        for (uint32_t i = 0; i < static_cast<uint32_t>(e.boneUBOs.size()); ++i) {
-            if (e.boneUBOMapped[i])           { vkUnmapMemory(dev, e.boneUBOMemory[i]);         e.boneUBOMapped[i] = nullptr;           }
-            if (e.boneUBOs[i]     != VK_NULL_HANDLE) { vkDestroyBuffer(dev, e.boneUBOs[i], nullptr);        e.boneUBOs[i]     = VK_NULL_HANDLE; }
-            if (e.boneUBOMemory[i]!= VK_NULL_HANDLE) { vkFreeMemory(dev, e.boneUBOMemory[i], nullptr);      e.boneUBOMemory[i]= VK_NULL_HANDLE; }
-        }
-        e.boneUBOs.clear(); e.boneUBOMemory.clear(); e.boneUBOMapped.clear();
         e.descSets.clear();
     }
 
@@ -285,20 +268,6 @@ void MaterialManager::onSwapchainRecreate(const VulkanContext& ctx, const Comman
 
     for (auto& [id, e] : materials_) {
         createUBOs(e, ctx, bufMgr);
-        if (e.hasSkinning_) {
-            e.boneUBOs.resize(imageCount_);
-            e.boneUBOMemory.resize(imageCount_);
-            e.boneUBOMapped.resize(imageCount_, nullptr);
-            for (uint32_t i = 0; i < imageCount_; ++i) {
-                bufMgr.createBuffer(sizeof(BoneMatricesUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                    e.boneUBOs[i], e.boneUBOMemory[i]);
-                vkMapMemory(ctx.getDevice(), e.boneUBOMemory[i], 0, sizeof(BoneMatricesUBO), 0,
-                            &e.boneUBOMapped[i]);
-                const BoneMatricesUBO identity = makeIdentityBoneMatricesUBO();
-                memcpy(e.boneUBOMapped[i], &identity, sizeof(identity));
-            }
-        }
         allocateDescSets(e, ctx, pipeMgr);
         writeDescSets(e, ctx, pipeMgr);
     }
@@ -311,6 +280,7 @@ void MaterialManager::destroy(const VulkanContext& ctx)
     materials_.clear();
     allIds_.clear();
     assetCache_.clear();
+    skinnedCache_.clear();
 
     if (pool_ != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(ctx.getDevice(), pool_, nullptr);
@@ -337,6 +307,11 @@ void MaterialManager::createUBOs(MaterialEntry& e, const VulkanContext& ctx,
     e.ubos.resize(imageCount_);
     e.uboMemory.resize(imageCount_);
     e.uboMapped.resize(imageCount_, nullptr);
+    if (e.skinned) {
+        e.boneUbos.resize(imageCount_);
+        e.boneUboMemory.resize(imageCount_);
+        e.boneUboMapped.resize(imageCount_, nullptr);
+    }
 
     for (uint32_t i = 0; i < imageCount_; ++i) {
         bufMgr.createBuffer(sizeof(UniformBufferObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
@@ -344,6 +319,17 @@ void MaterialManager::createUBOs(MaterialEntry& e, const VulkanContext& ctx,
                             e.ubos[i], e.uboMemory[i]);
         vkMapMemory(ctx.getDevice(), e.uboMemory[i], 0, sizeof(UniformBufferObject), 0,
                     &e.uboMapped[i]);
+        if (e.skinned) {
+            bufMgr.createBuffer(sizeof(BoneMatricesUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                e.boneUbos[i], e.boneUboMemory[i]);
+            vkMapMemory(ctx.getDevice(), e.boneUboMemory[i], 0, sizeof(BoneMatricesUBO), 0,
+                        &e.boneUboMapped[i]);
+            BoneMatricesUBO identity{};
+            for (int b = 0; b < kMaxBones; ++b)
+                identity.bones[b] = glm::mat4(1.f);
+            memcpy(e.boneUboMapped[i], &identity, sizeof(identity));
+        }
     }
 }
 
@@ -356,6 +342,12 @@ void MaterialManager::destroyUBOs(MaterialEntry& e, const VulkanContext& ctx)
         if (e.uboMemory[i] != VK_NULL_HANDLE) { vkFreeMemory(dev, e.uboMemory[i], nullptr);    e.uboMemory[i] = VK_NULL_HANDLE; }
     }
     e.ubos.clear(); e.uboMemory.clear(); e.uboMapped.clear();
+    for (uint32_t i = 0; i < static_cast<uint32_t>(e.boneUbos.size()); ++i) {
+        if (e.boneUboMapped[i])               { vkUnmapMemory(dev, e.boneUboMemory[i]);              e.boneUboMapped[i] = nullptr; }
+        if (e.boneUbos[i]      != VK_NULL_HANDLE) { vkDestroyBuffer(dev, e.boneUbos[i], nullptr);        e.boneUbos[i]      = VK_NULL_HANDLE; }
+        if (e.boneUboMemory[i] != VK_NULL_HANDLE) { vkFreeMemory(dev, e.boneUboMemory[i], nullptr);      e.boneUboMemory[i] = VK_NULL_HANDLE; }
+    }
+    e.boneUbos.clear(); e.boneUboMemory.clear(); e.boneUboMapped.clear();
 }
 
 // ── Descriptor set management ──────────────────────────────────────────────────
@@ -363,9 +355,9 @@ void MaterialManager::destroyUBOs(MaterialEntry& e, const VulkanContext& ctx)
 void MaterialManager::allocateDescSets(MaterialEntry& e, const VulkanContext& ctx,
                                        const PipelineManager& pipeMgr)
 {
-    VkDescriptorSetLayout layout = e.hasSkinning_
+    VkDescriptorSetLayout layout = e.skinned
         ? pipeMgr.getSkinnedDescSetLayout()
-        : ((e.type == MaterialType::Mesh || e.type == MaterialType::Material)
+        : ((e.type == MaterialType::Mesh)
             ? pipeMgr.getMainDescSetLayout()
             : pipeMgr.getBoxDescSetLayout());
 
@@ -388,7 +380,10 @@ void MaterialManager::writeDescSets(MaterialEntry& e, const VulkanContext& ctx,
         VkDescriptorBufferInfo bi{};
         bi.buffer = e.ubos[i]; bi.offset = 0; bi.range = sizeof(UniformBufferObject);
 
-        if (e.type == MaterialType::Mesh || e.type == MaterialType::Material) {
+        if (e.type == MaterialType::Mesh) {
+            // Resolve every sampler binding to either the user-supplied texture
+            // or the corresponding 1x1 default. The frag shader expects all 5
+            // samplers to be bound regardless of which the asset actually uses.
             auto pick = [](const TextureGPU& t, const TextureGPU& fb) -> VkDescriptorImageInfo {
                 VkDescriptorImageInfo di{};
                 di.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -402,66 +397,44 @@ void MaterialManager::writeDescSets(MaterialEntry& e, const VulkanContext& ctx,
             const VkDescriptorImageInfo aoI     = pick(e.ao,                defaultAO_);
             const VkDescriptorImageInfo emI     = pick(e.emissive,          defaultEmissive_);
 
-            if (e.hasSkinning_) {
-                VkDescriptorBufferInfo boneBI{};
-                boneBI.buffer = e.boneUBOs[i]; boneBI.offset = 0;
-                boneBI.range  = sizeof(BoneMatricesUBO);
+            std::array<VkWriteDescriptorSet, 7> writes{};
+            writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[0].dstSet          = e.descSets[i];
+            writes[0].dstBinding      = 0;
+            writes[0].descriptorCount = 1;
+            writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            writes[0].pBufferInfo     = &bi;
 
-                std::array<VkWriteDescriptorSet, 7> writes{};
-                writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                writes[0].dstSet          = e.descSets[i];
-                writes[0].dstBinding      = 0;
-                writes[0].descriptorCount = 1;
-                writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-                writes[0].pBufferInfo     = &bi;
+            auto fillTex = [&](size_t idx, uint32_t binding, const VkDescriptorImageInfo* info) {
+                writes[idx].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[idx].dstSet          = e.descSets[i];
+                writes[idx].dstBinding      = binding;
+                writes[idx].descriptorCount = 1;
+                writes[idx].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                writes[idx].pImageInfo      = info;
+            };
+            fillTex(1, 1, &albedoI);
+            fillTex(2, 2, &normalI);
+            fillTex(3, 3, &mrI);
+            fillTex(4, 4, &aoI);
+            fillTex(5, 5, &emI);
 
-                auto fillTex = [&](size_t idx, uint32_t binding, const VkDescriptorImageInfo* info) {
-                    writes[idx].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                    writes[idx].dstSet          = e.descSets[i];
-                    writes[idx].dstBinding      = binding;
-                    writes[idx].descriptorCount = 1;
-                    writes[idx].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                    writes[idx].pImageInfo      = info;
-                };
-                fillTex(1, 1, &albedoI);
-                fillTex(2, 2, &normalI);
-                fillTex(3, 3, &mrI);
-                fillTex(4, 4, &aoI);
-                fillTex(5, 5, &emI);
-
+            uint32_t writeCount = 6;
+            VkDescriptorBufferInfo boneBI{};
+            if (e.skinned && i < e.boneUbos.size()) {
+                boneBI.buffer = e.boneUbos[i];
+                boneBI.offset = 0;
+                boneBI.range = sizeof(BoneMatricesUBO);
                 writes[6].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 writes[6].dstSet          = e.descSets[i];
                 writes[6].dstBinding      = 6;
                 writes[6].descriptorCount = 1;
                 writes[6].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
                 writes[6].pBufferInfo     = &boneBI;
-
-                vkUpdateDescriptorSets(ctx.getDevice(), 7, writes.data(), 0, nullptr);
-            } else {
-                std::array<VkWriteDescriptorSet, 6> writes{};
-                writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                writes[0].dstSet          = e.descSets[i];
-                writes[0].dstBinding      = 0;
-                writes[0].descriptorCount = 1;
-                writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-                writes[0].pBufferInfo     = &bi;
-
-                auto fillTex = [&](size_t idx, uint32_t binding, const VkDescriptorImageInfo* info) {
-                    writes[idx].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                    writes[idx].dstSet          = e.descSets[i];
-                    writes[idx].dstBinding      = binding;
-                    writes[idx].descriptorCount = 1;
-                    writes[idx].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                    writes[idx].pImageInfo      = info;
-                };
-                fillTex(1, 1, &albedoI);
-                fillTex(2, 2, &normalI);
-                fillTex(3, 3, &mrI);
-                fillTex(4, 4, &aoI);
-                fillTex(5, 5, &emI);
-
-                vkUpdateDescriptorSets(ctx.getDevice(), 6, writes.data(), 0, nullptr);
+                writeCount = 7;
             }
+
+            vkUpdateDescriptorSets(ctx.getDevice(), writeCount, writes.data(), 0, nullptr);
         } else {
             VkWriteDescriptorSet w{};
             w.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -478,14 +451,6 @@ void MaterialManager::writeDescSets(MaterialEntry& e, const VulkanContext& ctx,
 void MaterialManager::destroyEntry(MaterialEntry& e, const VulkanContext& ctx)
 {
     destroyUBOs(e, ctx);
-    // 销毁骨骼矩阵 UBO
-    auto dev = ctx.getDevice();
-    for (uint32_t i = 0; i < static_cast<uint32_t>(e.boneUBOs.size()); ++i) {
-        if (e.boneUBOMapped[i])           { vkUnmapMemory(dev, e.boneUBOMemory[i]);         e.boneUBOMapped[i] = nullptr;           }
-        if (e.boneUBOs[i]     != VK_NULL_HANDLE) { vkDestroyBuffer(dev, e.boneUBOs[i], nullptr);        e.boneUBOs[i]     = VK_NULL_HANDLE; }
-        if (e.boneUBOMemory[i]!= VK_NULL_HANDLE) { vkFreeMemory(dev, e.boneUBOMemory[i], nullptr);      e.boneUBOMemory[i]= VK_NULL_HANDLE; }
-    }
-    e.boneUBOs.clear(); e.boneUBOMemory.clear(); e.boneUBOMapped.clear();
     e.descSets.clear();
     if (!e.albedo.isDefault)            destroyTexture(e.albedo,            ctx);
     if (!e.normal.isDefault)            destroyTexture(e.normal,            ctx);
@@ -562,110 +527,6 @@ MaterialId MaterialManager::createBoxMaterial(const std::string& name,
     return id;
 }
 
-MaterialId MaterialManager::createSkinnedMeshMaterial(const std::string& name,
-                                                       const std::string& albedoPath,
-                                                       const std::string& normalPath,
-                                                       const std::string& metallicRoughnessPath,
-                                                       const std::string& aoPath,
-                                                       const std::string& emissivePath,
-                                                       const MaterialParams& params,
-                                                       const VulkanContext& ctx,
-                                                       const CommandManager& cmdMgr,
-                                                       const BufferManager& bufMgr,
-                                                       const FramebufferManager& fbMgr,
-                                                       const PipelineManager& pipeMgr)
-{
-    MaterialId id      = allocateId();
-    MaterialEntry& e   = materials_[id];
-    e.name             = name;
-    e.type             = MaterialType::Mesh;
-    e.params           = params;
-    e.deletable        = true;
-    e.hasSkinning_     = true;
-
-    auto bind = [&](TextureGPU& slot, const std::string& path, const TextureGPU& fallback) {
-        if (!path.empty()) {
-            try {
-                loadTexture(slot, path, ctx, cmdMgr, bufMgr, fbMgr);
-                return;
-            } catch (const std::exception& ex) {
-                std::cerr << "[MaterialManager] texture load failed (" << path
-                          << "): " << ex.what() << " — falling back to default\n";
-            }
-        }
-        slot.view      = fallback.view;
-        slot.sampler   = fallback.sampler;
-        slot.isDefault = true;
-        slot.path.clear();
-    };
-    bind(e.albedo,            albedoPath,            defaultAlbedo_);
-    bind(e.normal,            normalPath,            defaultNormal_);
-    bind(e.metallicRoughness, metallicRoughnessPath, defaultMR_);
-    bind(e.ao,                aoPath,                defaultAO_);
-    bind(e.emissive,          emissivePath,          defaultEmissive_);
-
-    createUBOs(e, ctx, bufMgr);
-
-    // 创建骨骼矩阵 UBO（per swapchain image）
-    e.boneUBOs.resize(imageCount_);
-    e.boneUBOMemory.resize(imageCount_);
-    e.boneUBOMapped.resize(imageCount_, nullptr);
-    for (uint32_t i = 0; i < imageCount_; ++i) {
-        bufMgr.createBuffer(sizeof(BoneMatricesUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                            e.boneUBOs[i], e.boneUBOMemory[i]);
-        vkMapMemory(ctx.getDevice(), e.boneUBOMemory[i], 0, sizeof(BoneMatricesUBO), 0,
-                    &e.boneUBOMapped[i]);
-        const BoneMatricesUBO identity = makeIdentityBoneMatricesUBO();
-        memcpy(e.boneUBOMapped[i], &identity, sizeof(identity));
-    }
-
-    allocateDescSets(e, ctx, pipeMgr);
-    writeDescSets(e, ctx, pipeMgr);
-    return id;
-}
-
-MaterialId MaterialManager::createSkinnedMaterialFrom(MaterialId src,
-                                                       const VulkanContext& ctx,
-                                                       const CommandManager& cmdMgr,
-                                                       const BufferManager& bufMgr,
-                                                       const FramebufferManager& fbMgr,
-                                                       const PipelineManager& pipeMgr)
-{
-    if (!isValid(src)) return kInvalidMaterialId;
-    const MaterialEntry& s = materials_.at(src);
-    if (s.hasSkinning_) return src;
-    if (s.type != MaterialType::Mesh && s.type != MaterialType::Material) return kInvalidMaterialId;
-
-    auto pathOrEmpty = [](const TextureGPU& tex) -> std::string {
-        return tex.isDefault ? std::string() : tex.path;
-    };
-
-    return createSkinnedMeshMaterial(s.name + "_Skin",
-                                     pathOrEmpty(s.albedo),
-                                     pathOrEmpty(s.normal),
-                                     pathOrEmpty(s.metallicRoughness),
-                                     pathOrEmpty(s.ao),
-                                     pathOrEmpty(s.emissive),
-                                     s.params,
-                                     ctx, cmdMgr, bufMgr, fbMgr, pipeMgr);
-}
-
-void MaterialManager::updateBoneMatrices(MaterialId id, uint32_t imageIndex,
-                                          const std::vector<glm::mat4>& finalBoneMatrices)
-{
-    auto it = materials_.find(id);
-    if (it == materials_.end() || !it->second.hasSkinning_) return;
-    const MaterialEntry& e = it->second;
-    if (imageIndex >= e.boneUBOs.size()) return;
-
-    BoneMatricesUBO ubo = makeIdentityBoneMatricesUBO();
-    const size_t count = std::min(finalBoneMatrices.size(), static_cast<size_t>(kMaxBones));
-    for (size_t i = 0; i < count; ++i)
-        ubo.bones[i] = finalBoneMatrices[i];
-    memcpy(e.boneUBOMapped[imageIndex], &ubo, sizeof(ubo));
-}
-
 MaterialId MaterialManager::cloneMaterial(MaterialId src,
                                           const VulkanContext& ctx,
                                           const CommandManager& cmdMgr,
@@ -677,17 +538,74 @@ MaterialId MaterialManager::cloneMaterial(MaterialId src,
         throw std::runtime_error("cloneMaterial: invalid source ID");
 
     const MaterialEntry& s = materials_.at(src);
-    if (s.type == MaterialType::Mesh || s.type == MaterialType::Material) {
-        const MaterialId id = createMeshMaterial(s.name + " (copy)",
-                                                 s.albedo.path,            s.normal.path,
-                                                 s.metallicRoughness.path, s.ao.path, s.emissive.path,
-                                                 s.params, ctx, cmdMgr, bufMgr, fbMgr, pipeMgr);
-        if (id != kInvalidMaterialId && s.type == MaterialType::Material)
-            materials_.at(id).type = MaterialType::Material;
-        return id;
-    } else {
+    if (s.type == MaterialType::Mesh || s.type == MaterialType::Material)
+        return createMeshMaterial(s.name + " (copy)",
+                                  s.albedo.path,            s.normal.path,
+                                  s.metallicRoughness.path, s.ao.path, s.emissive.path,
+                                  s.params, ctx, cmdMgr, bufMgr, fbMgr, pipeMgr);
+    else
         return createBoxMaterial(s.name + " (copy)", s.params, ctx, bufMgr, pipeMgr);
-    }
+}
+
+MaterialId MaterialManager::createSkinnedMaterialFrom(MaterialId src,
+                                                      const VulkanContext& ctx,
+                                                      const CommandManager& cmdMgr,
+                                                      const BufferManager& bufMgr,
+                                                      const FramebufferManager& fbMgr,
+                                                      const PipelineManager& pipeMgr)
+{
+    auto cached = skinnedCache_.find(src);
+    if (cached != skinnedCache_.end() && isValid(cached->second))
+        return cached->second;
+
+    auto srcIt = materials_.find(src);
+    if (srcIt == materials_.end())
+        return kInvalidMaterialId;
+
+    const MaterialEntry& s = srcIt->second;
+    if (s.type != MaterialType::Mesh && s.type != MaterialType::Material)
+        return kInvalidMaterialId;
+    if (s.skinned)
+        return src;
+
+    MaterialId id = allocateId();
+    MaterialEntry& e = materials_[id];
+    e.name = s.name + " (skinned)";
+    e.type = MaterialType::Mesh;
+    e.params = s.params;
+    e.deletable = true;
+    e.skinned = true;
+    e.vertSpvPath = s.vertSpvPath;
+    e.fragSpvPath = s.fragSpvPath;
+
+    auto bind = [&](TextureGPU& slot, const std::string& path, const TextureGPU& fallback) {
+        if (!path.empty()) {
+            try {
+                loadTexture(slot, path, ctx, cmdMgr, bufMgr, fbMgr);
+                return;
+            } catch (const std::exception& ex) {
+                std::cerr << "[MaterialManager] skinned texture load failed (" << path
+                          << "): " << ex.what() << " - falling back to default\n";
+            }
+        }
+        slot.view = fallback.view;
+        slot.sampler = fallback.sampler;
+        slot.isDefault = true;
+        slot.path.clear();
+    };
+
+    bind(e.albedo,            s.albedo.path,            defaultAlbedo_);
+    bind(e.normal,            s.normal.path,            defaultNormal_);
+    bind(e.metallicRoughness, s.metallicRoughness.path, defaultMR_);
+    bind(e.ao,                s.ao.path,                defaultAO_);
+    bind(e.emissive,          s.emissive.path,          defaultEmissive_);
+
+    createUBOs(e, ctx, bufMgr);
+    allocateDescSets(e, ctx, pipeMgr);
+    writeDescSets(e, ctx, pipeMgr);
+
+    skinnedCache_[src] = id;
+    return id;
 }
 
 void MaterialManager::destroyMaterial(MaterialId id, const VulkanContext& ctx)
@@ -701,6 +619,10 @@ void MaterialManager::destroyMaterial(MaterialId id, const VulkanContext& ctx)
     // 从资产缓存中移除失效条目
     for (auto ci = assetCache_.begin(); ci != assetCache_.end(); ) {
         if (ci->second == id) ci = assetCache_.erase(ci);
+        else ++ci;
+    }
+    for (auto ci = skinnedCache_.begin(); ci != skinnedCache_.end(); ) {
+        if (ci->first == id || ci->second == id) ci = skinnedCache_.erase(ci);
         else ++ci;
     }
 }
@@ -836,27 +758,6 @@ const std::string& MaterialManager::getNormalPath(MaterialId id) const
     return materials_.at(id).normal.path;
 }
 
-const std::string& MaterialManager::getMetallicRoughnessPath(MaterialId id) const
-{
-    return materials_.at(id).metallicRoughness.path;
-}
-
-const std::string& MaterialManager::getAoPath(MaterialId id) const
-{
-    return materials_.at(id).ao.path;
-}
-
-const std::string& MaterialManager::getEmissivePath(MaterialId id) const
-{
-    return materials_.at(id).emissive.path;
-}
-
-bool MaterialManager::hasSkinning(MaterialId id) const
-{
-    auto it = materials_.find(id);
-    return it != materials_.end() && it->second.hasSkinning_;
-}
-
 bool MaterialManager::isValid(MaterialId id) const
 {
     return id != kInvalidMaterialId && materials_.find(id) != materials_.end();
@@ -866,6 +767,31 @@ bool MaterialManager::isDeletable(MaterialId id) const
 {
     auto it = materials_.find(id);
     return it != materials_.end() && it->second.deletable;
+}
+
+bool MaterialManager::hasSkinning(MaterialId id) const
+{
+    auto it = materials_.find(id);
+    return it != materials_.end() && it->second.skinned;
+}
+
+void MaterialManager::updateBoneMatrices(MaterialId id,
+                                         uint32_t imageIndex,
+                                         const std::vector<glm::mat4>& bones)
+{
+    auto it = materials_.find(id);
+    if (it == materials_.end()) return;
+    MaterialEntry& e = it->second;
+    if (!e.skinned || imageIndex >= e.boneUboMapped.size() || !e.boneUboMapped[imageIndex])
+        return;
+
+    BoneMatricesUBO ubo{};
+    const size_t count = std::min(bones.size(), static_cast<size_t>(kMaxBones));
+    for (size_t i = 0; i < count; ++i)
+        ubo.bones[i] = bones[i];
+    for (size_t i = count; i < static_cast<size_t>(kMaxBones); ++i)
+        ubo.bones[i] = glm::mat4(1.f);
+    memcpy(e.boneUboMapped[imageIndex], &ubo, sizeof(ubo));
 }
 
 // ── Reload default mesh textures ───────────────────────────────────────────────
@@ -910,8 +836,6 @@ MaterialId MaterialManager::loadMaterialFromAsset(const std::string& astRelPath,
                                     desc.metallicRoughnessPath, desc.aoPath, desc.emissivePath,
                                     desc.params,
                                     ctx, cmdMgr, bufMgr, fbMgr, pipeMgr);
-            if (id != kInvalidMaterialId && desc.type == MaterialType::Material)
-                materials_.at(id).type = MaterialType::Material;
         } else {
             id = createBoxMaterial(desc.name.empty() ? std::string("AssetMaterial") : desc.name,
                                    desc.params, ctx, bufMgr, pipeMgr);
@@ -937,10 +861,11 @@ VkPipeline MaterialManager::getPipeline(MaterialId id,
 {
     auto it = materials_.find(id);
     if (it == materials_.end()) {
+        // Unknown material -> safest is the default mesh pipeline.
         return pipeMgr.getMainPipeline();
     }
     const MaterialEntry& e = it->second;
-    if (e.hasSkinning_)
+    if (e.skinned)
         return pipeMgr.getSkinnedPipeline();
     const PipelineVariant variant = (e.type == MaterialType::Box)
                                   ? PipelineVariant::Box

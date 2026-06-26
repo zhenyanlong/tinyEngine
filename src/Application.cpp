@@ -1,4 +1,5 @@
 #include "Application.hpp"
+#include "Animation/AnimationAssetLoader.hpp"
 #include "MaterialAssetLoader.hpp"
 #include "SceneSerializer.hpp"
 #include "TinyEngineDebug.hpp"
@@ -7,6 +8,7 @@
 #include <backends/imgui_impl_vulkan.h>
 #include <ImGuizmo.h>
 #include <glm/gtc/matrix_transform.hpp>
+#include "nlohmann/json.hpp"
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -22,6 +24,88 @@
 // STB_IMAGE_IMPLEMENTATION defined globally; only TextureManager.cpp implements it
 #undef STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
+
+namespace {
+
+using nlohmann::json;
+
+std::string sanitizeAssetName(std::string name)
+{
+    for (char& c : name) {
+        if (c == '\\' || c == '/' || c == ':' || c == '*' || c == '?'
+            || c == '"' || c == '<' || c == '>' || c == '|') {
+            c = '_';
+        }
+    }
+    return name;
+}
+
+std::filesystem::path makeUniquePath(const std::filesystem::path& desired)
+{
+    if (!std::filesystem::exists(desired))
+        return desired;
+
+    const auto parent = desired.parent_path();
+    const auto stem = desired.stem().string();
+    const auto ext = desired.extension().string();
+    for (int i = 1; i < 10000; ++i) {
+        char suffix[16]{};
+        std::snprintf(suffix, sizeof(suffix), "_%03d", i);
+        std::filesystem::path candidate = parent / (stem + suffix + ext);
+        if (!std::filesystem::exists(candidate))
+            return candidate;
+    }
+    return desired;
+}
+
+std::string makeContentRelDir(const std::string& subFolder, const std::string& assetName)
+{
+    std::string rel = "content/";
+    if (!subFolder.empty()) {
+        rel += subFolder;
+        if (rel.back() != '/') rel += "/";
+    }
+    rel += assetName;
+    return rel;
+}
+
+std::string relativeToRes(const std::filesystem::path& path, const std::filesystem::path& resRoot)
+{
+    std::error_code ec;
+    const auto rel = std::filesystem::relative(path, resRoot, ec);
+    return ec ? path.generic_string() : rel.generic_string();
+}
+
+std::string toLowerCopy(std::string s)
+{
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return s;
+}
+
+bool endsWith(const std::string& value, const std::string& suffix)
+{
+    return value.size() >= suffix.size()
+        && value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+std::string stripResPrefix(std::string path)
+{
+    std::replace(path.begin(), path.end(), '\\', '/');
+    if (path.rfind("res/", 0) == 0)
+        return path.substr(4);
+    return path;
+}
+
+std::string defaultAnimBaseName(const std::string& meshAstRelPath)
+{
+    std::string base = std::filesystem::path(meshAstRelPath).stem().string();
+    if (endsWith(base, ".mesh"))
+        base.resize(base.size() - 5);
+    return sanitizeAssetName(base.empty() ? std::string("animation") : base);
+}
+
+} // namespace
 
 Application::Application()
     : camera_(glm::vec3(0.f, -4.f, 4.f), glm::radians(45.f), 0.0f, glm::vec3(0.f, 1.f, 0.f))
@@ -320,68 +404,70 @@ void Application::drawFrame()
     const glm::mat4 proj = camera_.GetProjectionMatrix();
     matMgr_.updateAllUBOs(imageIndex, view, proj);
 
-    if (const auto skeleton = sceneMgr_.getSkeleton()) {
-        if (!skeleton->bones.empty()) {
-            const auto& clips = sceneMgr_.getAnimationClips();
-            std::vector<glm::mat4> localTransforms(skeleton->bones.size());
-            const bool hasPlayableClip = !clips.empty() && clips.front().duration > 1e-6f;
-            const float animTime = hasPlayableClip
-                ? std::fmod(static_cast<float>(glfwGetTime()), clips.front().duration)
-                : 0.f;
-            for (size_t i = 0; i < skeleton->bones.size(); ++i) {
-                localTransforms[i] = hasPlayableClip
-                    ? clips.front().evaluateBoneLocalTransform(
-                        static_cast<int>(i), animTime, skeleton->bones[i].localBindTransform)
-                    : skeleton->bones[i].localBindTransform;
+    // 逐实体动画采样与骨骼矩阵上传：每个实体使用自己的 skeleton/clips，
+    // 不再依赖全局单例，支持多骨架动画实体同场景。
+    std::vector<MaterialId> updatedMaterials;
+    auto updateSkinMaterial = [&](MaterialId id, const std::vector<glm::mat4>& palette) {
+        if (id == kInvalidMaterialId || !matMgr_.isValid(id)) return;
+        if (std::find(updatedMaterials.begin(), updatedMaterials.end(), id) != updatedMaterials.end())
+            return;
+        matMgr_.updateBoneMatrices(id, imageIndex, palette);
+        updatedMaterials.push_back(id);
+    };
+
+    for (const auto& ent : sceneMgr_.getModelEntities()) {
+        if (!ent.hasSkin_ || !ent.skeleton || ent.skeleton->bones.empty())
+            continue;
+
+        const auto& skeleton = ent.skeleton;
+        const auto& clips = ent.animationClips;
+
+        std::vector<glm::mat4> localTransforms(skeleton->bones.size());
+        const bool hasPlayableClip = !clips.empty() && clips.front().duration > 1e-6f;
+        const float animTime = hasPlayableClip
+            ? std::fmod(static_cast<float>(glfwGetTime()), clips.front().duration)
+            : 0.f;
+        for (size_t i = 0; i < skeleton->bones.size(); ++i) {
+            localTransforms[i] = hasPlayableClip
+                ? clips.front().evaluateBoneLocalTransform(
+                    static_cast<int>(i), animTime, skeleton->bones[i].localBindTransform)
+                : skeleton->bones[i].localBindTransform;
+        }
+
+        std::vector<glm::mat4> finalBoneMatrices;
+        skeleton->computeFinalMatrices(localTransforms, finalBoneMatrices);
+
+        auto makeSkinPalette = [&](int skinIndex) -> std::vector<glm::mat4> {
+            if (skinIndex >= 0
+                && skinIndex < static_cast<int>(skeleton->skinBoneIndices.size())) {
+                const auto& map = skeleton->skinBoneIndices[skinIndex];
+                std::vector<glm::mat4> palette;
+                palette.reserve(std::min(map.size(), static_cast<size_t>(kMaxBones)));
+                for (size_t i = 0; i < map.size() && i < static_cast<size_t>(kMaxBones); ++i) {
+                    const int globalBone = map[i];
+                    palette.push_back((globalBone >= 0
+                                       && globalBone < static_cast<int>(finalBoneMatrices.size()))
+                        ? finalBoneMatrices[globalBone]
+                        : glm::mat4(1.f));
+                }
+                return palette;
             }
+            return finalBoneMatrices;
+        };
 
-            std::vector<glm::mat4> finalBoneMatrices;
-            skeleton->computeFinalMatrices(localTransforms, finalBoneMatrices);
+        if (ent.subMeshes.empty()) {
+            updateSkinMaterial(ent.materialId, makeSkinPalette(0));
+            continue;
+        }
 
-            std::vector<MaterialId> updatedMaterials;
-            auto makeSkinPalette = [&](int skinIndex) -> std::vector<glm::mat4> {
-                if (skinIndex >= 0
-                    && skinIndex < static_cast<int>(skeleton->skinBoneIndices.size())) {
-                    const auto& map = skeleton->skinBoneIndices[skinIndex];
-                    std::vector<glm::mat4> palette;
-                    palette.reserve(std::min(map.size(), static_cast<size_t>(kMaxBones)));
-                    for (size_t i = 0; i < map.size() && i < static_cast<size_t>(kMaxBones); ++i) {
-                        const int globalBone = map[i];
-                        palette.push_back((globalBone >= 0
-                                           && globalBone < static_cast<int>(finalBoneMatrices.size()))
-                            ? finalBoneMatrices[globalBone]
-                            : glm::mat4(1.f));
-                    }
-                    return palette;
-                }
-                return finalBoneMatrices;
-            };
-
-            auto updateSkinMaterial = [&](MaterialId id, const std::vector<glm::mat4>& palette) {
-                if (id == kInvalidMaterialId || !matMgr_.isValid(id)) return;
-                if (std::find(updatedMaterials.begin(), updatedMaterials.end(), id) != updatedMaterials.end())
-                    return;
-                matMgr_.updateBoneMatrices(id, imageIndex, palette);
-                updatedMaterials.push_back(id);
-            };
-
-            for (const auto& ent : sceneMgr_.getModelEntities()) {
-                if (!ent.hasSkin_) continue;
-                if (ent.subMeshes.empty()) {
-                    updateSkinMaterial(ent.materialId, makeSkinPalette(0));
-                    continue;
-                }
-
-                for (const auto& sm : ent.subMeshes) {
-                    MaterialId matId = ent.materialId;
-                    if (sm.materialSlot >= 0
-                        && sm.materialSlot < static_cast<int>(ent.subMeshMaterials.size())
-                        && ent.subMeshMaterials[sm.materialSlot] != kInvalidMaterialId) {
-                        matId = ent.subMeshMaterials[sm.materialSlot];
-                    }
-                    updateSkinMaterial(matId, makeSkinPalette(sm.skinIndex));
-                }
+        for (const auto& sm : ent.subMeshes) {
+            MaterialId matId = ent.materialId;
+            if (sm.materialSlot >= 0
+                && sm.materialSlot < static_cast<int>(ent.subMeshMaterials.size())
+                && ent.subMeshMaterials[sm.materialSlot] != kInvalidMaterialId) {
+                matId = ent.subMeshMaterials[sm.materialSlot];
             }
+            updateSkinMaterial(matId, makeSkinPalette(sm.skinIndex));
         }
     }
 
@@ -740,6 +826,178 @@ void Application::setBoxMaterial(RenderEntityId eid, MaterialId id)
     if (pickedBoxEntityId == eid) selectedMaterialId = id;
 }
 
+bool Application::ensureAnimationAssetForMeshAst(const std::string& meshAstRelPath,
+                                                 const std::string& modelPathOrRel,
+                                                 bool refreshRegistryAfterWrite,
+                                                 uint64_t entityId)
+{
+    if (meshAstRelPath.empty())
+        return false;
+
+    // 解析目标实体 id：传入 0 时回退到第一个实体（兼容旧调用方）
+    const auto& ents = sceneMgr_.getModelEntities();
+    if (ents.empty()) return false;
+    if (entityId == 0) entityId = ents.front().entityId;
+
+    const std::filesystem::path resRoot(modelRegistry_.getResRoot().empty()
+        ? std::string("res")
+        : modelRegistry_.getResRoot());
+    AnimationAssetLoader::setResRoot(resRoot.string());
+    const std::filesystem::path meshAstAbs = resRoot / stripResPrefix(meshAstRelPath);
+
+    std::ifstream meshIn(meshAstAbs);
+    if (!meshIn.is_open())
+        return false;
+
+    json meshJson;
+    try {
+        meshIn >> meshJson;
+    } catch (const std::exception& e) {
+        std::cerr << "[AnimationAsset] mesh ast parse failed (" << meshAstAbs.string()
+                  << "): " << e.what() << "\n";
+        return false;
+    }
+
+    std::string modelRel = stripResPrefix(modelPathOrRel);
+    if (modelRel.empty() && meshJson.contains("model")) {
+        const auto& model = meshJson["model"];
+        if (model.is_string()) {
+            modelRel = stripResPrefix(model.get<std::string>());
+        } else if (model.is_object()) {
+            modelRel = stripResPrefix(model.value("path", std::string{}));
+        }
+    }
+
+    std::filesystem::path modelPath(modelRel);
+    if (!modelPath.is_absolute())
+        modelPath = resRoot / modelRel;
+
+    const std::string ext = toLowerCopy(modelPath.extension().string());
+    if (ext != ".gltf" && ext != ".glb")
+        return false;
+
+    const std::string normalizedMeshAstRel = stripResPrefix(meshAstRelPath);
+    const std::string baseName = defaultAnimBaseName(normalizedMeshAstRel);
+
+    auto defaultBinaryRel = [&]() {
+        const auto desired = resRoot / "bin" / "anim" / (baseName + ".anim.bin");
+        return relativeToRes(desired, resRoot);
+    };
+
+    auto loadAnim = [&](const std::string& animAstRel) {
+        AnimationAsset animAsset;
+        std::string animErr;
+        if (AnimationAssetLoader::load(stripResPrefix(animAstRel), animAsset, &animErr)) {
+            sceneMgr_.setEntityAnimationData(entityId, animAsset.skeleton, std::move(animAsset.clips));
+            return true;
+        }
+        std::cerr << "[AnimationAsset] load failed (" << animAstRel << "): "
+                  << animErr << "\n";
+        return false;
+    };
+
+    auto saveThenLoad = [&](const std::string& animAstRel, const std::string& binaryRel) {
+        std::string saveErr;
+        if (!AnimationAssetLoader::saveFromGltf(modelPath.string(),
+                                                stripResPrefix(animAstRel),
+                                                stripResPrefix(binaryRel),
+                                                normalizedMeshAstRel,
+                                                &saveErr)) {
+            std::cerr << "[AnimationAsset] generate failed (" << modelPath.string()
+                      << "): " << saveErr << "\n";
+            return false;
+        }
+        return loadAnim(animAstRel);
+    };
+
+    std::vector<std::string> animAstPaths;
+    if (meshJson.contains("animations") && meshJson["animations"].is_array()) {
+        for (const auto& item : meshJson["animations"]) {
+            if (item.is_string())
+                animAstPaths.push_back(stripResPrefix(item.get<std::string>()));
+        }
+    }
+
+    for (const std::string& animAstRel : animAstPaths) {
+        const std::filesystem::path animAstAbs = resRoot / animAstRel;
+        json animJson;
+        bool hasAnimMeta = false;
+        {
+            std::ifstream animIn(animAstAbs);
+            if (animIn.is_open()) {
+                try {
+                    animIn >> animJson;
+                    hasAnimMeta = true;
+                } catch (const std::exception& e) {
+                    std::cerr << "[AnimationAsset] anim ast parse failed ("
+                              << animAstAbs.string() << "): " << e.what() << "\n";
+                }
+            }
+        }
+
+        if (hasAnimMeta && animJson.value("type", std::string{}) != "Anim")
+            continue;
+
+        const std::string rootModel = hasAnimMeta
+            ? stripResPrefix(animJson.value("rootModel", std::string{}))
+            : std::string{};
+        if (!rootModel.empty() && rootModel != normalizedMeshAstRel) {
+            std::cerr << "[AnimationAsset] rootModel mismatch: " << animAstRel
+                      << " belongs to " << rootModel
+                      << ", expected " << normalizedMeshAstRel << "\n";
+            continue;
+        }
+
+        std::string binaryRel = hasAnimMeta
+            ? stripResPrefix(animJson.value("binary", std::string{}))
+            : std::string{};
+        if (binaryRel.empty())
+            binaryRel = defaultBinaryRel();
+
+        if (hasAnimMeta && std::filesystem::exists(resRoot / binaryRel)) {
+            if (loadAnim(animAstRel))
+                return true;
+            std::cerr << "[AnimationAsset] existing binary was unreadable; regenerating "
+                      << binaryRel << "\n";
+        }
+
+        if (saveThenLoad(animAstRel, binaryRel))
+            return true;
+    }
+
+    std::filesystem::path meshAstPath(normalizedMeshAstRel);
+    const std::string newAnimAstRel =
+        (meshAstPath.parent_path() / (baseName + ".anim.ast")).generic_string();
+    const std::string newBinaryRel = defaultBinaryRel();
+
+    if (!saveThenLoad(newAnimAstRel, newBinaryRel))
+        return false;
+
+    if (!meshJson.contains("animations") || !meshJson["animations"].is_array())
+        meshJson["animations"] = json::array();
+
+    bool alreadyReferenced = false;
+    for (const auto& item : meshJson["animations"]) {
+        if (item.is_string() && stripResPrefix(item.get<std::string>()) == newAnimAstRel) {
+            alreadyReferenced = true;
+            break;
+        }
+    }
+    if (!alreadyReferenced)
+        meshJson["animations"].push_back(newAnimAstRel);
+
+    std::ofstream meshOut(meshAstAbs);
+    if (meshOut.is_open()) {
+        meshOut << meshJson.dump(2) << "\n";
+        if (refreshRegistryAfterWrite)
+            modelRegistry_.refresh();
+    } else {
+        std::cerr << "[AnimationAsset] failed to update mesh ast animations: "
+                  << meshAstAbs.string() << "\n";
+    }
+    return true;
+}
+
 bool Application::loadAndApplyMaterialAsset(const std::string& astRelPath)
 {
     // Peek the asset first so we can do an optional mesh swap together with
@@ -787,6 +1045,8 @@ bool Application::loadAndApplyMaterialAsset(const std::string& astRelPath)
         }
 
         // 若有骨骼数据，为实体的槽位材质创建蒙皮版本
+        ensureAnimationAssetForMeshAst(astRelPath, peeked.modelPath, true);
+
         auto& ents = sceneMgr_.getModelEntities();
         if (!ents.empty() && ents[0].hasSkin_)
             convertModelMaterialsToSkinned();
@@ -853,7 +1113,7 @@ void Application::beginDragPlace(uint64_t assetId)
     if (!asset) return;
 
     // Material 类型的资产不包含模型引用，禁止拖入场景
-    if (asset->astType == "Material") {
+    if (asset->astType == "Material" || asset->astType == "Anim") {
         dragPlace.active   = true;  // 标记为 active 但无 entity，updateDragPlace/endDragPlace 不做实质操作
         dragPlace.assetId  = assetId;
         return;
@@ -903,6 +1163,9 @@ void Application::beginDragPlace(uint64_t assetId)
     }
 
     // 若有骨骼数据，为实体的槽位材质创建蒙皮版本
+    if (hasEntryDesc)
+        ensureAnimationAssetForMeshAst(asset->astRelPath, asset->modelRelPath, false);
+
     if (ent->hasSkin_)
         convertModelMaterialsToSkinned();
 
@@ -1101,6 +1364,7 @@ ImTextureID Application::loadPNGTexture(const std::string& path, VkSampler& outS
 
 bool Application::saveScene(const std::string& path)
 {
+    // resRoot 已指向项目根/res/，save 直接写入唯一基准路径，无需双写。
     return SceneSerializer::save(path, sceneMgr_, matMgr_, camera_);
 }
 
@@ -1112,6 +1376,12 @@ bool Application::loadScene(const std::string& path)
                                           bufMgr_, ctx_, cmdMgr_, fbMgr_, pipeMgr_,
                                           camera_, resRoot);
     if (ok) {
+        for (const auto& ent : sceneMgr_.getModelEntities()) {
+            if (!ent.astRelPath.empty())
+                ensureAnimationAssetForMeshAst(ent.astRelPath, "", false, ent.entityId);
+        }
+        convertModelMaterialsToSkinned();
+
         // Reset UI state
         ui_->selectedEntityId_ = 0;
         mainModelSelected  = false;
@@ -1139,7 +1409,7 @@ bool Application::importModel(const std::string& sourcePath,
         return false;
     }
 
-    const std::string stem = srcPath.stem().string();
+    const std::string stem = sanitizeAssetName(srcPath.stem().string());
     // 使用绝对路径，确保 fs::relative 在 resolveGltfImageRel 中能正确计算
     const std::string resRoot = std::filesystem::absolute(modelRegistry_.getResRoot()).string();
     std::string modelRelPath; // relative to res/
@@ -1152,6 +1422,164 @@ bool Application::importModel(const std::string& sourcePath,
     };
 
     const std::string lowerExt = toLower(srcPath.extension().string());
+
+    const fs::path resRootPath(resRoot);
+    const fs::path contentBase = makeUniquePath(resRootPath / makeContentRelDir(subFolder, stem));
+    const std::string contentRelDir = relativeToRes(contentBase, resRootPath);
+
+    auto writeMeshAst = [&](const std::string& astRelPath,
+                            const std::vector<std::string>& materialPaths,
+                            const std::vector<std::string>& animationPaths) {
+        const fs::path astAbs = resRootPath / astRelPath;
+        fs::create_directories(astAbs.parent_path(), ec);
+        std::ofstream out(astAbs);
+        if (!out.is_open()) {
+            std::cerr << "[Import] cannot create .ast: " << astAbs << "\n";
+            return false;
+        }
+        std::string displayName = stem;
+        std::replace(displayName.begin(), displayName.end(), '_', ' ');
+        out << "{\n"
+            << "  \"name\": \"" << displayName << "\",\n"
+            << "  \"type\": \"Mesh\",\n"
+            << "  \"model\": \"" << modelRelPath << "\"";
+        if (!materialPaths.empty()) {
+            out << ",\n  \"materials\": [";
+            for (size_t i = 0; i < materialPaths.size(); ++i) {
+                if (i > 0) out << ", ";
+                out << "\"" << materialPaths[i] << "\"";
+            }
+            out << "]";
+        }
+        if (!animationPaths.empty()) {
+            out << ",\n  \"animations\": [";
+            for (size_t i = 0; i < animationPaths.size(); ++i) {
+                if (i > 0) out << ", ";
+                out << "\"" << animationPaths[i] << "\"";
+            }
+            out << "]";
+        }
+        out << "\n}\n";
+        return true;
+    };
+
+    if (lowerExt == ".obj") {
+        const fs::path dst = makeUniquePath(resRootPath / "bin" / "mesh" / (stem + ".obj"));
+        fs::create_directories(dst.parent_path(), ec);
+        fs::copy_file(srcPath, dst, fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            std::cerr << "[Import] copy failed: " << ec.message() << "\n";
+            return false;
+        }
+        modelRelPath = relativeToRes(dst, resRootPath);
+        const std::string astRelPath = contentRelDir + "/" + stem + ".mesh.ast";
+        if (!writeMeshAst(astRelPath, {}, {})) return false;
+        std::cout << "[Import] imported " << sourcePath << " as " << modelRelPath
+                  << " (" << astRelPath << ")\n";
+        return true;
+    }
+
+    if (lowerExt == ".gltf" || lowerExt == ".glb") {
+        const fs::path srcDir = srcPath.parent_path();
+        bool hasSidecars = false;
+        if (lowerExt == ".gltf") {
+            for (const auto& entry : fs::directory_iterator(srcDir, ec)) {
+                if (ec) break;
+                const std::string name = entry.path().filename().string();
+                if (toLower(name) == toLower(srcPath.filename().string()))
+                    continue;
+                if (entry.is_regular_file(ec) && toLower(name).ends_with(".bin")) {
+                    hasSidecars = true;
+                    break;
+                }
+                if (entry.is_directory(ec) && toLower(name) == "textures") {
+                    hasSidecars = true;
+                    break;
+                }
+            }
+        }
+
+        fs::path dstPath;
+        if (hasSidecars) {
+            const fs::path dstDir = makeUniquePath(resRootPath / "bin" / "mesh" / stem);
+            dstPath = dstDir / srcPath.filename();
+            fs::create_directories(dstDir, ec);
+            for (const auto& entry : fs::recursive_directory_iterator(srcDir, ec)) {
+                if (ec) break;
+                const fs::path rel = fs::relative(entry.path(), srcDir, ec);
+                const fs::path dp = dstDir / rel;
+                if (entry.is_directory(ec)) {
+                    fs::create_directories(dp, ec);
+                } else {
+                    fs::create_directories(dp.parent_path(), ec);
+                    fs::copy_file(entry.path(), dp, fs::copy_options::overwrite_existing, ec);
+                }
+            }
+            if (ec) {
+                std::cerr << "[Import] directory copy failed: " << ec.message() << "\n";
+                return false;
+            }
+        } else {
+            dstPath = makeUniquePath(resRootPath / "bin" / "mesh" / (stem + lowerExt));
+            fs::create_directories(dstPath.parent_path(), ec);
+            fs::copy_file(srcPath, dstPath, fs::copy_options::overwrite_existing, ec);
+            if (ec) {
+                std::cerr << "[Import] copy failed: " << ec.message() << "\n";
+                return false;
+            }
+        }
+        modelRelPath = relativeToRes(dstPath, resRootPath);
+
+        std::vector<std::string> materialPaths;
+        {
+            cgltf_options opts{};
+            cgltf_data* data = nullptr;
+            if (cgltf_parse_file(&opts, dstPath.string().c_str(), &data) == cgltf_result_success && data) {
+                if (cgltf_load_buffers(&opts, data, dstPath.string().c_str()) == cgltf_result_success) {
+                    const fs::path gltfDir = dstPath.parent_path();
+                    int globalPrimIndex = 0;
+                    for (cgltf_size mi = 0; mi < data->meshes_count; ++mi) {
+                        const cgltf_mesh& mesh = data->meshes[mi];
+                        for (cgltf_size pi = 0; pi < mesh.primitives_count; ++pi, ++globalPrimIndex) {
+                            const cgltf_primitive& prim = mesh.primitives[pi];
+                            if (!prim.material) continue;
+                            const std::string astRel = SceneManager::dumpGltfMaterialAst(
+                                prim.material, stem, globalPrimIndex,
+                                gltfDir.string(), resRoot,
+                                contentRelDir.substr(std::string("content/").size()));
+                            if (!astRel.empty())
+                                materialPaths.push_back(astRel);
+                        }
+                    }
+                }
+                cgltf_free(data);
+            }
+        }
+
+        const std::string meshAstRel = contentRelDir + "/" + stem + ".mesh.ast";
+        std::vector<std::string> animationPaths;
+        {
+            const std::string animAstRel = contentRelDir + "/" + stem + ".anim.ast";
+            const fs::path animBinPath = makeUniquePath(resRootPath / "bin" / "anim" / (stem + ".anim.bin"));
+            const std::string animBinRel = relativeToRes(animBinPath, resRootPath);
+            std::string animErr;
+            AnimationAssetLoader::setResRoot(resRootPath.string());
+            if (AnimationAssetLoader::saveFromGltf(dstPath.string(), animAstRel, animBinRel,
+                                                   meshAstRel, &animErr)) {
+                animationPaths.push_back(animAstRel);
+            } else if (!animErr.empty()) {
+                std::cout << "[Import] no animation asset generated: " << animErr << "\n";
+            }
+        }
+
+        if (!writeMeshAst(meshAstRel, materialPaths, animationPaths)) return false;
+        std::cout << "[Import] imported " << sourcePath << " as " << modelRelPath
+                  << " (" << meshAstRel << ")\n";
+        return true;
+    }
+
+    std::cerr << "[Import] unsupported format: " << srcPath.extension() << "\n";
+    return false;
 
     if (lowerExt == ".obj") {
         const fs::path dst = fs::path(resRoot) / "models" / (stem + ".obj");

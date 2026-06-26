@@ -1,0 +1,25 @@
+{
+  "name": "Hair",
+  "type": "Material",
+  "params": {
+    "baseColor": [
+      1,
+      1,
+      1,
+      1
+    ],
+    "metallic": 0.11,
+    "roughness": 0.18,
+    "emissiveColor": [
+      0,
+      0,
+      0,
+      1.0
+    ],
+    "emissiveIntensity": 0
+  },
+  "textures": {
+    "albedo": "bin/texture/baseColor_5.jpg",
+    "normal": "bin/texture/normal_5.jpg"
+  }
+}

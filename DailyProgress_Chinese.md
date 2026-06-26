@@ -1,3 +1,11 @@
+## 2026-06-26
+
+- [ ] **资源路径架构重构**：重构 `applicationResourceRoot()`，从 exe 路径向上查找项目根（同时含 `CMakeLists.txt` 和 `res/` 的目录）。所有 res 读写（mesh/anim/scene/texture/shader/thumbnail）统一以 `<项目根>/res/` 为唯一基准。移除 CMake 的 `copy_directory` post-build 步骤（此前每次构建把源 `res/` 覆盖到 exe 旁，导致保存的场景被静默覆盖）。回滚了临时的 `saveScene` 双写 hack 和 `ThumbnailRenderer` 向上查找源目录逻辑，两者不再需要。
+- [ ] **场景路径迁移（Bug #3）**：在 `SceneSerializer` 新增 `resolveLegacyAstPath()`，将旧 `materials/<stem>.ast` 引用递归搜索 `res/content/` 重映射到新 `content/<stem>.mesh.ast`。在 `load()` 的 `.ast` model 字段查找和 `ent->astRelPath` 赋值两处应用，使保存的场景在下次保存时自动迁移到新布局。
+- [ ] **子材质字段兼容**：`MaterialAssetLoader::load` 现在同时读取 `subMaterials`（旧格式）和 `materials`（迁移脚本新格式）数组字段。迁移脚本将 `subMaterials` 重命名为 `materials`，但加载器只读旧名，导致 `loadScene` 跳过子材质加载（所有槽位回退为默认白纹理），而 `beginDragPlace` 因有 `autoAstPaths` 回退而正常。修复方式：`subMaterials` 为空时读取 `materials` 作为回退。
+- [ ] **多骨架动画实体（Bug #2）**：将动画状态从 `SceneManager` 全局单例（`skeleton_` / `animationClips_`）下沉到每个 `ModelEntity` 的字段（`ent.skeleton` / `ent.animationClips`）。`loadModelFromObj`/`loadModelFromGltf` 现在填充实体自己的 skeleton/clips。`drawFrame` 重写为逐实体遍历并独立求值动画。新增 `setEntityAnimationData`/`getEntitySkeleton`/`getEntityAnimationClips` 接口接收 `entityId`。`ensureAnimationAssetForMeshAst` 增加 `entityId` 参数。`CachedModelResource` 现在缓存 skeleton（shared_ptr）+ clips，重复拖拽同模型共享动画数据。移除了 `ThumbnailRenderer` 的 RAII skeleton save/restore guard（不再需要：临时实体加载不再污染其他实体的状态）。不同骨架的动画模型现在可以同场景共存，不再互相覆盖。
+- [ ] **缩略图 skeleton 污染（Bug #1，被 Bug #2 修复取代）**：最初在 `ThumbnailRenderer::renderAndSave` 加了 RAII guard，在临时模型加载前后保存/恢复全局 `skeleton_`/`animationClips_`。该 guard 后来在 Bug #2 把动画状态下沉到每实体后移除，全局污染已不可能发生。
+
 ## 2026-06-18
 
 - [✓] 外部 LLM 验证与运行时验证完成：修复骨骼解析顺序、bone UBO identity 初始化、recreate() vert→frag 参数、push constants layout、动画 bind-pose fallback、多 skin 处理、逐槽位材质克隆、per-skin 骨骼矩阵 palette，以及 128 骨骼上限问题。编译通过（MSVC 2022，C++20），用户确认双部件人物 + 机器人模型动画已正确渲染。

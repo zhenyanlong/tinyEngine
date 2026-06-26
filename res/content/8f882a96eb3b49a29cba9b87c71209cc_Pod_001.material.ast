@@ -1,0 +1,27 @@
+{
+  "name": "Pod_001",
+  "type": "Material",
+  "params": {
+    "baseColor": [
+      1,
+      1,
+      1,
+      1
+    ],
+    "metallic": 1,
+    "roughness": 1,
+    "emissiveColor": [
+      1,
+      1,
+      1,
+      1.0
+    ],
+    "emissiveIntensity": 1
+  },
+  "textures": {
+    "albedo": "bin/texture/baseColor_1_001.jpg",
+    "normal": "bin/texture/normal_1_001.jpg",
+    "metallicRoughness": "bin/texture/Pod_013_Pod_Metallic_001.png",
+    "emissive": "bin/texture/emissive_1_001.jpg"
+  }
+}

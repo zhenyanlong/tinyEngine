@@ -1,0 +1,39 @@
+{
+  "animations": [
+    "content/8f882a96eb3b49a29cba9b87c71209cc.anim.ast"
+  ],
+  "materials": [
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Pod_001.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Skirt.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Body.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Face.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Lashes.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Body.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Body.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Violin.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Hair.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Body.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Body.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Body.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Sword.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Violin.material.ast",
+    "content/8f882a96eb3b49a29cba9b87c71209cc_Body.material.ast"
+  ],
+  "model": "bin/mesh/8f882a96eb3b49a29cba9b87c71209cc.gltf",
+  "name": "8f882a96eb3b49a29cba9b87c71209cc",
+  "type": "Mesh"
+}

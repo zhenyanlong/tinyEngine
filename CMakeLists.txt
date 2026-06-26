@@ -48,18 +48,8 @@ get_target_property(TARGET_DIR tinyEngine RUNTIME_OUTPUT_DIRECTORY)
 # 添加预处理命令
 add_definitions(-DGLEW_STATIC)
 
-# 拷贝资源（configure 时一次 + 每次链接后同步，避免新增 box.spv 等未进输出目录）
-set(SOURCE_DIR "${CMAKE_SOURCE_DIR}/res")
-set(DESTINATION_DIR "${CMAKE_BINARY_DIR}")
-file(COPY ${SOURCE_DIR} DESTINATION ${DESTINATION_DIR})
-add_custom_command(TARGET tinyEngine POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/res" "$<TARGET_FILE_DIR:tinyEngine>/res"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:tinyEngine>/res/models"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_SOURCE_DIR}/thirdParty/tinyobjloader/models/no_material.obj"
-        "$<TARGET_FILE_DIR:tinyEngine>/res/models/no_material.obj"
-    COMMENT "Sync res/ next to tinyEngine executable"
-)
+# res/ 不再复制到 exe 旁。applicationResourceRoot() 从 exe 路径向上查找项目根，
+# 所有 res 读写（mesh/anim/scene/texture/shader）都以项目根/res/ 为唯一基准。
 
 target_link_libraries(${PROJECT_NAME}
         Vulkan::Vulkan

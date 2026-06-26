@@ -3,10 +3,10 @@
   "camera": {
     "fov": 45.0,
     "orientation": [
-      -0.43267321586608887,
-      0.005530982278287411,
-      -0.036379385739564896,
-      0.900799572467804
+      -0.2704394459724426,
+      0.05103937163949013,
+      -0.06389211118221283,
+      0.9592577219009399
     ],
     "position": [
       2.473054885864258,
@@ -38,7 +38,7 @@
       "visible": true
     },
     {
-      "astRelPath": "materials/fantasy_game_inn.ast",
+      "astRelPath": "content/fantasy_game_inn.mesh.ast",
       "materialOverride": {
         "baseColor": [
           0.9166666865348816,
@@ -67,7 +67,7 @@
       "visible": true
     },
     {
-      "astRelPath": "materials/viking_room.ast",
+      "astRelPath": "content/viking_room.mesh.ast",
       "position": [
         1.6035478115081787,
         -1.9707095623016357,
@@ -87,7 +87,7 @@
       "visible": true
     },
     {
-      "astRelPath": "materials/texture.ast",
+      "astRelPath": "content/texture.mesh.ast",
       "position": [
         -0.13306188583374023,
         -3.094754219055176,
@@ -107,7 +107,7 @@
       "visible": true
     },
     {
-      "astRelPath": "materials/8f882a96eb3b49a29cba9b87c71209cc.ast",
+      "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc.mesh.ast",
       "materialOverride": {
         "albedoPath": "res/models/8f882a96eb3b49a29cba9b87c71209cc/baseColor_1.jpg",
         "emissiveColor": [
@@ -122,9 +122,9 @@
         "roughness": 1.0
       },
       "position": [
-        2.5583319664001465,
-        -0.23132777214050293,
-        4.304015159606934
+        3.11152720451355,
+        0.10659289360046387,
+        2.372377634048462
       ],
       "rotation": [
         0.0,

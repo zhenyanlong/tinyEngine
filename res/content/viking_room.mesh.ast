@@ -1,0 +1,30 @@
+{
+  "name": "viking_roomMat",
+  "type": "Mesh",
+  "shader": {
+    "vert": "shaders/vert.spv",
+    "frag": "shaders/frag.spv"
+  },
+  "params": {
+    "baseColor": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "roughness": 0.5,
+    "metallic": 0.0,
+    "emissiveIntensity": 0.0,
+    "emissiveColor": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  },
+  "textures": {
+    "albedo": "bin/texture/viking_room_001.png",
+    "normal": ""
+  },
+  "model": "bin/mesh/viking_room_001.obj"
+}

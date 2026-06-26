@@ -1,0 +1,30 @@
+{
+  "name": "fantasy_game_innMat",
+  "type": "Mesh",
+  "shader": {
+    "vert": "shaders/vert.spv",
+    "frag": "shaders/frag.spv"
+  },
+  "params": {
+    "baseColor": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "roughness": 0.5,
+    "metallic": 0.0,
+    "emissiveIntensity": 0.0,
+    "emissiveColor": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  },
+  "textures": {
+    "albedo": "bin/texture/fantasy_game_inn.png",
+    "normal": ""
+  },
+  "model": "bin/mesh/fantasy_game_inn.obj"
+}
