@@ -54,7 +54,9 @@ uint32_t PickSystem::runPick(const VulkanContext& ctx,
                               const RenderPassManager& rpMgr,
                               const FramebufferManager& fbMgr,
                               const PipelineManager& pipelineMgr,
+                              const MaterialManager& materialMgr,
                               VkDescriptorSet boxDescSet0,
+                              uint32_t materialImageIndex,
                               const SceneManager& scene,
                               VkExtent2D extent,
                               uint32_t pixelX, uint32_t pixelY)
@@ -88,10 +90,6 @@ uint32_t PickSystem::runPick(const VulkanContext& ctx,
     rpBegin.pClearValues      = clears;
     vkCmdBeginRenderPass(pickCmdBuf_, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
 
-    vkCmdBindPipeline(pickCmdBuf_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineMgr.getPickPipeline());
-    vkCmdBindDescriptorSets(pickCmdBuf_, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipelineMgr.getPickPipelineLayout(), 0, 1, &boxDescSet0, 0, nullptr);
-
     // 绘制每个模型实体（各自独立 vertex/index buffer，PickId = entityId）
     for (const auto& ent : entities) {
         if (!ent.visible || ent.indexCount == 0 || !ent.vertexBuffer || !ent.indexBuffer)
@@ -106,10 +104,42 @@ uint32_t PickSystem::runPick(const VulkanContext& ctx,
         std::memcpy(bytes.data(), &m, sizeof(glm::mat4));
         const uint32_t oid = static_cast<uint32_t>(ent.entityId);
         std::memcpy(bytes.data() + sizeof(glm::mat4), &oid, sizeof(uint32_t));
-        vkCmdPushConstants(pickCmdBuf_, pipelineMgr.getPickPipelineLayout(),
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, kPickPushConstantSize, bytes.data());
-        vkCmdDrawIndexed(pickCmdBuf_, ent.indexCount, 1, 0, 0, 0);
+
+        auto drawRange = [&](MaterialId materialId, uint32_t indexOffset, uint32_t indexCount) {
+            const bool skinned = ent.hasSkin_ && materialMgr.isValid(materialId)
+                && materialMgr.hasSkinning(materialId);
+            const VkPipeline pipeline = skinned
+                ? pipelineMgr.getSkinnedPickPipeline()
+                : pipelineMgr.getPickPipeline();
+            const VkPipelineLayout layout = skinned
+                ? pipelineMgr.getSkinnedPickPipelineLayout()
+                : pipelineMgr.getPickPipelineLayout();
+
+            vkCmdBindPipeline(pickCmdBuf_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            VkDescriptorSet descriptorSet = skinned
+                ? materialMgr.getDescriptorSet(materialId, materialImageIndex)
+                : boxDescSet0;
+            vkCmdBindDescriptorSets(pickCmdBuf_, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    layout, 0, 1, &descriptorSet, 0, nullptr);
+            vkCmdPushConstants(pickCmdBuf_, layout,
+                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, kPickPushConstantSize, bytes.data());
+            vkCmdDrawIndexed(pickCmdBuf_, indexCount, 1, indexOffset, 0, 0);
+        };
+
+        if (ent.subMeshes.empty()) {
+            drawRange(ent.materialId, 0, ent.indexCount);
+        } else {
+            for (const auto& subMesh : ent.subMeshes) {
+                MaterialId materialId = ent.materialId;
+                if (subMesh.materialSlot >= 0
+                    && subMesh.materialSlot < static_cast<int>(ent.subMeshMaterials.size())) {
+                    const MaterialId slotMaterial = ent.subMeshMaterials[subMesh.materialSlot];
+                    if (materialMgr.isValid(slotMaterial)) materialId = slotMaterial;
+                }
+                drawRange(materialId, subMesh.indexOffset, subMesh.indexCount);
+            }
+        }
     }
 
     // Draw boxes
@@ -117,6 +147,11 @@ uint32_t PickSystem::runPick(const VulkanContext& ctx,
     if (scene.getCubeVertexBuffer() != VK_NULL_HANDLE && scene.getCubeIndexCount() > 0 &&
         !entityIds.empty())
     {
+        vkCmdBindPipeline(pickCmdBuf_, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          pipelineMgr.getPickPipeline());
+        vkCmdBindDescriptorSets(pickCmdBuf_, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                pipelineMgr.getPickPipelineLayout(), 0, 1,
+                                &boxDescSet0, 0, nullptr);
         VkDeviceSize off = 0;
         VkBuffer cvb = scene.getCubeVertexBuffer();
         vkCmdBindVertexBuffers(pickCmdBuf_, 0, 1, &cvb, &off);

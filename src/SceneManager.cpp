@@ -868,6 +868,7 @@ void SceneManager::setEntityAnimationData(uint64_t entityId,
     if (auto* e = getModelEntity(entityId)) {
         e->skeleton = std::move(skeleton);
         e->animationClips = std::move(clips);
+        e->animatorController.configureFromClips(e->animationClips);
     }
 }
 

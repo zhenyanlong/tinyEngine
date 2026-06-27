@@ -1,6 +1,6 @@
 # tinyEngine 技术设计文档
 
-> 最后更新：2026-06-17
+> 最后更新：2026-06-27
 
 ---
 
@@ -48,7 +48,8 @@ tinyEngine/
 │   └── Animation/                 # 动画子系统
 │       ├── Skeleton.hpp/.cpp      # Bone / Skeleton 数据结构 + computeFinalMatrices
 │       ├── AnimationClip.hpp/.cpp # AnimChannel / AnimationClip + 关键帧求值
-│       └── AnimationAssetLoader.hpp/.cpp # Anim .ast + .anim.bin 二进制资产序列化
+│       ├── AnimationAssetLoader.hpp/.cpp # Anim .ast + .anim.bin 二进制资产序列化
+│       └── AnimatorController.hpp/.cpp # 状态、参数、过渡条件与运行时状态机
 │
 ├── res/                           # 运行时资源（唯一基准，不再复制到 exe 旁）
 │   ├── content/                   # 新资产描述文件根（.mesh.ast / .material.ast / .anim.ast）
@@ -195,6 +196,8 @@ GPU 缓冲创建/销毁/拷贝的统一入口。提供：
 | `mainPipeline_` | `vert.spv` | `frag.spv` | 标准 Mesh 渲染 |
 | `boxPipeline_` | `box_vert.spv` | `box.spv` | 实例化 Box 渲染（含 instance data） |
 | `pickPipeline_` | `pick_vert.spv` | `pick_frag.spv` | GPU 拾取（输出 Entity ID） |
+| `skinnedMeshPipeline_` | `skinned_vert.spv` | `frag.spv` | GPU 骨骼蒙皮渲染 |
+| `skinnedPickPipeline_` | `skinned_pick_vert.spv` | `pick_frag.spv` | 按当前骨骼姿势拾取蒙皮模型 |
 
 - **动态管线缓存**（`dynamicPipelines_`）：`acquirePipeline()` 按 `"variant|vert|frag"` 键缓存，支持运行时切换材质 Shader 而不重编译默认管线
 - **图形管线状态：** Cull back face、Counter-clockwise front face、Depth test/stencil、无 blend（Mesh）/ 无 blend（Box）
@@ -245,6 +248,7 @@ GPU 缓冲创建/销毁/拷贝的统一入口。提供：
 - **Box 实体**（GPU 实例化渲染）：`addBox()` / `removeBox()` / `setBoxPosition()`
 - **SubMesh 系统**：glTF 多 primitive 按 `SubMesh` 分片，每片可绑定独立材质
 - **glTF 皮肤/动画解析**：加载带骨骼的 glTF 时自动解析 `cgltf_skin` → `Skeleton`，`cgltf_animation` → `AnimationClip`
+- **每实体 Animator**：`ModelEntity` 独立持有 `Skeleton`、`AnimationClip[]` 和 `AnimatorController`，不同动画实体互不覆盖运行时状态
 - **glTF 材质预生成**：`dumpGltfMaterialAst()` 公开静态方法，将 glTF primitive 材质导出为 `.ast`。供 `Application::importModel` 在导入时调用；`loadModelFromGltf` 检测 `.ast` 已存在则跳过重复生成
 
 **拖拽放置系统（dragPlace）：**
@@ -273,8 +277,9 @@ GPU 缓冲创建/销毁/拷贝的统一入口。提供：
 - 解析 `animations` → 生成 `AnimationClip` 列表（通道 + 关键帧时间/值）
 
 **公开访问器：**
-- `getSkeleton()` → `shared_ptr<Skeleton>`
-- `getAnimationClips()` → `const vector<AnimationClip>&`
+- `getEntitySkeleton(entityId)` → 指定实体的 `shared_ptr<Skeleton>`
+- `getEntityAnimationClips(entityId)` → 指定实体的 `const vector<AnimationClip>&`
+- `setEntityAnimationData(entityId, skeleton, clips)` → 更新实体动画数据并按 clip 建立默认 Animator 状态
 
 ### 4.12 动画子系统（src/Animation/）
 
@@ -324,6 +329,10 @@ struct AnimationClip {
 
     // 对单根骨骼求值 T*R*S 局部矩阵
     glm::mat4 evaluateBoneLocalTransform(int boneIndex, float t) const;
+
+    // 返回可独立混合的 Translation / Rotation / Scale
+    BoneLocalTransform evaluateBoneLocalTransformParts(
+        int boneIndex, float t, const glm::mat4& fallbackLocalTransform) const;
 };
 ```
 
@@ -331,6 +340,19 @@ struct AnimationClip {
 - `Step`: 取区间起点值
 - `Linear`: `glm::mix`（T/S）/ `glm::slerp`（R）
 - `CubicSpline`: 三次 Hermite 插值（glTF 标准 CUBICSPLINE）
+
+#### 4.12.3 AnimatorController（AnimatorController.hpp/.cpp）
+
+Phase B1-B2 的运行时状态机核心。状态机定义由 `AnimatorState`、`AnimatorTransition`、`TransitionCondition` 和 `AnimatorParam` 组成；参数支持 `Float`、`Int`、`Bool`、`Trigger` 四种类型。
+
+**关键行为：**
+- `configure()` 设置状态、过渡、参数及默认状态；`configureFromClips()` 为实体 clip 建立无过渡的默认状态
+- `setFloat/setInt/setBool/setTrigger` 修改运行时参数；Trigger 在命中过渡后自动消费
+- `update(dt, clips)` 推进当前/目标状态时间，检查 AnyState/当前状态过渡、条件和归一化 exit time，返回 `BlendCommand`
+- `BlendCommand` 携带 clip A/B、各自采样时间和混合权重；零时长 fade 立即切换
+- Controller 存放于 `ModelEntity`，不使用原计划中的全局 `AnimationPlayer`/`animCtrl_` 单例
+
+**逐骨骼混合：** `Application::drawFrame(dt)` 分别采样两个 clip 的局部 TRS，Translation/Scale 使用 `glm::mix`，Rotation 使用 `glm::slerp`，之后再组合为局部矩阵并计算最终骨骼 palette。
 
 ### 4.13 ModelRegistry（ModelRegistry.hpp）
 
@@ -444,13 +466,20 @@ camera (CPU)
   │
   └── viewProj ────→ Application (pass to PickSystem, ImGuizmo)
 
-Main Model
+ModelEntity(s)
   │
   ├── ObjectTransform ──→ PushConstants.model / .normalMatrix
   ├── Vertex Buffer     ──→ vkCmdBindVertexBuffers
   ├── Index Buffer      ──→ vkCmdBindIndexBuffer
   └── MaterialId(s)     ──→ DescriptorSet lookup → vkCmdBindDescriptorSets
                             (per SubMesh)
+
+AnimatorController (per ModelEntity)
+  │
+  ├── dt + parameters ──→ state/transition evaluation
+  ├── BlendCommand ─────→ clipA/timeA + clipB/timeB + weight
+  ├── per-bone TRS ─────→ mix(T/S) + slerp(R)
+  └── final matrices ───→ per-skin palette → BoneMatricesUBO (binding=6)
 
 Box Instances
   │
@@ -460,8 +489,10 @@ Box Instances
 
 PickSystem
   │
-  ├── view + proj  ──→ Pick pipeline (push constants)
-  ├── vertex/index  ──→ Main model + instance buffer
+  ├── view + proj  ──→ pick UBO；同步路径先等待 GPU，避免改写在用 buffer
+  ├── static mesh  ──→ pickPipeline
+  ├── skinned mesh ──→ skinnedPickPipeline + material descriptor + BoneMatricesUBO
+  ├── submeshes    ──→ 按槽位材质分别绘制，保持 skin palette 一致
   └── R32UINT image ──→ vkCmdCopyImageToBuffer → readback on CPU
                            → pixel value = entity PickId
 ```
@@ -505,6 +536,8 @@ For subMaterials (SceneSerializer::load / beginDragPlace):
 | 3 | — |（跳过） | 保留给 per-instance 数据 |
 | 4 | R32G32B32_SFLOAT | `normal` | 法线向量 |
 | 5 | R32G32B32A32_SFLOAT | `tangent` | xyz=切线, w=bitangent 符号方向 |
+| 6 | R32G32B32A32_SINT | `boneIndices` | 最多 4 个 skin-local 骨骼索引 |
+| 7 | R32G32B32A32_SFLOAT | `boneWeights` | 归一化骨骼权重 |
 
 ### 6.2 InstanceData（Box 实例化）
 
@@ -533,6 +566,17 @@ struct UniformBufferObject {
     mat4   invProj;           // offset 368, size 64
 };
 ```
+
+### 7.1 骨骼矩阵 UBO（BoneMatricesUBO）
+
+```cpp
+constexpr int kMaxBones = 256;
+struct BoneMatricesUBO {
+    mat4 bones[kMaxBones]; // 单个 skin 的 local palette，未使用项填 identity
+};
+```
+
+蒙皮材质在 `set=0, binding=6` 为每个 swapchain image 分配一份 BoneMatricesUBO；普通渲染与蒙皮拾取共用同一材质描述符集。
 
 ---
 
@@ -588,10 +632,12 @@ struct PushConstants {
 **工作流程：**
 1. 鼠标点击 → screenXY
 2. 创建独立的 command buffer（`pickCmdBuf_`）
-3. 用 pick 管线渲染一帧到 R32UINT image
+3. 普通模型使用 `pickPipeline_`；蒙皮模型按 submesh 使用 `skinnedPickPipeline_`，绑定对应材质的 bone UBO 后渲染当前动画姿势
 4. `vkCmdCopyImageToBuffer` 复制到 host-visible readback buffer
 5. 读取点击像素处的值 → 映射到 Entity PickId
 6. 更新选中状态（mainModel / specific box）
+
+拾取是同步路径：写入 slot 0 相机/材质 UBO 前调用 `vkDeviceWaitIdle`，避免覆盖仍被上一帧读取的 mapped buffer。该设计修复了动画 glTF 在屏幕姿势与绑定姿势不一致时无法点击选中的问题。
 
 ---
 
@@ -621,6 +667,8 @@ struct PushConstants {
 | `light.shader` | 未使用 | 预留 |
 | `cameraVertex.shader` / `cameraFragment.shader` | 未使用 | 预留 |
 | `pick.vert` / `pick.frag` | GPU 拾取 | 输出实体 ID 到 R32UINT |
+| `skinned_vert.glsl` / `skinned_vert.spv` | 蒙皮 Mesh 渲染 | 读取 JOINTS_0/WEIGHTS_0 和 binding 6 骨骼 palette |
+| `skinned_pick.vert` / `skinned_pick_vert.spv` | 蒙皮 GPU 拾取 | 使用同一 bone UBO 按当前动画姿势输出拾取几何 |
 
 ---
 
@@ -652,10 +700,12 @@ TINYOBJLOADER_IMPLEMENTATION # tinyobjloader 实现编译
 | 材质资产缓存 | 已完成 | MaterialManager.assetCache_ 同一 .ast 仅创建一次材质，拖入同模型秒加载 |
 | GPU 蒙皮渲染 | 已完成 | Phase A3：skinned_vert + BoneMatricesUBO + SkinnedPipeline + 多 skin per-palette |
 | 多骨架动画实体 | 已完成 | Phase A4：animation state 下沉到 ModelEntity，drawFrame 逐实体求值，不再依赖全局单例 |
-| 动画运行时播放 | 已完成 | drawFrame 每帧采样 AnimationClip[0] + computeFinalMatrices + updateBoneMatrices |
+| 动画运行时播放 | 已完成 | drawFrame 每帧逐实体执行 AnimatorController → TRS 混合 → computeFinalMatrices → updateBoneMatrices |
 | 动画资产序列化 | 已完成 | Phase A5：AnimationAssetLoader (.ast Header + .anim.bin 二进制) + 懒生成 + 启动恢复 |
 | 共享 GPU buffer 缓存 | 已完成 | SceneManager.modelResourceCache_ 共享 vertex/index buffer + animation state，重复拖拽不暴涨 |
-| 动画状态机 | 待实现 | Phase B：AnimatorController + 混合 |
+| 动画状态机 | 运行时核心已实现 | Phase B1-B2：参数/状态/过渡/Trigger/exit time + 逐骨骼 TRS cross-fade；B3-B5 待实现 |
+| 蒙皮模型 GPU 拾取 | 已完成 | skinned pick pipeline 复用材质 bone UBO，按 submesh/当前动画姿势写入 Entity ID |
+| 重复蒙皮模型独立动画状态 | 受限 | Controller 已逐实体独立，但共享同一 skinned MaterialId 的实例仍共用 BoneMatricesUBO；后续需每实体描述符或 dynamic UBO |
 | Sequencer | 待实现 | Phase C：时间轴编辑器 |
 | PBR 管线 | 基础支持（metallic/roughness/ao） | 已有 |
 | 阴影 | 不支持 | 未规划 |

@@ -339,7 +339,7 @@ void Application::gameLoop()
         camera_.UpdateSmoothFocus(dt > 0.f ? dt : 1.f / 240.f);
 
         ui_->prepareFrame();
-        drawFrame();
+        drawFrame(dt);
 
         if (ui_->refreshVulkanShader()) {
             recreateSwapChain();
@@ -387,7 +387,7 @@ void Application::convertModelMaterialsToSkinned()
 
 // ─── Draw frame ───────────────────────────────────────────────────────────────
 
-void Application::drawFrame()
+void Application::drawFrame(float dt)
 {
     vkWaitForFences(ctx_.getDevice(), 1, &cmdMgr_.getInFlightFence(currentFrame_), VK_TRUE, UINT64_MAX);
 
@@ -415,23 +415,40 @@ void Application::drawFrame()
         updatedMaterials.push_back(id);
     };
 
-    for (const auto& ent : sceneMgr_.getModelEntities()) {
+    for (auto& ent : sceneMgr_.getModelEntities()) {
         if (!ent.hasSkin_ || !ent.skeleton || ent.skeleton->bones.empty())
             continue;
 
         const auto& skeleton = ent.skeleton;
         const auto& clips = ent.animationClips;
 
+        // A4 已采用每实体动画状态；Controller 同样按实体保存，避免不同模型互相覆盖。
+        if (!ent.animatorController.hasStates() && !clips.empty()) {
+            ent.animatorController.configureFromClips(clips);
+        }
+        const AnimatorController::BlendCommand blendCommand =
+            ent.animatorController.update(dt, clips);
+
         std::vector<glm::mat4> localTransforms(skeleton->bones.size());
-        const bool hasPlayableClip = !clips.empty() && clips.front().duration > 1e-6f;
-        const float animTime = hasPlayableClip
-            ? std::fmod(static_cast<float>(glfwGetTime()), clips.front().duration)
-            : 0.f;
         for (size_t i = 0; i < skeleton->bones.size(); ++i) {
-            localTransforms[i] = hasPlayableClip
-                ? clips.front().evaluateBoneLocalTransform(
-                    static_cast<int>(i), animTime, skeleton->bones[i].localBindTransform)
-                : skeleton->bones[i].localBindTransform;
+            const glm::mat4& bindTransform = skeleton->bones[i].localBindTransform;
+            if (!blendCommand.clipA) {
+                localTransforms[i] = bindTransform;
+                continue;
+            }
+
+            BoneLocalTransform pose = blendCommand.clipA->evaluateBoneLocalTransformParts(
+                static_cast<int>(i), blendCommand.timeA, bindTransform);
+            if (blendCommand.clipB) {
+                const BoneLocalTransform target =
+                    blendCommand.clipB->evaluateBoneLocalTransformParts(
+                        static_cast<int>(i), blendCommand.timeB, bindTransform);
+                const float weight = std::clamp(blendCommand.blendWeight, 0.f, 1.f);
+                pose.translation = glm::mix(pose.translation, target.translation, weight);
+                pose.rotation = glm::normalize(glm::slerp(pose.rotation, target.rotation, weight));
+                pose.scale = glm::mix(pose.scale, target.scale, weight);
+            }
+            localTransforms[i] = pose.toMatrix();
         }
 
         std::vector<glm::mat4> finalBoneMatrices;
@@ -755,10 +772,14 @@ void Application::tryPickMainModel(float cx, float cy)
     // Update pick UBO slot 0 with current camera before pick pass
     const glm::mat4 view = camera_.GetViewMatrix();
     const glm::mat4 proj = camera_.GetProjectionMatrix();
+    // Pick 本身是同步路径；先等待上一帧，避免改写仍被 GPU 读取的 mapped UBO。
+    vkDeviceWaitIdle(ctx_.getDevice());
     descMgr_.updateUniformBuffer(0, view, proj);
+    // 蒙皮 pick pipeline 使用材质描述符集，需同步更新其 slot 0 相机 UBO。
+    matMgr_.updateAllUBOs(0, view, proj);
 
-    const uint32_t id = pickSys_.runPick(ctx_, rpMgr_, fbMgr_, pipeMgr_,
-                                          descMgr_.getBoxDescriptorSet(0),
+    const uint32_t id = pickSys_.runPick(ctx_, rpMgr_, fbMgr_, pipeMgr_, matMgr_,
+                                          descMgr_.getBoxDescriptorSet(0), 0,
                                           sceneMgr_, swapChain_.getExtent(),
                                           static_cast<uint32_t>(px),
                                           static_cast<uint32_t>(py));

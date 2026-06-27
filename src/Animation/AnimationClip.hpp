@@ -7,6 +7,15 @@
 /** @brief 插值类型 */
 enum class AnimInterpolation { Step, Linear, CubicSpline };
 
+/** @brief 可独立插值的骨骼局部 TRS。 */
+struct BoneLocalTransform {
+	glm::vec3 translation{0.f};
+	glm::quat rotation{1.f, 0.f, 0.f, 0.f};
+	glm::vec3 scale{1.f};
+
+	glm::mat4 toMatrix() const;
+};
+
 /** @brief 一个通道对应一根骨骼的一个属性（平移/旋转/缩放） */
 struct AnimChannel {
 	int               boneIndex = -1;
@@ -26,4 +35,8 @@ struct AnimationClip {
 	glm::mat4 evaluateBoneLocalTransform(int boneIndex, float t) const;
 	glm::mat4 evaluateBoneLocalTransform(int boneIndex, float t,
 	                                     const glm::mat4& fallbackLocalTransform) const;
+
+	/** @brief 求值骨骼局部 TRS，供状态机在矩阵合成前正确混合。 */
+	BoneLocalTransform evaluateBoneLocalTransformParts(
+		int boneIndex, float t, const glm::mat4& fallbackLocalTransform) const;
 };

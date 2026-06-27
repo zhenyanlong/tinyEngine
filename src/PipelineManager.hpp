@@ -28,10 +28,12 @@ public:
     VkPipelineLayout      getMainPipelineLayout() const { return mainPipelineLayout_; }
     VkPipelineLayout      getBoxPipelineLayout()  const { return boxPipelineLayout_; }
     VkPipelineLayout      getPickPipelineLayout() const { return pickPipelineLayout_; }
+    VkPipelineLayout      getSkinnedPickPipelineLayout() const { return skinnedPickPipelineLayout_; }
     VkPipelineLayout      getSkinnedPipelineLayout() const { return skinnedPipelineLayout_; }
     VkPipeline            getMainPipeline()       const { return mainPipeline_; }
     VkPipeline            getBoxPipeline()        const { return boxPipeline_; }
     VkPipeline            getPickPipeline()       const { return pickPipeline_; }
+    VkPipeline            getSkinnedPickPipeline() const { return skinnedPickPipeline_; }
     VkPipeline            getSkinnedPipeline()    const { return skinnedMeshPipeline_; }
 
     // Returns a pipeline matching (variant, vertSpvPath, fragSpvPath).
@@ -56,10 +58,12 @@ private:
     VkPipelineLayout      mainPipelineLayout_{};
     VkPipelineLayout      boxPipelineLayout_{};
     VkPipelineLayout      pickPipelineLayout_{};
+    VkPipelineLayout      skinnedPickPipelineLayout_{};
     VkPipelineLayout      skinnedPipelineLayout_{};
     VkPipeline            mainPipeline_{};
     VkPipeline            boxPipeline_{};
     VkPipeline            pickPipeline_{};
+    VkPipeline            skinnedPickPipeline_{};
     VkPipeline            skinnedMeshPipeline_{};
 
     // Dynamic pipeline cache keyed by "variant|vert|frag".

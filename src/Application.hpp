@@ -139,7 +139,7 @@ private:
     void initGLFW();
     void initVulkan();
     void gameLoop();
-    void drawFrame();
+    void drawFrame(float dt);
     void recordCommandBuffer(VkCommandBuffer cb, uint32_t imageIndex);
     void recreateSwapChain();
     void processInput(GLFWwindow* w);

@@ -87,6 +87,8 @@ void PipelineManager::destroyPipelines(const VulkanContext& ctx)
 
     if (skinnedMeshPipeline_      != VK_NULL_HANDLE) { vkDestroyPipeline(dev, skinnedMeshPipeline_, nullptr);               skinnedMeshPipeline_ = VK_NULL_HANDLE; }
     if (skinnedPipelineLayout_    != VK_NULL_HANDLE) { vkDestroyPipelineLayout(dev, skinnedPipelineLayout_, nullptr);        skinnedPipelineLayout_ = VK_NULL_HANDLE; }
+    if (skinnedPickPipeline_      != VK_NULL_HANDLE) { vkDestroyPipeline(dev, skinnedPickPipeline_, nullptr);               skinnedPickPipeline_ = VK_NULL_HANDLE; }
+    if (skinnedPickPipelineLayout_ != VK_NULL_HANDLE) { vkDestroyPipelineLayout(dev, skinnedPickPipelineLayout_, nullptr);   skinnedPickPipelineLayout_ = VK_NULL_HANDLE; }
     if (pickPipeline_            != VK_NULL_HANDLE) { vkDestroyPipeline(dev, pickPipeline_, nullptr);                      pickPipeline_       = VK_NULL_HANDLE; }
     if (pickPipelineLayout_      != VK_NULL_HANDLE) { vkDestroyPipelineLayout(dev, pickPipelineLayout_, nullptr);           pickPipelineLayout_ = VK_NULL_HANDLE; }
     if (boxPipeline_             != VK_NULL_HANDLE) { vkDestroyPipeline(dev, boxPipeline_, nullptr);                       boxPipeline_        = VK_NULL_HANDLE; }
@@ -235,11 +237,15 @@ void PipelineManager::createPickPipeline(const VulkanContext& ctx, VkRenderPass 
         return (p != std::string::npos) ? pickVertSpv.substr(0, p + 1) : std::string{};
     }();
     const std::string pickFragSpv = dir + "pick_frag.spv";
+    const std::string skinnedPickVertSpv = dir + "skinned_pick_vert.spv";
 
     auto vc = readFile(pickVertSpv);
+    auto svc = readFile(skinnedPickVertSpv);
     auto fc = readFile(pickFragSpv);
-    if (vc.empty() || fc.empty()) throw std::runtime_error("Failed to read pick shader SPIR-V!");
+    if (vc.empty() || svc.empty() || fc.empty())
+        throw std::runtime_error("Failed to read pick shader SPIR-V!");
     VkShaderModule vm = createShaderModule(ctx, vc);
+    VkShaderModule svm = createShaderModule(ctx, svc);
     VkShaderModule fm = createShaderModule(ctx, fc);
     VkPipelineShaderStageCreateInfo stages[] = { makeStage(VK_SHADER_STAGE_VERTEX_BIT, vm),
                                                   makeStage(VK_SHADER_STAGE_FRAGMENT_BIT, fm) };
@@ -295,6 +301,7 @@ void PipelineManager::createPickPipeline(const VulkanContext& ctx, VkRenderPass 
     pli.pushConstantRangeCount = 1; pli.pPushConstantRanges = &pcr;
     if (vkCreatePipelineLayout(ctx.getDevice(), &pli, nullptr, &pickPipelineLayout_) != VK_SUCCESS) {
         vkDestroyShaderModule(ctx.getDevice(), vm, nullptr);
+        vkDestroyShaderModule(ctx.getDevice(), svm, nullptr);
         vkDestroyShaderModule(ctx.getDevice(), fm, nullptr);
         throw std::runtime_error("Failed to create pick pipeline layout!");
     }
@@ -310,11 +317,36 @@ void PipelineManager::createPickPipeline(const VulkanContext& ctx, VkRenderPass 
     gp.renderPass          = pickRenderPass;
     if (vkCreateGraphicsPipelines(ctx.getDevice(), VK_NULL_HANDLE, 1, &gp, nullptr, &pickPipeline_) != VK_SUCCESS) {
         vkDestroyShaderModule(ctx.getDevice(), vm, nullptr);
+        vkDestroyShaderModule(ctx.getDevice(), svm, nullptr);
         vkDestroyShaderModule(ctx.getDevice(), fm, nullptr);
         throw std::runtime_error("Failed to create pick graphics pipeline!");
     }
 
+    VkPipelineLayoutCreateInfo skinnedPli = pli;
+    skinnedPli.pSetLayouts = &skinnedDescSetLayout_;
+    if (vkCreatePipelineLayout(ctx.getDevice(), &skinnedPli, nullptr,
+                               &skinnedPickPipelineLayout_) != VK_SUCCESS) {
+        vkDestroyShaderModule(ctx.getDevice(), vm, nullptr);
+        vkDestroyShaderModule(ctx.getDevice(), svm, nullptr);
+        vkDestroyShaderModule(ctx.getDevice(), fm, nullptr);
+        throw std::runtime_error("Failed to create skinned pick pipeline layout!");
+    }
+
+    auto skinnedAttrDesc = Vertex::getSkinnedAttributeDescriptions();
+    vin.vertexAttributeDescriptionCount = static_cast<uint32_t>(skinnedAttrDesc.size());
+    vin.pVertexAttributeDescriptions = skinnedAttrDesc.data();
+    stages[0] = makeStage(VK_SHADER_STAGE_VERTEX_BIT, svm);
+    gp.layout = skinnedPickPipelineLayout_;
+    if (vkCreateGraphicsPipelines(ctx.getDevice(), VK_NULL_HANDLE, 1, &gp, nullptr,
+                                  &skinnedPickPipeline_) != VK_SUCCESS) {
+        vkDestroyShaderModule(ctx.getDevice(), vm, nullptr);
+        vkDestroyShaderModule(ctx.getDevice(), svm, nullptr);
+        vkDestroyShaderModule(ctx.getDevice(), fm, nullptr);
+        throw std::runtime_error("Failed to create skinned pick graphics pipeline!");
+    }
+
     vkDestroyShaderModule(ctx.getDevice(), vm, nullptr);
+    vkDestroyShaderModule(ctx.getDevice(), svm, nullptr);
     vkDestroyShaderModule(ctx.getDevice(), fm, nullptr);
 }
 

@@ -1,3 +1,11 @@
+## 2026-06-27
+
+- [ ] 在新的 AnimatorController 模块中实现 Phase B1 的 AnimatorState、AnimatorTransition、类型化参数、条件求值和一次性 Trigger 消费。
+- [ ] 实现 Phase B2 的逐实体状态机更新，支持 AnyState/当前状态过渡、归一化 exit time、零时长切换和 BlendCommand 输出。
+- [ ] 新增 BoneLocalTransform TRS 采样和逐骨骼 cross-fade，在最终矩阵求值前使用平移/缩放 mix 与四元数 slerp 进行混合。
+- [ ] 新增复用逐 submesh 材质描述符和当前骨骼 palette 的蒙皮 GPU 拾取 Shader/管线，修复动画 glTF 无法通过鼠标正确选中的问题。
+- [ ] x64-debug 构建、AnimatorController 条件/fade/Trigger/exit-time smoke test 和 SPIR-V 校验均通过，并已同步 TDD.md 与 Phase B1-B2 计划复选框。
+
 ## 2026-06-26
 
 - [ ] **资源路径架构重构**：重构 `applicationResourceRoot()`，从 exe 路径向上查找项目根（同时含 `CMakeLists.txt` 和 `res/` 的目录）。所有 res 读写（mesh/anim/scene/texture/shader/thumbnail）统一以 `<项目根>/res/` 为唯一基准。移除 CMake 的 `copy_directory` post-build 步骤（此前每次构建把源 `res/` 覆盖到 exe 旁，导致保存的场景被静默覆盖）。回滚了临时的 `saveScene` 双写 hack 和 `ThumbnailRenderer` 向上查找源目录逻辑，两者不再需要。

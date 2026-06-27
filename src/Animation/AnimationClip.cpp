@@ -8,14 +8,8 @@
 
 namespace {
 
-struct LocalTransformParts {
-	glm::vec3 translation{0.f};
-	glm::quat rotation{1.f, 0.f, 0.f, 0.f};
-	glm::vec3 scale{1.f};
-};
-
-LocalTransformParts decomposeLocalTransform(const glm::mat4& m) {
-	LocalTransformParts parts;
+BoneLocalTransform decomposeLocalTransform(const glm::mat4& m) {
+	BoneLocalTransform parts;
 	glm::vec3 skew{};
 	glm::vec4 perspective{};
 	if (glm::decompose(m, parts.scale, parts.rotation, parts.translation, skew, perspective)) {
@@ -50,12 +44,24 @@ glm::vec4 cubicSpline(const glm::vec4& v0, const glm::vec4& outTan0,
 
 } // anonymous namespace
 
+glm::mat4 BoneLocalTransform::toMatrix() const {
+	const glm::mat4 mT = glm::translate(glm::mat4(1.f), translation);
+	const glm::mat4 mR = glm::mat4_cast(glm::normalize(rotation));
+	const glm::mat4 mS = glm::scale(glm::mat4(1.f), scale);
+	return mT * mR * mS;
+}
+
 glm::mat4 AnimationClip::evaluateBoneLocalTransform(int boneIndex, float t) const {
 	return evaluateBoneLocalTransform(boneIndex, t, glm::mat4(1.f));
 }
 
 glm::mat4 AnimationClip::evaluateBoneLocalTransform(int boneIndex, float t,
                                                     const glm::mat4& fallbackLocalTransform) const {
+	return evaluateBoneLocalTransformParts(boneIndex, t, fallbackLocalTransform).toMatrix();
+}
+
+BoneLocalTransform AnimationClip::evaluateBoneLocalTransformParts(
+	int boneIndex, float t, const glm::mat4& fallbackLocalTransform) const {
 	// 收集该骨骼的 T/R/S 通道
 	const AnimChannel* chT = nullptr;
 	const AnimChannel* chR = nullptr;
@@ -162,13 +168,10 @@ glm::mat4 AnimationClip::evaluateBoneLocalTransform(int boneIndex, float t,
 	};
 
 	// 默认值：T=(0,0,0), R=identity, S=(1,1,1)
-	const LocalTransformParts fallback = decomposeLocalTransform(fallbackLocalTransform);
-	glm::vec3 tVal = chT ? evalVec(*chT, t) : fallback.translation;
-	glm::quat rVal = chR ? evalQuat(*chR, t) : fallback.rotation;
-	glm::vec3 sVal = chS ? evalVec(*chS, t) : fallback.scale;
-
-	glm::mat4 mT = glm::translate(glm::mat4(1.f), tVal);
-	glm::mat4 mR = glm::mat4_cast(rVal);
-	glm::mat4 mS = glm::scale(glm::mat4(1.f), sVal);
-	return mT * mR * mS;
+	const BoneLocalTransform fallback = decomposeLocalTransform(fallbackLocalTransform);
+	BoneLocalTransform result;
+	result.translation = chT ? evalVec(*chT, t) : fallback.translation;
+	result.rotation = glm::normalize(chR ? evalQuat(*chR, t) : fallback.rotation);
+	result.scale = chS ? evalVec(*chS, t) : fallback.scale;
+	return result;
 }

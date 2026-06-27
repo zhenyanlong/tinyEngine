@@ -1,3 +1,11 @@
+## 2026-06-27
+
+- [ ] Implemented Phase B1 AnimatorState, AnimatorTransition, typed parameters, condition evaluation, and one-shot Trigger consumption in the new AnimatorController module.
+- [ ] Implemented Phase B2 per-entity state-machine updates with AnyState/current-state transitions, normalized exit time, zero-duration switching, and BlendCommand output.
+- [ ] Added BoneLocalTransform TRS sampling and per-bone cross-fade blending using translation/scale mix and quaternion slerp before final matrix evaluation.
+- [ ] Fixed animated glTF mouse selection by adding a skinned GPU pick shader/pipeline that reuses per-submesh material descriptors and current bone palettes.
+- [ ] Passed the x64-debug build, AnimatorController condition/fade/Trigger/exit-time smoke test, and SPIR-V validation; synchronized TDD.md and Phase B1-B2 plan checkboxes.
+
 ## 2026-06-26
 
 - [ ] **Resource path architecture**: Refactored `applicationResourceRoot()` to locate the project root (containing `CMakeLists.txt` + `res/`) by walking up from the exe path. All res read/write (mesh/anim/scene/texture/shader/thumbnail) now use `<project-root>/res/` as the single source of truth. Removed the CMake `copy_directory` post-build step that previously synced `res/` next to the exe, which was silently overwriting saved scenes on every rebuild. Rolled back the temporary `saveScene` double-write hack and the `ThumbnailRenderer` source-dir search, both no longer needed.

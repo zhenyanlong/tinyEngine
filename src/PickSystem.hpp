@@ -4,6 +4,7 @@
 #include "RenderPassManager.hpp"
 #include "FramebufferManager.hpp"
 #include "PipelineManager.hpp"
+#include "MaterialManager.hpp"
 #include "SceneManager.hpp"
 #include <glm/glm.hpp>
 #include <cstdint>
@@ -25,7 +26,9 @@ public:
                      const RenderPassManager& rpMgr,
                      const FramebufferManager& fbMgr,
                      const PipelineManager& pipelineMgr,
+                     const MaterialManager& materialMgr,
                      VkDescriptorSet boxDescSet0,
+                     uint32_t materialImageIndex,
                      const SceneManager& scene,
                      VkExtent2D extent,
                      uint32_t pixelX, uint32_t pixelY);

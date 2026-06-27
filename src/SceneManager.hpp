@@ -7,6 +7,7 @@
 #include "Transform.hpp"
 #include "Animation/Skeleton.hpp"
 #include "Animation/AnimationClip.hpp"
+#include "Animation/AnimatorController.hpp"
 
 #include <glm/glm.hpp>
 #include <memory>
@@ -52,6 +53,7 @@ public:
         // 每实体独立的动画状态（下沉自 SceneManager 全局单例）
         std::shared_ptr<Skeleton> skeleton;
         std::vector<AnimationClip> animationClips;
+        AnimatorController animatorController;
     };
 
     void loadModel(const std::string& path, const glm::vec3& position, const BufferManager& bufMgr);

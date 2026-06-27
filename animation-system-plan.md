@@ -361,8 +361,8 @@ struct AnimatorTransition {
 
 **具体任务：**
 
-- [ ] **B1-1** 新建 `src/Animation/AnimatorController.hpp`，定义上述所有结构体
-- [ ] **B1-2** 实现 `AnimatorParam` 的辅助方法：`setFloat/setInt/setBool/setTrigger`，以及 `checkCondition(const TransitionCondition&) const`
+- [x] **B1-1** 新建 `src/Animation/AnimatorController.hpp`，定义上述所有结构体
+- [x] **B1-2** 实现 `AnimatorParam` 的辅助方法：`setFloat/setInt/setBool/setTrigger`，以及 `checkCondition(const TransitionCondition&) const`
 
 ---
 
@@ -416,20 +416,22 @@ private:
 
 **具体任务：**
 
-- [ ] **B2-1** 实现 `AnimatorController::update`：
+- [x] **B2-1** 实现 `AnimatorController::update`：
   1. 推进 `stateTime_` += `dt * currentState.speed`
   2. 若正在过渡：推进 `blendT_` += `dt / fadeDuration`；到 1.0 时切换完成（`currentState_ = nextState_`）
   3. 若未在过渡：遍历所有 `fromState == currentState_` 或 `fromState == ""` 的 transitions；对每个 transition 调用 `checkAllConditions`；若满足则开始过渡（`transitioning_ = true`, 记录 `nextState_`, 清零 `blendT_/nextStateTime_`）
   4. 返回 `BlendCommand`（携带两个 clip 指针和时间）
-- [ ] **B2-2** 扩展 `AnimationPlayer`，新增 `updateWithBlend(const BlendCommand& cmd, uint32_t imageIndex, MaterialManager& matMgr)`：
+- [x] **B2-2** 扩展 `AnimationPlayer`，新增 `updateWithBlend(const BlendCommand& cmd, uint32_t imageIndex, MaterialManager& matMgr)`：
   - 若 `clipB == nullptr`：退化为单 clip 求值（已有逻辑）
   - 若 `clipB != nullptr`：分别对两个 clip 在 `timeA`/`timeB` 求值，对 `localTransforms_[i]` 做逐骨骼插值（平移 `mix`，旋转 `slerp`，缩放 `mix`），权重为 `blendWeight`
-- [ ] **B2-3** 在 `Application` 中增加 `std::unique_ptr<AnimatorController> animCtrl_` 成员
-- [ ] **B2-4** 在 `Application::gameLoop` 中替换 `animPlayer_->update(dt, ...)` 为：
+- [x] **B2-3** 在 `Application` 中增加 `std::unique_ptr<AnimatorController> animCtrl_` 成员
+- [x] **B2-4** 在 `Application::gameLoop` 中替换 `animPlayer_->update(dt, ...)` 为：
   ```cpp
   auto cmd = animCtrl_->update(dt, sceneMgr_.getAnimationClips());
   animPlayer_->updateWithBlend(cmd, imageIndex, matMgr_);
   ```
+
+> **实际实现：** 延续 A4 的逐实体架构，`AnimatorController` 存放于每个 `ModelEntity`；`Application::drawFrame(dt)` 直接消费 `BlendCommand` 并执行逐骨骼 TRS 混合，不再引入全局 `AnimationPlayer` / `animCtrl_` 单例，功能对应 B2-2 至 B2-4。
 
 **验收标准：** 能在 Idle / Walk 两个状态间切换，切换时有平滑混合过渡（无跳变）。
 
