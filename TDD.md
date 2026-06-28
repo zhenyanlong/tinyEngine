@@ -1,6 +1,6 @@
 # tinyEngine 技术设计文档
 
-> 最后更新：2026-06-27
+> 最后更新：2026-06-28
 
 ---
 
@@ -35,7 +35,8 @@ tinyEngine/
 │   ├── TextureManager.hpp/.cpp    # 纹理加载与采样器创建
 │   ├── MaterialManager.hpp/.cpp   # 材质系统（PBR、纹理、UBO、DescriptorSet）
 │   ├── MaterialAssetLoader.hpp/.cpp # .ast JSON 材质资产反序列化
-│   ├── SceneManager.hpp/.cpp      # 场景图：模型加载（OBJ/glTF）、Box 实体管理、骨骼动画解析
+│   ├── SceneManager.hpp/.cpp      # 场景图：模型加载（OBJ/glTF/FBX）、Box 实体管理、骨骼动画解析
+│   ├── FbxImporter.hpp/.cpp       # ufbx 适配层：网格、材质、骨骼与动画转换
 │   ├── SceneSerializer.hpp/.cpp   # 场景持久化（.scene.json，含旧 materials/ → content/ 路径迁移）
 │   ├── PickSystem.hpp/.cpp        # GPU 拾取（射线检测 Entity ID）
 │   ├── ModelRegistry.hpp/.cpp     # 模型资产注册表（扫描 + 缓存元数据）
@@ -70,6 +71,7 @@ tinyEngine/
 │   ├── stb_image/                 # 另一个 stb 副本
 │   ├── tinyobjloader/             # OBJ 模型解析
 │   ├── cgltf/                     # glTF 2.0 模型解析
+│   ├── ufbx/                      # FBX 模型/材质/骨骼/动画解析（Git Submodule）
 │   ├── renderdoc/                 # RenderDoc 调试 API
 │   └── json/                      # nlohmann/json（JSON 解析）
 │
@@ -241,6 +243,10 @@ GPU 缓冲创建/销毁/拷贝的统一入口。提供：
 
 **资产缓存：** `loadMaterialFromAsset()` 内部维护 `assetCache_`（`unordered_map<string, MaterialId>`），同一 `.ast` 路径只创建一次材质，后续调用直接返回已缓存的 MaterialId。缓存随 `destroy()` 清空。
 
+**无贴图材质：** Mesh/Material 材质始终绑定 1×1 fallback 纹理。Albedo、MR、AO、Emissive 的 fallback 使用乘法单位值，使 `baseColor`、`roughness`、`metallic`、`emissiveColor`、`emissiveIntensity` 等 UBO 参数在对应贴图缺失时仍直接参与着色；Normal 使用 `(0.5, 0.5, 1.0)` 中性法线。
+
+**纹理热替换：** Properties 面板可修改 Mesh 与 Material 类型的 Albedo/Normal。相对路径基于 `MaterialAssetLoader` 配置的绝对 `res/` 根解析；新纹理成功创建后才销毁旧纹理并重写 DescriptorSet，失败时保留原材质并在 UI/控制台反馈。
+
 ### 4.11 SceneManager（SceneManager.hpp）
 
 场景管理，当前支持：
@@ -248,6 +254,7 @@ GPU 缓冲创建/销毁/拷贝的统一入口。提供：
 - **Box 实体**（GPU 实例化渲染）：`addBox()` / `removeBox()` / `setBoxPosition()`
 - **SubMesh 系统**：glTF 多 primitive 按 `SubMesh` 分片，每片可绑定独立材质
 - **glTF 皮肤/动画解析**：加载带骨骼的 glTF 时自动解析 `cgltf_skin` → `Skeleton`，`cgltf_animation` → `AnimationClip`
+- **FBX 导入适配**：`FbxImporter` 将 ufbx 场景转换为统一的 Vertex/SubMesh/Material/Skeleton/AnimationClip 数据
 - **每实体 Animator**：`ModelEntity` 独立持有 `Skeleton`、`AnimationClip[]` 和 `AnimatorController`，不同动画实体互不覆盖运行时状态
 - **glTF 材质预生成**：`dumpGltfMaterialAst()` 公开静态方法，将 glTF primitive 材质导出为 `.ast`。供 `Application::importModel` 在导入时调用；`loadModelFromGltf` 检测 `.ast` 已存在则跳过重复生成
 
@@ -257,7 +264,7 @@ GPU 缓冲创建/销毁/拷贝的统一入口。提供：
 - `endDragPlace()` — 结束拖拽，清理临时状态
 
 **导入系统（importModel）：**
-- `importModel(sourcePath, subFolder="")` — 将外部模型文件拷贝到 `res/models/`，在 `res/materials/<subFolder>/` 下生成入口 `.ast`。glTF 文件额外预解析材质生成详细 `.ast`（含 `subMaterials` 数组）
+- `importModel(sourcePath, subFolder="")` — 将外部模型 payload 拷贝到 `res/bin/mesh/`，在 `res/content/<subFolder>/<模型名>/` 下生成入口 `.mesh.ast`。glTF/FBX 同时生成逐槽位 `.material.ast`；带骨骼动画时生成 `.anim.ast` + `res/bin/anim/*.anim.bin`。FBX 的外部或内嵌纹理会复制/提取到 `res/bin/texture/<模型名>/`。
 
 **PickId 分配：**
 - `kPickIdNone = 0` — 无命中
@@ -267,6 +274,7 @@ GPU 缓冲创建/销毁/拷贝的统一入口。提供：
 **格式支持：**
 - `.obj` — 通过 tinyobjloader 解析
 - `.glb` / `.gltf` — 通过 cgltf 解析（单文件 cgltf.h 实现）
+- `.fbx` — 通过 ufbx 解析（支持二进制与 ASCII FBX）
 
 **glTF 加载特性：**
 - 解析多个 primitive → 生成 SubMesh 列表
@@ -275,6 +283,20 @@ GPU 缓冲创建/销毁/拷贝的统一入口。提供：
 - 保留 AABB（`modelLocalBoundsMin_` / `modelLocalBoundsMax_`）
 - 解析 `skins` → 生成 `Skeleton`（骨骼名称、父子关系、IBM、绑定局部变换）
 - 解析 `animations` → 生成 `AnimationClip` 列表（通道 + 关键帧时间/值）
+
+**FBX 加载特性：**
+- 统一转换为右手系、Y-up、米制；自动补法线并三角化 polygon
+- 按 material part 生成 SubMesh，保留 ufbx material slot 索引
+- 提取 PBR/FBX fallback 的 Base Color、Roughness、Metallic、Emission，以及 Albedo/Normal/Emissive 外部或内嵌纹理引用
+- 在导入边界执行 `v = 1 - v`，适配 FBX/DCC 与 stb_image/Vulkan 当前纹理原点约定，不影响 OBJ/glTF 路径
+- 合并 skin 骨骼层级，生成 per-skin bone remap；每顶点保留并归一化前 4 个权重
+- 将 animation stack 以 30 Hz 烘焙为 Translation/Rotation/Scale 通道，并复用引擎 `AnimationClip` 与独立 Anim 资产格式
+
+#### 4.11.1 FbxImporter（FbxImporter.hpp/.cpp）
+
+`FbxImporter::load(path, result, error)` 是 ufbx 与引擎数据结构之间的 CPU 适配边界。返回的 `FbxImportResult` 包含去重顶点、索引、SubMesh/材质槽、PBR 材质、AABB，以及可选 Skeleton/AnimationClip；SceneManager 负责 GPU buffer 创建，Application 负责将解析结果持久化为 Mesh/Material/Anim 资产。
+
+当前 FBX 路径不导入 blend shape、约束、灯光/相机、分层/程序化材质；一个 mesh 有多个 skin deformer 时只使用第一个。骨骼 palette 仍受 `kMaxBones = 256` 限制。
 
 **公开访问器：**
 - `getEntitySkeleton(entityId)` → 指定实体的 `shared_ptr<Skeleton>`
@@ -356,7 +378,7 @@ Phase B1-B2 的运行时状态机核心。状态机定义由 `AnimatorState`、`
 
 ### 4.13 ModelRegistry（ModelRegistry.hpp）
 
-模型资产注册表：扫描 `res/materials/*.ast`，解析 JSON 提取 `name`、`model` 字段。
+模型资产注册表：优先递归扫描 `res/content/**/*.ast`（目录不存在时兼容回退 `res/materials/**/*.ast`），解析 JSON 提取 `type`、`name`、`model`/`binary` 字段。
 
 **数据结构：**
 
@@ -368,7 +390,7 @@ struct ModelAsset {
     std::string modelRelPath; // e.g. "models/viking_room.obj" (from .ast's "model" field); empty for Material-type
     std::string astType;      // e.g. "Mesh" / "Box" / "Material" (from .ast's "type" field)
     std::string subFolder;    // subdirectory under materials/, e.g. "sci-fi"; empty for root-level
-    ModelType   type;         // inferred from modelRelPath extension
+    ModelType   type;         // OBJ / GLTF / GLB / FBX / Unknown
     glm::vec3   boundsMin, boundsMax, displaySize;
     bool        hasThumbnail;
 };
@@ -376,7 +398,7 @@ struct ModelAsset {
 
 | 关键方法 | 说明 |
 |---|---|
-| `scan(resRoot)` | 扫描 `resRoot/materials/**/*.ast`，递归遍历子目录，解析 JSON 填充 assets_ |
+| `scan(resRoot)` | 优先扫描 `resRoot/content/**/*.ast`，递归遍历子目录，解析 JSON 填充 assets_ |
 | `refresh()` | 重新扫描（运行时热刷新） |
 | `search(keyword, subFolder)` | 按名称不区分大小写子串搜索，限定子文件夹 |
 | `size(subFolder)` | 返回指定子文件夹下的资产数量 |
@@ -400,6 +422,8 @@ struct MaterialAssetDesc {
 ```
 
 **type 字段解析：** `"Mesh"` / `"Box"` / `"Material"` 映射到 `MaterialType` 枚举。`"Material"` 类型不要求 `model` 字段。
+
+**资源根解析：** `Application` 初始化时调用 `setResRoot()` 注入项目唯一的绝对 `res/` 根。`load()` 接受相对 `res/` 的路径并兼容去除重复的 `res/` 前缀，避免进程工作目录变化导致入口或子材质 `.ast` 打不开。
 
 **subMaterials 解析：** 读取 `.ast` 中的 `"subMaterials"` 字符串数组，原样存入 `subMaterialPaths`（不作路径解析）。该数组在 `SceneSerializer` 的 save/load 和 `Application::beginDragPlace` 中用于逐槽位材质管理。
 
@@ -500,7 +524,7 @@ PickSystem
 ### 5.2 材质资产数据流
 
 ```
-res/materials/xxx.ast (JSON)
+res/content/**/xxx.material.ast 或兼容 res/materials/xxx.ast (JSON)
     │
     ▼ MaterialAssetLoader::load()
     │   ├── 解析 JSON（type / params / textures / model / subMaterials）
@@ -520,6 +544,28 @@ For subMaterials (SceneSerializer::load / beginDragPlace):
     │
     ▼ 逐槽位调用 loadMaterialFromAsset(subMaterialPaths[i])
     │   └── 填充 ModelEntity::subMeshMaterials[i]
+```
+
+### 5.3 FBX 导入与运行时加载数据流
+
+```
+外部 *.fbx
+    │
+    ▼ FbxImporter::load() / ufbx
+    │   ├── Vertex + Index + SubMesh(materialSlot/skinIndex)
+    │   ├── Material params + external/embedded textures
+    │   └── Skeleton + baked AnimationClip[]
+    │
+    ▼ Application::importModel()
+    │   ├── res/bin/mesh/*.fbx
+    │   ├── res/bin/texture/<model>/*
+    │   ├── res/content/**/<model>.mesh.ast + *.material.ast
+    │   └── res/content/**/<model>.anim.ast + res/bin/anim/*.anim.bin
+    │
+    ▼ ModelRegistry → beginDragPlace() → SceneManager::loadModelFromFbx()
+        ├── 创建/复用 GPU vertex/index buffer
+        ├── 逐槽位加载 Material .ast
+        └── 将 Skeleton/AnimationClip 绑定到 ModelEntity Animator
 ```
 
 ---
@@ -610,13 +656,13 @@ struct PushConstants {
 
 **当前面板：**
 - **主控制面板（tinyEngineOperationWindow）：** 清屏色、相机速度、下拉切换预设场景、材质列表（创建/删除）、Box 增删
-- **Content Browser：** 左侧文件夹树 + 右侧缩略图网格。扫描 `res/materials/**/*.ast`，按子文件夹分类浏览。
-  - **文件夹导航：** 左侧面板列出所有子文件夹（从 `materials/` 子目录自动发现），支持创建新文件夹。点击 `/ (root)` 浏览根目录，点击子文件夹切换浏览。
-  - **类型筛选：** 提供 `All` / `Mesh` / `Box` / `Material` 下拉筛选器，根据 `.ast` 的 `type` 字段过滤显示。
-  - **Import 导入：** 支持通过 Windows 原生文件对话框选择 `.obj/.gltf/.glb`，自动拷贝到 `res/models/` 并生成入口 `.ast`。glTF 文件同时预解析材质生成详细 `.ast`。导入生成的 `.ast` 放在当前浏览的文件夹下（`materials/` 或 `materials/<subFolder>/`）。
+- **Content Browser：** 左侧文件夹树 + 右侧缩略图网格。扫描 `res/content/**/*.ast`（兼容旧 `res/materials/`），按子文件夹分类浏览。
+  - **文件夹导航：** 左侧面板列出 `content/` 下所有子文件夹，支持在当前浏览目录创建新文件夹。点击 `/ (root)` 浏览根目录，点击子文件夹切换浏览。
+  - **类型筛选：** 提供 `All` / `Mesh` / `Box` / `Material` / `Anim` 下拉筛选器，根据 `.ast` 的 `type` 字段过滤显示。
+  - **Import 导入：** Windows 原生文件对话框支持 `.obj/.gltf/.glb/.fbx`。导入结果写入 `res/content/<当前目录>/<模型名>/` 与对应 `res/bin/` 分类目录；glTF/FBX 会预生成材质，带动画时同时生成独立 Anim 资产。
   - **拖拽限制：** `Material` 类型资产（无 `model` 引用）不显示拖拽源，禁止拖入场景。
 - **Scene Outliner：** 场景实体列表，单选/多选
-- **Properties：** 选中实体的 Transform 编辑 + Material 材质参数/纹理内联编辑
+- **Properties：** 选中实体的 Transform 编辑 + Material 材质参数/纹理内联编辑；纹理路径输入在切换材质时同步，Load 支持绝对路径和相对 `res/` 路径并显示成功/失败状态
 - **Box 面板：** 添加/删除 Box、选中 Box 属性
 - **ImGuizmo 集成：** 对选中实体施加 TRS 变换手柄，支持平移/旋转/缩放，通过键盘 1/2/3 切换模式
 
@@ -652,6 +698,7 @@ struct PushConstants {
 | stb_image | PNG/JPG 纹理加载 | header-only 包含 |
 | tinyobjloader | OBJ 模型解析 | header-only 包含 |
 | cgltf | glTF 2.0 模型解析 | header-only 包含 |
+| ufbx | FBX 网格、材质、蒙皮与动画解析 | Git Submodule；编译 `ufbx.c` |
 | nlohmann/json | JSON 解析 | header-only 包含 |
 | RenderDoc | 图形调试捕获 | header + DLL 动态加载 |
 
@@ -697,6 +744,9 @@ TINYOBJLOADER_IMPLEMENTATION # tinyobjloader 实现编译
 | 骨骼数据结构 | 已完成 | Phase A1：Bone / Skeleton + computeFinalMatrices |
 | 动画数据解析 | 已完成 | Phase A2：cgltf skin/anim → Skeleton / AnimationClip，含关键帧求值 |
 | glTF 模型导入 | 已完成 | Content Browser Import... 按钮：原生文件对话框 + 自动拷贝 + 材质预生成 |
+| FBX 模型/动画导入 | 核心支持已完成 | ufbx 子模块；静态/蒙皮网格、材质槽、外部/内嵌纹理、Skeleton、30 Hz 烘焙 AnimationClip 与独立 Anim 资产；高级 FBX 特性见 4.11.1 限制 |
+| 无贴图材质参数着色 | 已完成 | 中性 fallback 纹理保证 BaseColor/Metallic/Roughness/Emission 参数不被默认采样值抵消 |
+| Properties 纹理热替换 | 已完成 | 持久输入缓冲、绝对 res root 路径解析、事务式替换和 UI 状态反馈 |
 | 材质资产缓存 | 已完成 | MaterialManager.assetCache_ 同一 .ast 仅创建一次材质，拖入同模型秒加载 |
 | GPU 蒙皮渲染 | 已完成 | Phase A3：skinned_vert + BoneMatricesUBO + SkinnedPipeline + 多 skin per-palette |
 | 多骨架动画实体 | 已完成 | Phase A4：animation state 下沉到 ModelEntity，drawFrame 逐实体求值，不再依赖全局单例 |

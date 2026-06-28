@@ -1,3 +1,13 @@
+## 2026-06-28
+
+- [ ] 以 Git Submodule 方式加入 ufbx，并将 `ufbx.c` 与 include 路径接入 CMake 构建。
+- [ ] 实现 `FbxImporter`，支持二进制/ASCII FBX 的网格三角化、材质槽与 PBR 参数、外部/内嵌纹理、骨骼/蒙皮权重和 30 Hz 烘焙动画片段；统一坐标轴/单位，并在 FBX 导入边界翻转 V 坐标。
+- [ ] 将 FBX 接入 Content Browser 导入对话框、分类的 Mesh/Material/Anim 资产生成、ModelRegistry 格式识别、SceneManager 运行时加载/缓存和递归缩略图发现。
+- [ ] 通过为 `MaterialAssetLoader` 配置项目绝对 `res/` 根并使入口/子材质资产不依赖进程工作目录完成解析，修复导入 FBX 实体回退为 Default Mesh 的问题。
+- [ ] 使用中性 fallback 纹理修复无贴图材质渲染，使 Base Color、Metallic、Roughness、Emissive Color 和 Emissive Intensity 在缺少纹理时仍然生效。
+- [ ] 修复 Properties 纹理编辑：增加逐材质持久输入缓冲、绝对或相对 `res/` 的路径解析、事务式 Albedo/Normal 替换、Material 类型支持和可见加载状态。
+- [ ] x64-debug 构建及覆盖二进制/ASCII 几何、材质/纹理引用、蒙皮网格和有限动画矩阵的 FBX smoke tests 均通过；已同步 TDD.md 并完成 TODO-007/TODO-013。
+
 ## 2026-06-27
 
 - [ ] 在新的 AnimatorController 模块中实现 Phase B1 的 AnimatorState、AnimatorTransition、类型化参数、条件求值和一次性 Trigger 消费。

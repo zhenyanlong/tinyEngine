@@ -32,16 +32,6 @@
   - 日期：2026-06-18
   - 来源：手动收集
 
-- [ ] TODO-007 【动画/资产】将动画模型资产和动画序列资产分离为不同文件
-  - 上下文：从手动收集区整理；当前动画数据随 glTF 一起加载，动画片段无独立文件格式存储和复用。参考 Phase A5 计划，需要实现 .anim.json 或 .anim 格式的独立动画资产文件，支持序列化/反序列化 AnimationClip
-  - 日期：2026-06-18
-  - 来源：手动收集
-
-- [x] TODO-009 【Content Browser】新建文件夹应在当前浏览的子文件夹下创建
-  - 上下文：从手动收集区整理；当前 Create 按钮固定在 content/ 根下创建目录，未拼接 currentFolder_。用户在子文件夹浏览时点 Create，新文件夹应创建在当前子文件夹内而非 content 根
-  - 日期：2026-06-26
-  - 来源：手动收集
-
 - [ ] TODO-010 【Content Browser】添加删除资产文件功能，联动清理无引用的 bin payload
   - 上下文：从手动收集区整理；当前 Content Browser 无删除功能，废弃 .ast 文件需手动到文件系统删除。需求：在 Content Browser 中选中资产后提供删除按钮，删除 .ast 同时检查其引用的 bin/mesh、bin/texture、bin/anim 文件是否被其他 .ast 引用，若无引用则一并删除
   - 日期：2026-06-26
@@ -50,10 +40,6 @@
 - [ ] TODO-012 【动画压缩】加入 AI 压缩动画序列的功能
   - 上下文：当前动画序列占用空间较大，需要 AI 驱动的压缩方案减少资源体积
   - 日期：2026-06-26
-
-- [ ] TODO-013 【FBX 兼容】使项目兼容 FBX 格式的 model 和动画加载
-  - 上下文：FBX 是业界通用格式，大量模型和动画资源为 FBX 格式，目前仅支持 glTF
-  - 日期：2026-06-27
 
 - [ ] TODO-014 【测试准备】准备一套模型和动画用于测试动画状态机系统
   - 上下文：动画状态机系统开发需要测试素材验证功能正确性
@@ -66,6 +52,19 @@
 ---
 
 ## 已完成
+
+- [x] TODO-007 【动画/资产】将动画模型资产和动画序列资产分离为不同文件
+  - 上下文：从手动收集区整理；当前动画数据随 glTF 一起加载，动画片段无独立文件格式存储和复用。参考 Phase A5 计划，需要实现 .anim.json 或 .anim 格式的独立动画资产文件，支持序列化/反序列化 AnimationClip
+  - 日期：2026-06-18
+  - 来源：手动收集
+  - 完成日期：2026-06-28
+  - 完成依据：Phase A5 的 AnimationAssetLoader 已实现 `.anim.ast` Header 与 `.anim.bin` 二进制序列化/反序列化；Mesh `.ast` 通过 `animations` 引用独立动画资产，glTF 与 FBX 导入均可生成并在运行时恢复 Skeleton/AnimationClip
+
+- [x] TODO-013 【FBX 兼容】使项目兼容 FBX 格式的 model 和动画加载
+  - 上下文：FBX 是业界通用格式，大量模型和动画资源为 FBX 格式，目前仅支持 glTF
+  - 日期：2026-06-27
+  - 完成日期：2026-06-28
+  - 完成依据：以 Git Submodule 引入 ufbx；FbxImporter 已支持二进制/ASCII FBX 的网格、材质槽、PBR 参数、外部/内嵌纹理、蒙皮骨骼与烘焙动画解析，并接入 Content Browser、Mesh/Material/Anim 资产生成、SceneManager、ModelRegistry、缩略图与运行时缓存；x64-debug 构建及静态/材质/蒙皮动画 smoke tests 通过
 
 - [x] TODO-001 【Content Browser】新增文件夹功能，import 的 .ast 放在当前浏览的文件夹下
   - 上下文：目前所有 .ast 都平铺在 materials/ 下，无组织

@@ -1,3 +1,13 @@
+## 2026-06-28
+
+- [ ] Added ufbx as a Git submodule and integrated `ufbx.c` plus include paths into the CMake build.
+- [ ] Implemented `FbxImporter` for binary/ASCII FBX mesh triangulation, material slots and PBR parameters, external/embedded textures, skeleton/skin weights, and 30 Hz baked animation clips; normalized axes/units and flipped FBX V coordinates at the import boundary.
+- [ ] Integrated FBX into the Content Browser import dialog, categorized Mesh/Material/Anim asset generation, ModelRegistry format classification, SceneManager runtime loading/cache, and recursive thumbnail discovery.
+- [ ] Fixed imported FBX entities falling back to Default Mesh by configuring `MaterialAssetLoader` with the project-absolute `res/` root and resolving entry/sub-material assets independently of the process working directory.
+- [ ] Fixed texture-less material rendering with neutral fallback textures so Base Color, Metallic, Roughness, Emissive Color, and Emissive Intensity remain effective without texture maps.
+- [ ] Fixed Properties texture editing with per-material persistent input buffers, absolute or `res/`-relative path resolution, transactional Albedo/Normal replacement, Material-type support, and visible load status.
+- [ ] Passed the x64-debug build and FBX smoke tests covering binary and ASCII geometry, material/texture references, skinned meshes, and finite animation matrices; synchronized TDD.md and completed TODO-007/TODO-013.
+
 ## 2026-06-27
 
 - [ ] Implemented Phase B1 AnimatorState, AnimatorTransition, typed parameters, condition evaluation, and one-shot Trigger consumption in the new AnimatorController module.
