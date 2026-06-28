@@ -1,4 +1,5 @@
 #include "SceneManager.hpp"
+#include "FbxImporter.hpp"
 // Workaround: tinyobjloader's embedded fast_float library marks SIMD-using
 // helpers as `FASTFLOAT_CONSTEXPR20 = constexpr` whenever the host stdlib
 // reports __cpp_lib_constexpr_algorithms >= 201806L. MSVC 19.43+ in C++20
@@ -227,6 +228,8 @@ void SceneManager::cacheModelResourceFromEntity(const std::string& key, ModelEnt
     res.subMeshes = ent.subMeshes;
     res.autoAstPaths = ent.autoAstPaths;
     res.hasSkin = ent.hasSkin_;
+    res.skeleton = ent.skeleton;
+    res.animationClips = ent.animationClips;
     res.boundsMin = modelLocalBoundsMin_;
     res.boundsMax = modelLocalBoundsMax_;
     modelResourceCache_[key] = std::move(res);
@@ -280,8 +283,12 @@ void SceneManager::loadModel(const std::string& path, const glm::vec3& position,
         // 替换已有实体 0：loadModelFrom* 会覆盖 vertex/index/subMeshes 并创建新缓冲
         if (endsWithIgnoreCase(path, ".gltf") || endsWithIgnoreCase(path, ".glb"))
             loadModelFromGltf(path, position, bufMgr);
-        else
+        else if (endsWithIgnoreCase(path, ".fbx"))
+            loadModelFromFbx(path, position, bufMgr);
+        else if (endsWithIgnoreCase(path, ".obj"))
             loadModelFromObj(path, position, bufMgr);
+        else
+            throw std::runtime_error("Unsupported model format: " + path);
     }
 }
 
@@ -306,8 +313,14 @@ uint64_t SceneManager::createModelEntity(const std::string& path,
 
     if (endsWithIgnoreCase(path, ".gltf") || endsWithIgnoreCase(path, ".glb"))
         loadModelFromGltf(path, position, bufMgr);
-    else
+    else if (endsWithIgnoreCase(path, ".fbx"))
+        loadModelFromFbx(path, position, bufMgr);
+    else if (endsWithIgnoreCase(path, ".obj"))
         loadModelFromObj(path, position, bufMgr);
+    else {
+        modelEntities_.pop_back();
+        throw std::runtime_error("Unsupported model format: " + path);
+    }
 
     if (useResourceCache)
         cacheModelResourceFromEntity(resourceKey, ref);
@@ -381,6 +394,50 @@ void SceneManager::loadModelFromObj(const std::string& path, const glm::vec3& po
     bufMgr.createVertexBuffer(ent.vertices, ent.vertexBuffer, ent.vertexMemory);
     bufMgr.createIndexBuffer(ent.indices, ent.indexBuffer, ent.indexMemory);
     ent.indexCount = static_cast<uint32_t>(ent.indices.size());
+}
+
+void SceneManager::loadModelFromFbx(const std::string& path, const glm::vec3& position,
+                                    const BufferManager& bufMgr)
+{
+    ModelEntity& ent = modelEntities_.back();
+    ent.transform.position = position;
+
+    FbxImportResult imported;
+    std::string error;
+    if (!FbxImporter::load(path, imported, &error))
+        throw std::runtime_error("Failed to load FBX: " + path + "\n" + error);
+
+    ent.vertices = std::move(imported.vertices);
+    ent.indices = std::move(imported.indices);
+    ent.subMeshes.clear();
+    ent.subMeshes.reserve(imported.subMeshes.size());
+    for (const FbxImportedSubMesh& source : imported.subMeshes) {
+        SubMesh subMesh;
+        subMesh.indexOffset = source.indexOffset;
+        subMesh.indexCount = source.indexCount;
+        subMesh.skinIndex = source.skinIndex;
+        subMesh.materialSlot = source.materialSlot;
+        ent.subMeshes.push_back(subMesh);
+    }
+    ent.subMeshMaterials.assign(imported.materials.size(), 0u);
+    ent.autoAstPaths.clear();
+    ent.hasSkin_ = imported.hasSkin;
+    ent.skeleton = std::move(imported.skeleton);
+    ent.animationClips = std::move(imported.animationClips);
+    if (ent.skeleton)
+        ent.animatorController.configureFromClips(ent.animationClips);
+    ent.ownsMeshBuffers = true;
+    ent.meshResourceKey.clear();
+
+    modelLocalBoundsMin_ = imported.boundsMin;
+    modelLocalBoundsMax_ = imported.boundsMax;
+    bufMgr.createVertexBuffer(ent.vertices, ent.vertexBuffer, ent.vertexMemory);
+    bufMgr.createIndexBuffer(ent.indices, ent.indexBuffer, ent.indexMemory);
+    ent.indexCount = static_cast<uint32_t>(ent.indices.size());
+
+    std::cout << "[FBX] loaded " << ent.vertices.size() << " vertices, "
+              << ent.indices.size() << " indices, " << ent.subMeshes.size()
+              << " submeshes, " << ent.animationClips.size() << " animation(s)\n";
 }
 
 void SceneManager::loadModelFromGltf(const std::string& path, const glm::vec3& position,

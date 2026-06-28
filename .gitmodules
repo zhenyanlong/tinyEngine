@@ -16,3 +16,6 @@
 [submodule "thirdParty/cgltf"]
 	path = thirdParty/cgltf
 	url = https://github.com/jkuhlmann/cgltf
+[submodule "thirdParty/ufbx"]
+	path = thirdParty/ufbx
+	url = https://github.com/ufbx/ufbx.git

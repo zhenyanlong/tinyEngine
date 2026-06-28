@@ -7,7 +7,7 @@
 #include <glm/glm.hpp>
 
 /** @brief 模型文件类型枚举 */
-enum class ModelType { OBJ, GLTF, GLB, Unknown };
+enum class ModelType { OBJ, GLTF, GLB, FBX, Unknown };
 
 /** @brief 模型资产元数据（每个条目对应 res/materials/ 下一个 .ast 文件） */
 struct ModelAsset {

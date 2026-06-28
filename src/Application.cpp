@@ -1,5 +1,6 @@
 #include "Application.hpp"
 #include "Animation/AnimationAssetLoader.hpp"
+#include "FbxImporter.hpp"
 #include "MaterialAssetLoader.hpp"
 #include "SceneSerializer.hpp"
 #include "TinyEngineDebug.hpp"
@@ -225,6 +226,7 @@ void Application::initVulkan()
         const std::filesystem::path modelP(ui_->modelPath);
         resRoot = modelP.parent_path().parent_path().string();
         modelRegistry_.scan(resRoot);
+        MaterialAssetLoader::setResRoot(resRoot);
     }
 
     // 初始化材质管理器（auto-load 和正常流程都需要）
@@ -1096,14 +1098,24 @@ void Application::destroyMaterial(MaterialId id)
     matMgr_.destroyMaterial(id, ctx_);
 }
 
-void Application::setMaterialAlbedo(MaterialId id, const std::string& path)
+bool Application::setMaterialAlbedo(MaterialId id, const std::string& path)
 {
-    matMgr_.setAlbedoPath(id, path, ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_);
+    std::filesystem::path resolved(path);
+    if (!path.empty() && !resolved.is_absolute())
+        resolved = std::filesystem::path(MaterialAssetLoader::getResRoot()) / stripResPrefix(path);
+    std::string error;
+    return matMgr_.setAlbedoPath(id, path.empty() ? std::string{} : resolved.lexically_normal().string(),
+                                 ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_, &error);
 }
 
-void Application::setMaterialNormal(MaterialId id, const std::string& path)
+bool Application::setMaterialNormal(MaterialId id, const std::string& path)
 {
-    matMgr_.setNormalPath(id, path, ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_);
+    std::filesystem::path resolved(path);
+    if (!path.empty() && !resolved.is_absolute())
+        resolved = std::filesystem::path(MaterialAssetLoader::getResRoot()) / stripResPrefix(path);
+    std::string error;
+    return matMgr_.setNormalPath(id, path.empty() ? std::string{} : resolved.lexically_normal().string(),
+                                 ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_, &error);
 }
 
 // ─── Drag-Place Implementation ───────────────────────────────────────────────
@@ -1497,6 +1509,132 @@ bool Application::importModel(const std::string& sourcePath,
         if (!writeMeshAst(astRelPath, {}, {})) return false;
         std::cout << "[Import] imported " << sourcePath << " as " << modelRelPath
                   << " (" << astRelPath << ")\n";
+        return true;
+    }
+
+    if (lowerExt == ".fbx") {
+        FbxImportResult imported;
+        std::string fbxError;
+        if (!FbxImporter::load(srcPath.string(), imported, &fbxError)) {
+            std::cerr << "[Import] FBX parse failed: " << fbxError << "\n";
+            return false;
+        }
+
+        const fs::path dst = makeUniquePath(resRootPath / "bin" / "mesh" / (stem + ".fbx"));
+        fs::create_directories(dst.parent_path(), ec);
+        fs::copy_file(srcPath, dst, fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            std::cerr << "[Import] copy failed: " << ec.message() << "\n";
+            return false;
+        }
+        modelRelPath = relativeToRes(dst, resRootPath);
+
+        auto persistTexture = [&](const FbxImportedTexture& texture,
+                                  const std::string& materialName,
+                                  const char* role) -> std::string {
+            if (texture.filename.empty() && texture.embeddedContent.empty())
+                return {};
+
+            fs::path extension = fs::path(texture.filename).extension();
+            if (extension.empty() && texture.embeddedContent.size() >= 4) {
+                const auto& bytes = texture.embeddedContent;
+                if (bytes[0] == 0x89 && bytes[1] == 'P' && bytes[2] == 'N' && bytes[3] == 'G')
+                    extension = ".png";
+                else if (bytes[0] == 0xff && bytes[1] == 0xd8)
+                    extension = ".jpg";
+            }
+            if (extension.empty()) extension = ".bin";
+
+            const std::string textureStem = sanitizeAssetName(
+                stem + "_" + materialName + "_" + role);
+            const fs::path textureDst = makeUniquePath(
+                resRootPath / "bin" / "texture" / stem / (textureStem + extension.string()));
+            fs::create_directories(textureDst.parent_path(), ec);
+
+            if (!texture.embeddedContent.empty()) {
+                std::ofstream out(textureDst, std::ios::binary);
+                if (!out.is_open()) return {};
+                out.write(reinterpret_cast<const char*>(texture.embeddedContent.data()),
+                          static_cast<std::streamsize>(texture.embeddedContent.size()));
+                if (!out.good()) return {};
+            } else {
+                fs::path textureSource(texture.filename);
+                if (!textureSource.is_absolute())
+                    textureSource = srcPath.parent_path() / textureSource;
+                textureSource = textureSource.lexically_normal();
+                if (!fs::is_regular_file(textureSource, ec)) {
+                    std::cerr << "[Import] FBX texture not found: " << textureSource << "\n";
+                    return {};
+                }
+                fs::copy_file(textureSource, textureDst, fs::copy_options::overwrite_existing, ec);
+                if (ec) {
+                    std::cerr << "[Import] texture copy failed: " << ec.message() << "\n";
+                    return {};
+                }
+            }
+            return relativeToRes(textureDst, resRootPath);
+        };
+
+        std::vector<std::string> materialPaths;
+        for (size_t i = 0; i < imported.materials.size(); ++i) {
+            const FbxImportedMaterial& material = imported.materials[i];
+            const std::string materialName = sanitizeAssetName(
+                material.name.empty() ? ("material_" + std::to_string(i)) : material.name);
+            const std::string albedo = persistTexture(material.albedoTexture, materialName, "albedo");
+            const std::string normal = persistTexture(material.normalTexture, materialName, "normal");
+            const std::string emissive = persistTexture(material.emissiveTexture, materialName, "emissive");
+
+            json materialJson;
+            materialJson["name"] = material.name;
+            materialJson["type"] = "Material";
+            materialJson["params"] = {
+                {"baseColor", {material.baseColor.r, material.baseColor.g,
+                               material.baseColor.b, material.baseColor.a}},
+                {"roughness", material.roughness},
+                {"metallic", material.metallic},
+                {"emissiveIntensity", glm::length(glm::vec3(material.emissiveColor)) > 1e-6f ? 1.f : 0.f},
+                {"emissiveColor", {material.emissiveColor.r, material.emissiveColor.g,
+                                    material.emissiveColor.b, material.emissiveColor.a}}
+            };
+            materialJson["textures"] = json::object();
+            if (!albedo.empty()) materialJson["textures"]["albedo"] = albedo;
+            if (!normal.empty()) materialJson["textures"]["normal"] = normal;
+            if (!emissive.empty()) materialJson["textures"]["emissive"] = emissive;
+
+            const fs::path materialAbs = makeUniquePath(
+                resRootPath / contentRelDir / (materialName + ".material.ast"));
+            fs::create_directories(materialAbs.parent_path(), ec);
+            std::ofstream materialOut(materialAbs);
+            if (!materialOut.is_open()) {
+                std::cerr << "[Import] cannot create material .ast: " << materialAbs << "\n";
+                return false;
+            }
+            materialOut << materialJson.dump(2) << '\n';
+            materialPaths.push_back(relativeToRes(materialAbs, resRootPath));
+        }
+
+        const std::string meshAstRel = contentRelDir + "/" + stem + ".mesh.ast";
+        std::vector<std::string> animationPaths;
+        if (imported.skeleton && !imported.animationClips.empty()) {
+            const std::string animAstRel = contentRelDir + "/" + stem + ".anim.ast";
+            const fs::path animBinAbs = makeUniquePath(
+                resRootPath / "bin" / "anim" / (stem + ".anim.bin"));
+            const std::string animBinRel = relativeToRes(animBinAbs, resRootPath);
+            std::string animError;
+            AnimationAssetLoader::setResRoot(resRootPath.string());
+            if (AnimationAssetLoader::save(animAstRel, animBinRel, meshAstRel,
+                                           *imported.skeleton, imported.animationClips,
+                                           &animError)) {
+                animationPaths.push_back(animAstRel);
+            } else {
+                std::cerr << "[Import] FBX animation asset generation failed: "
+                          << animError << "\n";
+            }
+        }
+
+        if (!writeMeshAst(meshAstRel, materialPaths, animationPaths)) return false;
+        std::cout << "[Import] imported FBX " << sourcePath << " as " << modelRelPath
+                  << " (" << meshAstRel << ")\n";
         return true;
     }
 

@@ -24,6 +24,7 @@ add_executable(${PROJECT_NAME}
     ${SOURCE}
     ${IMGUI_SRCS}
     thirdParty/ImGuizmo/ImGuizmo.cpp
+    thirdParty/ufbx/ufbx.c
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC
@@ -37,6 +38,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
                 thirdParty/renderdoc
                 thirdParty/json/include
                 thirdParty/cgltf
+                thirdParty/ufbx
         )
 
 

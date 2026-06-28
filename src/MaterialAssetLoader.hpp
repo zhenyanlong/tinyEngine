@@ -3,9 +3,8 @@
 #include <string>
 
 // Description of a material asset loaded from a .ast (JSON) file.
-// All path fields stored here are RELATIVE to the executable working dir
-// (i.e. already prefixed with "res/"), so they can be passed straight to
-// TextureManager / PipelineManager without any further rewriting.
+// All path fields are resolved against the configured project res/ root and
+// can be passed straight to TextureManager / PipelineManager.
 struct MaterialAssetDesc {
     std::string    name;
     MaterialType   type = MaterialType::Mesh;
@@ -17,7 +16,7 @@ struct MaterialAssetDesc {
     std::string    metallicRoughnessPath;// glTF convention: g=roughness, b=metallic
     std::string    aoPath;              // grayscale; r channel sampled
     std::string    emissivePath;        // sRGB color
-    std::string    modelPath;           // resolved path to .obj/.gltf/.glb, may be empty
+    std::string    modelPath;           // resolved path to .obj/.gltf/.glb/.fbx, may be empty
 
     // Sub-material paths (from .ast "subMaterials" array), relative to res/
     std::vector<std::string> subMaterialPaths;
@@ -25,9 +24,11 @@ struct MaterialAssetDesc {
 
 class MaterialAssetLoader {
 public:
-    // The resource root: every relative path inside the .ast is resolved
-    // against this directory.
-    static constexpr const char* kResRoot = "res/";
+    /** @brief 设置项目唯一的 res/ 根目录。 */
+    static void setResRoot(const std::string& resRoot);
+
+    /** @brief 返回当前 res/ 根目录。 */
+    static std::string getResRoot();
 
     // Load a single material asset.
     //   astRelPath: path relative to res/, e.g. "materials/mainmodel.ast".

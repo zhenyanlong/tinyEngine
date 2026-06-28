@@ -21,6 +21,7 @@ ModelType ModelRegistry::classifyModelType(const std::string& modelRelPath)
     if (endsWith(".obj"))  return ModelType::OBJ;
     if (endsWith(".glb"))  return ModelType::GLB;
     if (endsWith(".gltf")) return ModelType::GLTF;
+    if (endsWith(".fbx"))  return ModelType::FBX;
     return ModelType::Unknown;
 }
 

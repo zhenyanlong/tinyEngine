@@ -41,11 +41,11 @@ static std::string openFileDialog(GLFWwindow* window)
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner   = glfwGetWin32Window(window);
-    ofn.lpstrFilter = L"3D Models (*.obj;*.gltf;*.glb)\0*.obj;*.gltf;*.glb\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFilter = L"3D Models (*.obj;*.gltf;*.glb;*.fbx)\0*.obj;*.gltf;*.glb;*.fbx\0All Files (*.*)\0*.*\0";
     ofn.lpstrFile   = fileBuf;
     ofn.nMaxFile    = sizeof(fileBuf) / sizeof(wchar_t);
     ofn.Flags       = OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_PATHMUSTEXIST;
-    ofn.lpstrDefExt = L"gltf";
+    ofn.lpstrDefExt = L"fbx";
 
     if (GetOpenFileNameW(&ofn)) {
         int len = WideCharToMultiByte(CP_UTF8, 0, fileBuf, -1, nullptr, 0, nullptr, nullptr);
@@ -451,6 +451,8 @@ void UIManager::prepareFrame()
                     const std::string& np = matMgr.getNormalPath(id);
                     snprintf(matAlbedoPath_, sizeof(matAlbedoPath_), "%s", ap.c_str());
                     snprintf(matNormalPath_, sizeof(matNormalPath_), "%s", np.c_str());
+                    texturePathMaterialId_ = id;
+                    textureStatusMsg_.clear();
                 }
             }
             ImGui::EndListBox();
@@ -462,6 +464,8 @@ void UIManager::prepareFrame()
             editingMaterialId_ = newId;
             matAlbedoPath_[0] = '\0';
             matNormalPath_[0] = '\0';
+            texturePathMaterialId_ = newId;
+            textureStatusMsg_.clear();
         }
         ImGui::SameLine();
         if (ImGui::Button("+ Box Material")) {
@@ -1034,7 +1038,9 @@ void UIManager::drawPropertiesPanel()
 
             // ── 材质参数编辑 ──────────────────────────────────────────
             const MaterialId editId = ent->materialId;
-            const bool isMesh = (matMgr.getMaterialType(editId) == MaterialType::Mesh);
+            const MaterialType materialType = matMgr.getMaterialType(editId);
+            const bool supportsTextures = materialType == MaterialType::Mesh
+                || materialType == MaterialType::Material;
 
             ImGui::Separator();
             MaterialParams& p = matMgr.getParamsMut(editId);
@@ -1050,24 +1056,42 @@ void UIManager::drawPropertiesPanel()
             ImGui::SliderFloat("Emissive Intensity##matEdit", &p.emissiveIntensity,  0.f, 10.f);
             ImGui::ColorEdit3("Emissive Color##matEdit",      &p.emissiveColor.x);
 
-            if (isMesh) {
-                // 每次打开都同步纹理路径缓冲区（snprintf 成本极低）
-                snprintf(matAlbedoPath_, sizeof(matAlbedoPath_), "%s",
-                         matMgr.getAlbedoPath(editId).c_str());
-                snprintf(matNormalPath_, sizeof(matNormalPath_), "%s",
-                         matMgr.getNormalPath(editId).c_str());
+            if (supportsTextures) {
+                // 仅在切换材质时同步，不能每帧覆盖用户正在编辑的输入框。
+                if (texturePathMaterialId_ != editId) {
+                    snprintf(matAlbedoPath_, sizeof(matAlbedoPath_), "%s",
+                             matMgr.getAlbedoPath(editId).c_str());
+                    snprintf(matNormalPath_, sizeof(matNormalPath_), "%s",
+                             matMgr.getNormalPath(editId).c_str());
+                    texturePathMaterialId_ = editId;
+                    textureStatusMsg_.clear();
+                }
 
                 ImGui::Separator();
                 ImGui::Text("Textures");
                 ImGui::InputText("Albedo##matEdit", matAlbedoPath_, sizeof(matAlbedoPath_));
                 ImGui::SameLine();
-                if (ImGui::Button("Load##albedoEdit"))
-                    vulkanRender->setMaterialAlbedo(editId, matAlbedoPath_);
+                if (ImGui::Button("Load##albedoEdit")) {
+                    const bool ok = vulkanRender->setMaterialAlbedo(editId, matAlbedoPath_);
+                    textureStatusMsg_ = ok ? "Albedo loaded" : "Albedo load failed; see console";
+                    if (ok) {
+                        snprintf(matAlbedoPath_, sizeof(matAlbedoPath_), "%s",
+                                 matMgr.getAlbedoPath(editId).c_str());
+                    }
+                }
 
                 ImGui::InputText("Normal##matEdit", matNormalPath_, sizeof(matNormalPath_));
                 ImGui::SameLine();
-                if (ImGui::Button("Load##normalEdit"))
-                    vulkanRender->setMaterialNormal(editId, matNormalPath_);
+                if (ImGui::Button("Load##normalEdit")) {
+                    const bool ok = vulkanRender->setMaterialNormal(editId, matNormalPath_);
+                    textureStatusMsg_ = ok ? "Normal loaded" : "Normal load failed; see console";
+                    if (ok) {
+                        snprintf(matNormalPath_, sizeof(matNormalPath_), "%s",
+                                 matMgr.getNormalPath(editId).c_str());
+                    }
+                }
+                if (!textureStatusMsg_.empty())
+                    ImGui::TextDisabled("%s", textureStatusMsg_.c_str());
             }
 
             if (matMgr.isDeletable(editId)) {
@@ -1077,6 +1101,8 @@ void UIManager::drawPropertiesPanel()
                     ent->materialId = matMgr.getDefaultMeshMaterialId();
                     matAlbedoPath_[0] = '\0';
                     matNormalPath_[0] = '\0';
+                    texturePathMaterialId_ = 0;
+                    textureStatusMsg_.clear();
                 }
             }
         }

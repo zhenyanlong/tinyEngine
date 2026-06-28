@@ -13,6 +13,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
@@ -499,28 +500,32 @@ bool ThumbnailRenderer::renderAndSave(const std::string& modelPath, const std::s
 
 int ThumbnailRenderer::generateAll(const std::string& resRoot)
 {
-    const std::filesystem::path modelsDir = std::filesystem::path(resRoot) / "models";
     const std::filesystem::path thumbDir  = std::filesystem::path(resRoot) / "thumbnails";
     std::error_code ec;
-
-    if (!std::filesystem::is_directory(modelsDir, ec))
-        return 0;
 
     // resRoot 已是项目根/res/，thumbnails 直接写入唯一基准路径，无需双写。
     std::filesystem::create_directories(thumbDir, ec);
 
     int generated = 0;
-    for (const auto& entry : std::filesystem::directory_iterator(modelsDir, ec)) {
-        if (!entry.is_regular_file(ec)) continue;
-        const std::string ext = entry.path().extension().string();
-        if (ext != ".obj" && ext != ".glb" && ext != ".gltf") continue;
+    const std::filesystem::path roots[] = {
+        std::filesystem::path(resRoot) / "bin" / "mesh",
+        std::filesystem::path(resRoot) / "models", // 旧目录兼容
+    };
+    for (const auto& root : roots) {
+        if (!std::filesystem::is_directory(root, ec)) continue;
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(root, ec)) {
+            if (!entry.is_regular_file(ec)) continue;
+            std::string ext = entry.path().extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (ext != ".obj" && ext != ".glb" && ext != ".gltf" && ext != ".fbx") continue;
 
-        const std::string stem = entry.path().stem().string();
-        const std::string pngPath = (thumbDir / (stem + ".png")).string();
-        if (std::filesystem::exists(pngPath)) continue; // already exists
+            const std::string stem = entry.path().stem().string();
+            const std::string pngPath = (thumbDir / (stem + ".png")).string();
+            if (std::filesystem::exists(pngPath)) continue;
 
-        if (renderAndSave(entry.path().string(), pngPath)) {
-            ++generated;
+            if (renderAndSave(entry.path().string(), pngPath))
+                ++generated;
         }
     }
 

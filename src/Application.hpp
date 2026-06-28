@@ -107,8 +107,8 @@ public:
                                   const MaterialParams& params);
     MaterialId createBoxMaterial(const std::string& name, const MaterialParams& params);
     void       destroyMaterial(MaterialId id);
-    void       setMaterialAlbedo(MaterialId id, const std::string& path);
-    void       setMaterialNormal(MaterialId id, const std::string& path);
+    bool       setMaterialAlbedo(MaterialId id, const std::string& path);
+    bool       setMaterialNormal(MaterialId id, const std::string& path);
 
 private:
     GLFWwindow* window_  = nullptr;

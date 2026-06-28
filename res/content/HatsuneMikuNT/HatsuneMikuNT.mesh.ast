@@ -1,0 +1,6 @@
+{
+  "name": "HatsuneMikuNT",
+  "type": "Mesh",
+  "model": "bin/mesh/HatsuneMikuNT.fbx",
+  "materials": ["content/HatsuneMikuNT/Body.material.ast", "content/HatsuneMikuNT/Costume.material.ast", "content/HatsuneMikuNT/Eye.material.ast", "content/HatsuneMikuNT/Hair.material.ast", "content/HatsuneMikuNT/HairF.material.ast", "content/HatsuneMikuNT/Transparent.material.ast"]
+}

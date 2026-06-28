@@ -108,15 +108,15 @@ public:
     MaterialParams& getParamsMut(MaterialId id);
 
     // ── 纹理热替换（Mesh 材质） ────────────────────────────────────────
-    void setAlbedoPath(MaterialId id, const std::string& path,
+    bool setAlbedoPath(MaterialId id, const std::string& path,
                        const VulkanContext& ctx, const CommandManager& cmdMgr,
                        const BufferManager& bufMgr, const FramebufferManager& fbMgr,
-                       const PipelineManager& pipeMgr);
+                       const PipelineManager& pipeMgr, std::string* error = nullptr);
 
-    void setNormalPath(MaterialId id, const std::string& path,
+    bool setNormalPath(MaterialId id, const std::string& path,
                        const VulkanContext& ctx, const CommandManager& cmdMgr,
                        const BufferManager& bufMgr, const FramebufferManager& fbMgr,
-                       const PipelineManager& pipeMgr);
+                       const PipelineManager& pipeMgr, std::string* error = nullptr);
 
     // ── 每帧 UBO 更新 ─────────────────────────────────────────────────
     // 将 view/proj 和材质颜色写入所有材质的 imageIndex 号 UBO

@@ -182,8 +182,10 @@ private:
 
 	// Material panel state
 	uint32_t editingMaterialId_ = 0;
+	uint32_t texturePathMaterialId_ = 0;
 	char     matAlbedoPath_[1024]{};
 	char     matNormalPath_[1024]{};
+	std::string textureStatusMsg_;
 
 	// Material asset (.ast) picker state
 	std::vector<std::string> astAssetFiles_;   // basenames under res/materials/, sorted

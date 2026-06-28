@@ -1,0 +1,22 @@
+{
+  "name": "HairF",
+  "params": {
+    "baseColor": [
+      1.0,
+      0.7177406549453735,
+      0.3805180490016937,
+      1.0
+    ],
+    "emissiveColor": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "emissiveIntensity": 0.0,
+    "metallic": 0.0,
+    "roughness": 1.0
+  },
+  "textures": {},
+  "type": "Material"
+}

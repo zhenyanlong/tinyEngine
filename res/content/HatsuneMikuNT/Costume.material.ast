@@ -1,0 +1,22 @@
+{
+  "name": "Costume",
+  "params": {
+    "baseColor": [
+      0.800000011920929,
+      0.800000011920929,
+      0.800000011920929,
+      1.0
+    ],
+    "emissiveColor": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "emissiveIntensity": 0.0,
+    "metallic": 0.0,
+    "roughness": 0.4000000059604645
+  },
+  "textures": {},
+  "type": "Material"
+}

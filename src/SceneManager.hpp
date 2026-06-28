@@ -167,4 +167,5 @@ private:
     void destroyCachedModelResources(const VulkanContext& ctx);
     void loadModelFromObj(const std::string& path, const glm::vec3& position, const BufferManager& bufMgr);
     void loadModelFromGltf(const std::string& path, const glm::vec3& position, const BufferManager& bufMgr);
+    void loadModelFromFbx(const std::string& path, const glm::vec3& position, const BufferManager& bufMgr);
 };

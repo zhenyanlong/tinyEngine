@@ -191,10 +191,13 @@ void MaterialManager::createDefaultTextures(const VulkanContext& ctx, const Comm
 {
     uploadTexture1x1(defaultAlbedo_,   255, 255, 255, 255, ctx, cmdMgr, fbMgr);
     uploadTexture1x1(defaultNormal_,   128, 128, 255, 255, ctx, cmdMgr, fbMgr);
-    // glTF metallicRoughness: r unused, g=roughness=1 (fully rough), b=metallic=0
-    uploadTexture1x1(defaultMR_,         0, 255,   0, 255, ctx, cmdMgr, fbMgr);
+    // 缺少 MR 贴图时，g/b 均使用乘法单位值 1，确保 UBO 中的
+    // roughness/metallic 参数直接生效，而不是被 fallback 纹理覆盖。
+    uploadTexture1x1(defaultMR_,         0, 255, 255, 255, ctx, cmdMgr, fbMgr);
     uploadTexture1x1(defaultAO_,       255, 255, 255, 255, ctx, cmdMgr, fbMgr);
-    uploadTexture1x1(defaultEmissive_,   0,   0,   0,   0, ctx, cmdMgr, fbMgr);
+    // 缺少 emissive 贴图时采样白色，让 emissiveColor * emissiveIntensity
+    // 成为最终自发光颜色；黑色 fallback 会把参数结果完全乘没。
+    uploadTexture1x1(defaultEmissive_, 255, 255, 255, 255, ctx, cmdMgr, fbMgr);
 }
 
 void MaterialManager::destroyDefaultTextures(const VulkanContext& ctx)
@@ -646,46 +649,66 @@ MaterialParams& MaterialManager::getParamsMut(MaterialId id)
 
 // ── Texture hot-replace ────────────────────────────────────────────────────────
 
-void MaterialManager::setAlbedoPath(MaterialId id, const std::string& path,
+bool MaterialManager::setAlbedoPath(MaterialId id, const std::string& path,
                                     const VulkanContext& ctx, const CommandManager& cmdMgr,
                                     const BufferManager& bufMgr, const FramebufferManager& fbMgr,
-                                    const PipelineManager& pipeMgr)
+                                    const PipelineManager& pipeMgr, std::string* error)
 {
     MaterialEntry& e = materials_.at(id);
     vkDeviceWaitIdle(ctx.getDevice());
 
-    if (!e.albedo.isDefault) destroyTexture(e.albedo, ctx);
-
     if (!path.empty()) {
-        loadTexture(e.albedo, path, ctx, cmdMgr, bufMgr, fbMgr);
+        TextureGPU replacement;
+        try {
+            loadTexture(replacement, path, ctx, cmdMgr, bufMgr, fbMgr);
+        } catch (const std::exception& ex) {
+            destroyTexture(replacement, ctx);
+            if (error) *error = ex.what();
+            std::cerr << "[MaterialManager] " << ex.what() << "\n";
+            return false;
+        }
+        if (!e.albedo.isDefault) destroyTexture(e.albedo, ctx);
+        e.albedo = std::move(replacement);
     } else {
+        if (!e.albedo.isDefault) destroyTexture(e.albedo, ctx);
         e.albedo.view      = defaultAlbedo_.view;
         e.albedo.sampler   = defaultAlbedo_.sampler;
         e.albedo.isDefault = true;
         e.albedo.path.clear();
     }
     writeDescSets(e, ctx, pipeMgr);
+    return true;
 }
 
-void MaterialManager::setNormalPath(MaterialId id, const std::string& path,
+bool MaterialManager::setNormalPath(MaterialId id, const std::string& path,
                                     const VulkanContext& ctx, const CommandManager& cmdMgr,
                                     const BufferManager& bufMgr, const FramebufferManager& fbMgr,
-                                    const PipelineManager& pipeMgr)
+                                    const PipelineManager& pipeMgr, std::string* error)
 {
     MaterialEntry& e = materials_.at(id);
     vkDeviceWaitIdle(ctx.getDevice());
 
-    if (!e.normal.isDefault) destroyTexture(e.normal, ctx);
-
     if (!path.empty()) {
-        loadTexture(e.normal, path, ctx, cmdMgr, bufMgr, fbMgr);
+        TextureGPU replacement;
+        try {
+            loadTexture(replacement, path, ctx, cmdMgr, bufMgr, fbMgr);
+        } catch (const std::exception& ex) {
+            destroyTexture(replacement, ctx);
+            if (error) *error = ex.what();
+            std::cerr << "[MaterialManager] " << ex.what() << "\n";
+            return false;
+        }
+        if (!e.normal.isDefault) destroyTexture(e.normal, ctx);
+        e.normal = std::move(replacement);
     } else {
+        if (!e.normal.isDefault) destroyTexture(e.normal, ctx);
         e.normal.view      = defaultNormal_.view;
         e.normal.sampler   = defaultNormal_.sampler;
         e.normal.isDefault = true;
         e.normal.path.clear();
     }
     writeDescSets(e, ctx, pipeMgr);
+    return true;
 }
 
 // ── Per-frame UBO update ───────────────────────────────────────────────────────

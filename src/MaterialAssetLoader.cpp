@@ -1,10 +1,24 @@
 #include "MaterialAssetLoader.hpp"
 #include "nlohmann/json.hpp"
+#include <filesystem>
 #include <fstream>
 
 using nlohmann::json;
 
 namespace {
+
+std::filesystem::path& configuredResRoot()
+{
+    static std::filesystem::path root = std::filesystem::absolute("res");
+    return root;
+}
+
+std::filesystem::path stripResPrefix(std::filesystem::path path)
+{
+    if (!path.empty() && path.begin()->string() == "res")
+        return path.lexically_relative("res");
+    return path;
+}
 
 glm::vec4 readVec4(const json& arr, const glm::vec4& fallback)
 {
@@ -18,17 +32,34 @@ glm::vec4 readVec4(const json& arr, const glm::vec4& fallback)
 std::string resolveRel(const std::string& rel)
 {
     if (rel.empty()) return {};
-    return std::string(MaterialAssetLoader::kResRoot) + rel;
+    std::filesystem::path path(rel);
+    if (path.is_absolute()) return path.lexically_normal().string();
+    return (configuredResRoot() / stripResPrefix(path)).lexically_normal().string();
 }
 
 } // namespace
+
+void MaterialAssetLoader::setResRoot(const std::string& resRoot)
+{
+    if (resRoot.empty()) return;
+    configuredResRoot() = std::filesystem::absolute(std::filesystem::path(resRoot)).lexically_normal();
+}
+
+std::string MaterialAssetLoader::getResRoot()
+{
+    return configuredResRoot().string();
+}
 
 bool MaterialAssetLoader::load(const std::string& astRelPath,
                                MaterialAssetDesc& out,
                                std::string* err)
 {
-    const std::string fullPath = std::string(kResRoot) + astRelPath;
-    std::ifstream f(fullPath);
+    std::filesystem::path astPath(astRelPath);
+    if (!astPath.is_absolute())
+        astPath = configuredResRoot() / stripResPrefix(astPath);
+    astPath = astPath.lexically_normal();
+    const std::string fullPath = astPath.string();
+    std::ifstream f(astPath);
     if (!f.is_open()) {
         if (err) *err = "cannot open file: " + fullPath;
         return false;
