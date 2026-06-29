@@ -18,6 +18,9 @@ struct MaterialAssetDesc {
     std::string    emissivePath;        // sRGB color
     std::string    modelPath;           // resolved path to .obj/.gltf/.glb/.fbx, may be empty
 
+    // Optional: path to .animctrl.json (relative to res/)
+    std::string animControllerPath;
+
     // Sub-material paths (from .ast "subMaterials" array), relative to res/
     std::vector<std::string> subMaterialPaths;
 };

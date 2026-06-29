@@ -134,6 +134,9 @@ bool MaterialAssetLoader::load(const std::string& astRelPath,
     if (desc.subMaterialPaths.empty())
         readMaterialArray("materials");
 
+    // Optional: animController reference for skinned models
+    desc.animControllerPath = resolveRel(j.value("animController", std::string{}));
+
     out = std::move(desc);
     return true;
 }

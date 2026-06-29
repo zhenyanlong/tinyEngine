@@ -1,7 +1,10 @@
 #include "AnimatorController.hpp"
 
+#include "nlohmann/json.hpp"
+
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <utility>
 
 namespace {
@@ -114,6 +117,19 @@ void AnimatorController::setTrigger(const std::string& name) {
     if (AnimatorParam* param = findParam(name)) param->setTrigger();
 }
 
+void AnimatorController::dispatchEvent(const AnimatorEvent& event) {
+    switch (event.type) {
+    case AnimatorEvent::Type::SetFloat:   setFloat(event.paramName, event.floatValue); break;
+    case AnimatorEvent::Type::SetInt:     setInt(event.paramName, event.intValue); break;
+    case AnimatorEvent::Type::SetBool:    setBool(event.paramName, event.boolValue); break;
+    case AnimatorEvent::Type::SetTrigger: setTrigger(event.paramName); break;
+    }
+}
+
+void AnimatorController::dispatchEvents(const std::vector<AnimatorEvent>& events) {
+    for (const auto& e : events) dispatchEvent(e);
+}
+
 AnimatorController::BlendCommand AnimatorController::update(
     float dt, const std::vector<AnimationClip>& clips) {
     BlendCommand command;
@@ -176,6 +192,7 @@ AnimatorController::BlendCommand AnimatorController::update(
             nextStateTime_ = 0.f;
             blendT_ = 0.f;
             activeFadeDuration_ = std::max(transition.fadeDuration, 0.f);
+            activeBlendCurve_ = transition.blendCurve;
             transitioning_ = true;
             consumeTriggers(transition);
 
@@ -203,7 +220,8 @@ AnimatorController::BlendCommand AnimatorController::update(
         if (next) {
             command.clipB = findClip(next->clipName, clips);
             command.timeB = sampleTime(*next, command.clipB, nextStateTime_);
-            command.blendWeight = std::clamp(blendT_, 0.f, 1.f);
+            const float raw = std::clamp(blendT_, 0.f, 1.f);
+            command.blendWeight = applyBlendCurve(raw, activeBlendCurve_);
         }
     }
     return command;
@@ -216,6 +234,7 @@ void AnimatorController::reset() {
     nextStateTime_ = 0.f;
     blendT_ = 0.f;
     activeFadeDuration_ = 0.f;
+    activeBlendCurve_ = BlendCurve::SmoothStep;
     transitioning_ = false;
 
     for (auto& param : params_) {
@@ -304,4 +323,186 @@ float AnimatorController::sampleTime(const AnimatorState& state,
 
     const float wrapped = std::fmod(stateTime, clip->duration);
     return wrapped < 0.f ? wrapped + clip->duration : wrapped;
+}
+
+// ── 序列化辅助 ─────────────────────────────────────────────────────
+
+namespace {
+
+std::string curveToStr(BlendCurve c) {
+    switch (c) {
+    case BlendCurve::Linear:     return "Linear";
+    case BlendCurve::SmoothStep: return "SmoothStep";
+    case BlendCurve::EaseIn:     return "EaseIn";
+    case BlendCurve::EaseOut:    return "EaseOut";
+    }
+    return "SmoothStep";
+}
+
+BlendCurve strToCurve(const std::string& s) {
+    if (s == "Linear")     return BlendCurve::Linear;
+    if (s == "EaseIn")     return BlendCurve::EaseIn;
+    if (s == "EaseOut")    return BlendCurve::EaseOut;
+    return BlendCurve::SmoothStep;
+}
+
+std::string paramTypeToStr(AnimatorParam::Type t) {
+    switch (t) {
+    case AnimatorParam::Type::Float:   return "Float";
+    case AnimatorParam::Type::Int:     return "Int";
+    case AnimatorParam::Type::Bool:    return "Bool";
+    case AnimatorParam::Type::Trigger: return "Trigger";
+    }
+    return "Float";
+}
+
+AnimatorParam::Type strToParamType(const std::string& s) {
+    if (s == "Int")     return AnimatorParam::Type::Int;
+    if (s == "Bool")    return AnimatorParam::Type::Bool;
+    if (s == "Trigger") return AnimatorParam::Type::Trigger;
+    return AnimatorParam::Type::Float;
+}
+
+std::string condOpToStr(TransitionCondition::Op op) {
+    switch (op) {
+    case TransitionCondition::Op::Greater:  return "Greater";
+    case TransitionCondition::Op::Less:     return "Less";
+    case TransitionCondition::Op::Equal:    return "Equal";
+    case TransitionCondition::Op::NotEqual: return "NotEqual";
+    case TransitionCondition::Op::True:     return "True";
+    case TransitionCondition::Op::False:    return "False";
+    }
+    return "Equal";
+}
+
+TransitionCondition::Op strToCondOp(const std::string& s) {
+    if (s == "Greater")  return TransitionCondition::Op::Greater;
+    if (s == "Less")     return TransitionCondition::Op::Less;
+    if (s == "Equal")    return TransitionCondition::Op::Equal;
+    if (s == "NotEqual") return TransitionCondition::Op::NotEqual;
+    if (s == "True")     return TransitionCondition::Op::True;
+    if (s == "False")    return TransitionCondition::Op::False;
+    return TransitionCondition::Op::Equal;
+}
+
+} // namespace
+
+bool AnimatorController::saveToFile(const std::string& jsonPath) const {
+    nlohmann::json j;
+    j["version"] = 1;
+    j["defaultState"] = defaultState_;
+
+    auto& jStates = j["states"];
+    for (const auto& s : states_) {
+        nlohmann::json js;
+        js["name"] = s.name;
+        js["clipName"] = s.clipName;
+        js["speed"] = s.speed;
+        js["loop"] = s.loop;
+        jStates.push_back(std::move(js));
+    }
+
+    auto& jParams = j["params"];
+    for (const auto& p : params_) {
+        nlohmann::json jp;
+        jp["name"] = p.name;
+        jp["type"] = paramTypeToStr(p.type);
+        switch (p.type) {
+        case AnimatorParam::Type::Float:   jp["defaultValue"] = p.value.f; break;
+        case AnimatorParam::Type::Int:     jp["defaultValue"] = p.value.i; break;
+        case AnimatorParam::Type::Bool:
+        case AnimatorParam::Type::Trigger: jp["defaultValue"] = p.value.b; break;
+        }
+        jParams.push_back(std::move(jp));
+    }
+
+    auto& jTrans = j["transitions"];
+    for (const auto& t : transitions_) {
+        nlohmann::json jt;
+        jt["from"] = t.fromState;
+        jt["to"] = t.toState;
+        jt["fadeDuration"] = t.fadeDuration;
+        jt["hasExitTime"] = t.hasExitTime;
+        jt["exitTime"] = t.exitTime;
+        jt["blendCurve"] = curveToStr(t.blendCurve);
+        auto& jConds = jt["conditions"];
+        for (const auto& c : t.conditions) {
+            nlohmann::json jc;
+            jc["param"] = c.paramName;
+            jc["op"] = condOpToStr(c.op);
+            jc["threshold"] = c.threshold;
+            jConds.push_back(std::move(jc));
+        }
+        jTrans.push_back(std::move(jt));
+    }
+
+    std::ofstream out(jsonPath);
+    if (!out.is_open()) return false;
+    out << j.dump(2) << '\n';
+    return out.good();
+}
+
+bool AnimatorController::loadFromFile(const std::string& jsonPath) {
+    std::ifstream in(jsonPath);
+    if (!in.is_open()) return false;
+
+    nlohmann::json j;
+    try { in >> j; } catch (...) { return false; }
+
+    if (!j.is_object()) return false;
+
+    std::vector<AnimatorState> states;
+    if (j.contains("states") && j["states"].is_array()) {
+        for (const auto& js : j["states"]) {
+            AnimatorState s;
+            s.name = js.value("name", std::string{});
+            s.clipName = js.value("clipName", std::string{});
+            s.speed = js.value("speed", 1.f);
+            s.loop = js.value("loop", true);
+            states.push_back(std::move(s));
+        }
+    }
+
+    std::vector<AnimatorParam> params;
+    if (j.contains("params") && j["params"].is_array()) {
+        for (const auto& jp : j["params"]) {
+            AnimatorParam p;
+            p.name = jp.value("name", std::string{});
+            p.type = strToParamType(jp.value("type", std::string{"Float"}));
+            switch (p.type) {
+            case AnimatorParam::Type::Float:   p.value.f = jp.value("defaultValue", 0.f); break;
+            case AnimatorParam::Type::Int:     p.value.i = jp.value("defaultValue", 0); break;
+            case AnimatorParam::Type::Bool:    p.value.b = jp.value("defaultValue", false); break;
+            case AnimatorParam::Type::Trigger: p.value.b = false; break;
+            }
+            params.push_back(std::move(p));
+        }
+    }
+
+    std::vector<AnimatorTransition> transitions;
+    if (j.contains("transitions") && j["transitions"].is_array()) {
+        for (const auto& jt : j["transitions"]) {
+            AnimatorTransition t;
+            t.fromState = jt.value("from", std::string{});
+            t.toState = jt.value("to", std::string{});
+            t.fadeDuration = jt.value("fadeDuration", 0.2f);
+            t.hasExitTime = jt.value("hasExitTime", false);
+            t.exitTime = jt.value("exitTime", 1.f);
+            t.blendCurve = strToCurve(jt.value("blendCurve", std::string{"SmoothStep"}));
+            if (jt.contains("conditions") && jt["conditions"].is_array()) {
+                for (const auto& jc : jt["conditions"]) {
+                    TransitionCondition c;
+                    c.paramName = jc.value("param", std::string{});
+                    c.op = strToCondOp(jc.value("op", std::string{"Equal"}));
+                    c.threshold = jc.value("threshold", 0.f);
+                    t.conditions.push_back(std::move(c));
+                }
+            }
+            transitions.push_back(std::move(t));
+        }
+    }
+
+    configure(std::move(states), std::move(transitions), std::move(params),
+              j.value("defaultState", std::string{}));
+    return true;
 }

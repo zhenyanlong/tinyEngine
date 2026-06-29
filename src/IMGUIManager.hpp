@@ -111,6 +111,13 @@ public:
 	bool     showPropertiesPanel_ = true;
 	uint64_t selectedEntityId_    = 0;
 
+	// ── Animator Panel ──────────────────────────────────────────────────────
+	bool     showAnimatorPanel_ = false;
+	int      animatorSelectedStateIdx_ = -1;   ///< 右侧上半选中的 state 索引
+	int      animatorSelectedTransitionIdx_ = -1;  ///< 底部选中的 transition 索引
+	bool     animatorEditingTransition_ = false;  ///< 底部是否正在编辑某条 transition
+	char     animatorStatusMsg_[256]{};
+
 	int gizmoOperation_ = 7;  // ImGuizmo::TRANSLATE (bitmask: 7=TRANSLATE, 120=ROTATE, 896=SCALE)
 
 	/** @brief 共享缩略图占位符纹理（ImTextureID） */
@@ -206,6 +213,9 @@ private:
 
 	/** @brief 绘制 Content Browser 面板 */
 	void drawContentBrowser();
+
+	/** @brief 绘制动画总控面板（Animator） */
+	void drawAnimatorPanel();
 
 	/** @brief 绘制场景实体列表面板 */
 	void drawSceneOutliner();

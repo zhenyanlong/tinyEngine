@@ -424,12 +424,22 @@ void Application::drawFrame(float dt)
         const auto& skeleton = ent.skeleton;
         const auto& clips = ent.animationClips;
 
-        // A4 已采用每实体动画状态；Controller 同样按实体保存，避免不同模型互相覆盖。
-        if (!ent.animatorController.hasStates() && !clips.empty()) {
-            ent.animatorController.configureFromClips(clips);
+        AnimatorController::BlendCommand blendCommand;
+        if (ent.previewClipIndex >= 0 && ent.previewClipIndex < static_cast<int>(clips.size())) {
+            // ── 预览模式：绕开状态机，直接播放单个 clip ──
+            const AnimationClip* clip = &clips[ent.previewClipIndex];
+            ent.previewTime += dt * ent.previewSpeed;
+            if (clip->duration > 0.f)
+                ent.previewTime = std::fmod(ent.previewTime, clip->duration);
+            blendCommand.clipA = clip;
+            blendCommand.timeA = ent.previewTime;
+        } else {
+            // A4 已采用每实体动画状态；Controller 同样按实体保存，避免不同模型互相覆盖。
+            if (!ent.animatorController.hasStates() && !clips.empty()) {
+                ent.animatorController.configureFromClips(clips);
+            }
+            blendCommand = ent.animatorController.update(dt, clips);
         }
-        const AnimatorController::BlendCommand blendCommand =
-            ent.animatorController.update(dt, clips);
 
         std::vector<glm::mat4> localTransforms(skeleton->bones.size());
         for (size_t i = 0; i < skeleton->bones.size(); ++i) {
@@ -1073,6 +1083,11 @@ bool Application::loadAndApplyMaterialAsset(const std::string& astRelPath)
         auto& ents = sceneMgr_.getModelEntities();
         if (!ents.empty() && ents[0].hasSkin_)
             convertModelMaterialsToSkinned();
+
+        // 若 .ast 指定了 animController 路径，加载并应用到实体
+        if (peekOk && !peeked.animControllerPath.empty() && !ents.empty()) {
+            ents[0].animatorController.loadFromFile(peeked.animControllerPath);
+        }
     }
 
     if (mainModelSelected) selectedMaterialId = firstRenderedModelMaterialId();

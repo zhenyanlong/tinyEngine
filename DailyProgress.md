@@ -1,3 +1,17 @@
+## 2026-06-29
+
+- [ ] Implemented Phase B3 blend quality: added BlendCurve enum (Linear/SmoothStep/EaseIn/EaseOut) and applyBlendCurve() helper; AnimatorTransition.blendCurve field; update() applies the active curve to blendWeight output; rotation already uses glm::slerp from B2.
+- [ ] Implemented Phase B4 state machine serialization: AnimatorController::saveToFile/loadFromFile using nlohmann/json; MaterialAssetDesc gains animControllerPath field; MaterialAssetLoader parses .ast "animController" field; Application::loadAndApplyMaterialAsset auto-loads the controller; created res/animators/example.animctrl.json; loadFromFile validates all JSON keys with contains()+is_array() to avoid exceptions.
+- [ ] Implemented Phase B5 Animator Panel (animation control center): three-zone layout (left sidebar + right-top dual columns + bottom dual columns); left-top shows current controller with Load/Save buttons and DND_ANIMCTRL drag source; left-bottom lists animation clips with [▶] preview / [■] stop buttons and DND_ANIMCLIP drag source; right-top-left States list with ● current marker and drag-drop target to create states from clips; right-top-right Outgoing Transitions list with + Add Transition button; bottom-left Transition/State editor (toState combo, fade/exitTime/blendCurve/conditions with per-index ImGui IDs to avoid conflicts); bottom-right status info + Add Param/State buttons + Reset Controller.
+- [ ] Implemented Phase B5 preview mode: ModelEntity gains previewClipIndex/previewTime/previewSpeed fields; Application::drawFrame bypasses the state machine and plays animationClips[previewClipIndex] directly when previewClipIndex >= 0.
+- [ ] Implemented Phase B5-6 event-driven system: AnimatorEvent struct (SetFloat/SetInt/SetBool/SetTrigger + paramName + value) and AnimatorController::dispatchEvent/dispatchEvents methods, providing a standard interface for the future Sequence system to drive state machine transitions.
+- [ ] Fixed Animator panel crash caused by unmatched ImGui BeginGroup/EndGroup (extra BeginGroup at function top with no matching EndGroup, triggering Missing EndGroup() assert in ErrorRecoveryTryToRecoverWindowState).
+- [ ] Fixed entity fallback logic to only select entities with hasSkin_ && skeleton, preventing null dereference when the first model entity lacks skinning data.
+- [ ] Fixed ImGui ID conflicts in the condition editor loop by appending _%d index suffixes to all control labels (Param/Op/Threshold/X).
+- [ ] Hardened loadFromFile with is_object() check and per-key contains()+is_array() guards for states/params/transitions/conditions arrays.
+- [ ] Updated TDD.md section 4.12.3 with B3-B5 details, MaterialAssetDesc.animControllerPath field, and "Known limitations" table; updated animation-system-plan.md B3/B4/B5 checkboxes to [x] and added B5-6; added TODO-016 to todolist.md and marked TODO-014 as completed.
+- [ ] Passed x64-debug build with 0 errors.
+
 ## 2026-06-28
 
 - [ ] Added ufbx as a Git submodule and integrated `ufbx.c` plus include paths into the CMake build.

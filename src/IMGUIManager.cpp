@@ -264,6 +264,7 @@ void UIManager::prepareFrame()
     ImGui::Text(prompt.c_str());              
 
     ImGui::Checkbox("Content Browser", &showContentBrowser_);
+    ImGui::Checkbox("Animator", &showAnimatorPanel_);
 
     ImGui::ColorEdit3("clear color", (float*)&clear_color); 
 
@@ -480,10 +481,13 @@ void UIManager::prepareFrame()
         drawContentBrowser();
 
     if (showOutliner_)
-        drawSceneOutliner();
+		drawSceneOutliner();
 
-    if (showPropertiesPanel_)
-        drawPropertiesPanel();
+	if (showPropertiesPanel_)
+		drawPropertiesPanel();
+
+	if (showAnimatorPanel_)
+		drawAnimatorPanel();
 
 	if (vulkanRender != nullptr) {
 		ImGuiIO& io = ImGui::GetIO();
@@ -925,6 +929,501 @@ void UIManager::drawSceneOutliner()
             selectedEntityId_ = 0;
         }
     }
+
+    ImGui::End();
+}
+
+// ── Animator Panel ──────────────────────────────────────────────────────────
+
+void UIManager::drawAnimatorPanel()
+{
+    ImGui::SetNextWindowSize(ImVec2(800, 500), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Animator", &showAnimatorPanel_)) {
+        ImGui::End();
+        return;
+    }
+
+    if (!vulkanRender) {
+        ImGui::TextDisabled("(unavailable)");
+        ImGui::End();
+        return;
+    }
+
+    auto& scene = vulkanRender->getSceneManager();
+    SceneManager::ModelEntity* ent = nullptr;
+    if (selectedEntityId_ != 0)
+        ent = scene.getModelEntity(selectedEntityId_);
+    if (!ent) {
+        const auto& all = scene.getModelEntities();
+        if (!all.empty() && all[0].hasSkin_ && all[0].skeleton)
+            ent = scene.getModelEntity(all[0].entityId);
+    }
+    if (!ent) {
+        ImGui::TextDisabled("Select a skinned model entity to edit its animator.");
+        ImGui::End();
+        return;
+    }
+
+    const auto& clips = ent->animationClips;
+    auto& ctrl = ent->animatorController;
+    const std::vector<AnimatorState> states = ctrl.states();
+    const int selState = animatorSelectedStateIdx_;
+
+    // ── 三区布局：左侧侧边栏 | 右侧上半 | 底部 ──────────────────────
+    static float leftWidth = 220.f;
+
+    // ── 左侧侧边栏 ──────────────────────────────────────────────────────
+    ImGui::BeginChild("##animLeft", ImVec2(leftWidth, -ImGui::GetFrameHeightWithSpacing() * 1.5f), true);
+
+    if (ImGui::CollapsingHeader("Animator Controllers", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ctrl.hasStates()) {
+            ImGui::Selectable("current controller##animctrl", false);
+            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
+                ImGui::SetDragDropPayload("DND_ANIMCTRL", ctrl.currentStateName().c_str(),
+                                          ctrl.currentStateName().size() + 1);
+                ImGui::Text("Current AnimatorController");
+                ImGui::EndDragDropSource();
+            }
+        } else {
+            ImGui::TextDisabled("No controller loaded");
+        }
+        ImGui::Separator();
+        if (ImGui::Button("Load .animctrl.json##animload")) {
+            const std::string path = vulkanRender->getResRoot() + "/animators/example.animctrl.json";
+            if (ctrl.loadFromFile(path))
+                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_), "Loaded: example.animctrl.json");
+            else
+                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_), "Load failed: %s", path.c_str());
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Save##animctrlSave")) {
+            const std::string path = vulkanRender->getResRoot() + "/animators/saved.animctrl.json";
+            if (ctrl.saveToFile(path))
+                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_), "Saved: saved.animctrl.json");
+            else
+                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_), "Save failed: %s", path.c_str());
+        }
+    }
+
+    ImGui::Spacing();
+    if (ImGui::CollapsingHeader("Animation Clips", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (clips.empty()) {
+            ImGui::TextDisabled("(no clips)");
+        } else {
+            ImGui::BeginChild("##clipList", ImVec2(0, 0), false);
+            for (int i = 0; i < static_cast<int>(clips.size()); ++i) {
+                const bool isPreview = (ent->previewClipIndex == i);
+                ImGui::PushID(i);
+                char label[256];
+                snprintf(label, sizeof(label), "[%d] %s%s", i, clips[i].name.c_str(),
+                         isPreview ? " [▶]" : "");
+                ImGui::Selectable(label, isPreview);
+
+                if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
+                    int payloadIdx = i;
+                    ImGui::SetDragDropPayload("DND_ANIMCLIP", &payloadIdx, sizeof(int));
+                    ImGui::Text("Drag %s to create state", clips[i].name.c_str());
+                    ImGui::EndDragDropSource();
+                }
+
+                if (!isPreview) {
+                    ImGui::SameLine();
+                    char btnLbl[32];
+                    snprintf(btnLbl, sizeof(btnLbl), "▶##preview%d", i);
+                    if (ImGui::SmallButton(btnLbl)) {
+                        ent->previewClipIndex = i;
+                        ent->previewTime = 0.f;
+                        ent->previewSpeed = 1.f;
+                    }
+                } else {
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("■##stopPreview")) {
+                        ent->previewClipIndex = -1;
+                        ent->previewTime = 0.f;
+                    }
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndChild();
+        }
+    }
+
+    ImGui::EndChild(); // ##animLeft
+    ImGui::SameLine();
+
+    // ── 右侧区域 ──────────────────────────────────────────────────────────
+    ImGui::BeginGroup();
+
+    // ── 右侧上半：双栏 States | Outgoing Transitions ──────────────────────
+    const float halfW = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+
+    ImGui::BeginChild("##statesList", ImVec2(halfW, 200.f), true);
+    ImGui::Text("States");
+    ImGui::Separator();
+    if (states.empty()) {
+        ImGui::TextDisabled("(no states - drag clips here)");
+    } else {
+        for (int i = 0; i < static_cast<int>(states.size()); ++i) {
+            const bool isCurrent = (states[i].name == ctrl.currentStateName());
+            const bool isSelected = (i == animatorSelectedStateIdx_);
+            ImGui::PushID(i);
+            char label[256];
+            snprintf(label, sizeof(label), "%s%s##state_%d",
+                     isCurrent ? "\xe2\x97\x8f " : "\xe2\x97\x8b ",
+                     states[i].name.c_str(), i);
+            if (ImGui::Selectable(label, isSelected)) {
+                animatorSelectedStateIdx_ = i;
+                animatorSelectedTransitionIdx_ = -1;
+                animatorEditingTransition_ = false;
+            }
+            ImGui::PopID();
+
+            if (ImGui::BeginDragDropTarget()) {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("DND_ANIMCLIP")) {
+                    const int clipIdx = *static_cast<const int*>(payload->Data);
+                    if (clipIdx >= 0 && clipIdx < static_cast<int>(clips.size())) {
+                        auto ns = ctrl.states();
+                        AnimatorState s;
+                        s.name = clips[clipIdx].name;
+                        s.clipName = clips[clipIdx].name;
+                        ns.push_back(std::move(s));
+                        ctrl.configure(ns, ctrl.transitions(), ctrl.params(), ctrl.currentStateName());
+                        snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                                 "Created state: %s", clips[clipIdx].name.c_str());
+                    }
+                }
+                ImGui::EndDragDropTarget();
+            }
+        }
+
+        if (ImGui::BeginDragDropTarget()) {
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("DND_ANIMCLIP")) {
+                const int clipIdx = *static_cast<const int*>(payload->Data);
+                if (clipIdx >= 0 && clipIdx < static_cast<int>(clips.size())) {
+                    auto ns = ctrl.states();
+                    AnimatorState s;
+                    s.name = clips[clipIdx].name;
+                    s.clipName = clips[clipIdx].name;
+                    ns.push_back(std::move(s));
+                    ctrl.configure(ns, ctrl.transitions(), ctrl.params(), ctrl.currentStateName());
+                    snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                             "Created state: %s", clips[clipIdx].name.c_str());
+                }
+            }
+            ImGui::EndDragDropTarget();
+        }
+    }
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+
+    ImGui::BeginChild("##transitionsList", ImVec2(0, 200.f), true);
+    ImGui::Text("Transitions (Outgoing)");
+    ImGui::Separator();
+    if (selState < 0 || selState >= static_cast<int>(states.size())) {
+        ImGui::TextDisabled("Select a state to view outgoing transitions");
+    } else {
+        const std::string& stateName = states[selState].name;
+        bool any = false;
+        const auto& transRef = ctrl.transitions();
+        for (int ti = 0; ti < static_cast<int>(transRef.size()); ++ti) {
+            const auto& t = transRef[ti];
+            if (!t.fromState.empty() && t.fromState != stateName) continue;
+            if (t.toState == stateName) continue;
+            any = true;
+            const bool sel = (ti == animatorSelectedTransitionIdx_);
+            ImGui::PushID(ti);
+            char buf[256];
+            snprintf(buf, sizeof(buf), "%s \xe2\x86\x92 %s##trans_%d",
+                     t.fromState.empty() ? "(Any)" : t.fromState.c_str(),
+                     t.toState.c_str(), ti);
+            if (ImGui::Selectable(buf, sel)) {
+                animatorSelectedTransitionIdx_ = ti;
+                animatorEditingTransition_ = true;
+            }
+            ImGui::PopID();
+        }
+        if (!any)
+            ImGui::TextDisabled("(no transitions from this state)");
+
+        ImGui::Separator();
+        if (ImGui::Button("+ Add Transition")) {
+            AnimatorTransition newT;
+            newT.fromState = (selState < static_cast<int>(states.size()))
+                ? states[selState].name : std::string{};
+            for (const auto& s : states) {
+                if (s.name != newT.fromState) {
+                    newT.toState = s.name;
+                    break;
+                }
+            }
+            auto nt = ctrl.transitions();
+            nt.push_back(std::move(newT));
+            ctrl.configure(ctrl.states(), std::move(nt), ctrl.params(), ctrl.currentStateName());
+            animatorSelectedTransitionIdx_ = static_cast<int>(ctrl.transitions().size()) - 1;
+            animatorEditingTransition_ = true;
+            snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_), "Added transition");
+        }
+    }
+    ImGui::EndChild();
+
+    // ── 底部：Transition 编辑区 + 参数面板 + 状态信息 ────────────────────
+    ImGui::BeginChild("##animatorBottom", ImVec2(0, 0), true);
+    const float bottomHalfW = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+
+    // ── 底部左栏：编辑区 ──────────────────────────────────────────────────
+    ImGui::BeginChild("##editBottomLeft", ImVec2(bottomHalfW, 0), true);
+
+    if (animatorEditingTransition_ && animatorSelectedTransitionIdx_ >= 0
+        && animatorSelectedTransitionIdx_ < static_cast<int>(ctrl.transitions().size()))
+    {
+        const auto& t = ctrl.transitions()[animatorSelectedTransitionIdx_];
+        ImGui::Text("Transition: %s -> %s", t.fromState.c_str(), t.toState.c_str());
+        ImGui::Separator();
+
+        AnimatorTransition mutableT = t;
+
+        if (ImGui::BeginCombo("To##editTransTo", mutableT.toState.c_str())) {
+            for (const auto& s : ctrl.states()) {
+                if (s.name == mutableT.fromState) continue;
+                const bool ssel = (s.name == mutableT.toState);
+                if (ImGui::Selectable(s.name.c_str(), ssel))
+                    mutableT.toState = s.name;
+                if (ssel) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+
+        ImGui::DragFloat("Fade (s)", &mutableT.fadeDuration, 0.01f, 0.f, 10.f, "%.2f");
+        ImGui::Checkbox("Has Exit Time", &mutableT.hasExitTime);
+        if (mutableT.hasExitTime)
+            ImGui::DragFloat("Exit Time", &mutableT.exitTime, 0.01f, 0.f, 1.f, "%.2f");
+
+        const char* curveNames[] = { "Linear", "SmoothStep", "EaseIn", "EaseOut" };
+        int curveIdx = static_cast<int>(mutableT.blendCurve);
+        if (ImGui::Combo("Blend Curve", &curveIdx, curveNames, IM_ARRAYSIZE(curveNames)))
+            mutableT.blendCurve = static_cast<BlendCurve>(curveIdx);
+
+        ImGui::Separator();
+        ImGui::Text("Conditions");
+        int condDel = -1;
+        for (int ci = 0; ci < static_cast<int>(mutableT.conditions.size()); ++ci) {
+            auto& c = mutableT.conditions[ci];
+            ImGui::PushID(ci);
+            // Use a temporary char buffer for InputText (can't bind std::string directly)
+            char paramBuf[128];
+            snprintf(paramBuf, sizeof(paramBuf), "%s", c.paramName.c_str());
+            char labelBuf[128];
+            snprintf(labelBuf, sizeof(labelBuf), "Param##cond_%d", ci);
+            if (ImGui::InputText(labelBuf, paramBuf, sizeof(paramBuf)))
+                c.paramName = paramBuf;
+
+            const char* opNames[] = { "Greater", "Less", "Equal", "NotEqual", "True", "False" };
+            int opIdx = static_cast<int>(c.op);
+            snprintf(labelBuf, sizeof(labelBuf), "Op##cond_%d", ci);
+            if (ImGui::Combo(labelBuf, &opIdx, opNames, IM_ARRAYSIZE(opNames)))
+                c.op = static_cast<TransitionCondition::Op>(opIdx);
+
+            snprintf(labelBuf, sizeof(labelBuf), "Threshold##cond_%d", ci);
+            ImGui::DragFloat(labelBuf, &c.threshold, 0.01f);
+
+            snprintf(labelBuf, sizeof(labelBuf), "X##delCond_%d", ci);
+            if (ImGui::SmallButton(labelBuf)) { condDel = ci; }
+            ImGui::PopID();
+        }
+        if (condDel >= 0)
+            mutableT.conditions.erase(mutableT.conditions.begin() + condDel);
+
+        if (ImGui::Button("+ Add Condition"))
+            mutableT.conditions.push_back({});
+
+        ImGui::Separator();
+        if (ImGui::Button("Apply Transition")) {
+            auto nt = ctrl.transitions();
+            if (animatorSelectedTransitionIdx_ < static_cast<int>(nt.size())) {
+                nt[animatorSelectedTransitionIdx_] = std::move(mutableT);
+                ctrl.configure(ctrl.states(), std::move(nt), ctrl.params(), ctrl.currentStateName());
+                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_), "Transition updated");
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Delete Transition")) {
+            auto nt = ctrl.transitions();
+            if (animatorSelectedTransitionIdx_ < static_cast<int>(nt.size())) {
+                nt.erase(nt.begin() + animatorSelectedTransitionIdx_);
+                ctrl.configure(ctrl.states(), std::move(nt), ctrl.params(), ctrl.currentStateName());
+                animatorSelectedTransitionIdx_ = -1;
+                animatorEditingTransition_ = false;
+                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_), "Transition deleted");
+            }
+        }
+
+    } else if (selState >= 0 && selState < static_cast<int>(ctrl.states().size())) {
+        const auto& s = ctrl.states()[selState];
+        ImGui::Text("State Properties");
+        ImGui::Separator();
+
+        AnimatorState mutableS = s;
+        char nameBuf[256];
+        snprintf(nameBuf, sizeof(nameBuf), "Name: %s", s.name.c_str());
+        ImGui::TextUnformatted(nameBuf);
+        ImGui::DragFloat("Speed##stateSpeed", &mutableS.speed, 0.01f, 0.f, 10.f, "%.2f");
+        ImGui::Checkbox("Loop##stateLoop", &mutableS.loop);
+
+        if (ImGui::Button("Apply State")) {
+            auto ns = ctrl.states();
+            if (selState < static_cast<int>(ns.size())) {
+                ns[selState] = std::move(mutableS);
+                ctrl.configure(std::move(ns), ctrl.transitions(), ctrl.params(), ctrl.currentStateName());
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Delete State")) {
+            auto ns = ctrl.states();
+            if (selState < static_cast<int>(ns.size())) {
+                const std::string delName = ns[selState].name;
+                ns.erase(ns.begin() + selState);
+                auto nt = ctrl.transitions();
+                nt.erase(std::remove_if(nt.begin(), nt.end(),
+                            [&](const AnimatorTransition& tr) {
+                                return tr.fromState == delName || tr.toState == delName;
+                            }), nt.end());
+                ctrl.configure(std::move(ns), std::move(nt), ctrl.params(), ctrl.currentStateName());
+                animatorSelectedStateIdx_ = -1;
+                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_), "State deleted: %s", delName.c_str());
+            }
+        }
+    } else {
+        ImGui::TextDisabled("Select a state or transition to edit.");
+    }
+
+    // Quick Params
+    ImGui::Separator();
+    ImGui::Text("Quick Params (click to trigger / change)");
+    for (const auto& p : ctrl.params()) {
+        switch (p.type) {
+        case AnimatorParam::Type::Float: {
+            float v = p.value.f;
+            if (ImGui::DragFloat(p.name.c_str(), &v, 0.01f))
+                ctrl.setFloat(p.name, v);
+            break;
+        }
+        case AnimatorParam::Type::Int: {
+            int v = p.value.i;
+            if (ImGui::DragInt(p.name.c_str(), &v, 1))
+                ctrl.setInt(p.name, v);
+            break;
+        }
+        case AnimatorParam::Type::Bool: {
+            bool v = p.value.b;
+            if (ImGui::Checkbox(p.name.c_str(), &v))
+                ctrl.setBool(p.name, v);
+            break;
+        }
+        case AnimatorParam::Type::Trigger: {
+            if (ImGui::Button(p.name.c_str()))
+                ctrl.setTrigger(p.name);
+            break;
+        }
+        }
+    }
+
+    ImGui::EndChild(); // ##editBottomLeft
+    ImGui::SameLine();
+
+    // ── 底部右栏：状态信息 + 控制按钮 ──────────────────────────────────
+    ImGui::BeginChild("##editBottomRight", ImVec2(0, 0), true);
+    ImGui::Text("State Machine Status");
+    ImGui::Separator();
+    ImGui::Text("Current State: %s", ctrl.currentStateName().c_str());
+    if (ctrl.isTransitioning()) {
+        ImGui::Text("Transitioning -> %s (%.1f%%)", ctrl.nextStateName().c_str(),
+                    ctrl.blendProgress() * 100.f);
+        ImGui::ProgressBar(ctrl.blendProgress(), ImVec2(-1, 0));
+    } else {
+        ImGui::ProgressBar(0.f, ImVec2(-1, 0), "Stable");
+    }
+    ImGui::Text("States: %zu", ctrl.states().size());
+    ImGui::Text("Transitions: %zu", ctrl.transitions().size());
+    ImGui::Text("Params: %zu", ctrl.params().size());
+    ImGui::Text("Clips in entity: %zu", clips.size());
+
+    ImGui::Separator();
+    if (ImGui::Button("+ Add Float Param")) {
+        auto np = ctrl.params();
+        AnimatorParam ap;
+        ap.name = "NewFloat";
+        ap.type = AnimatorParam::Type::Float;
+        ap.value.f = 0.f;
+        np.push_back(std::move(ap));
+        ctrl.configure(ctrl.states(), ctrl.transitions(), std::move(np), ctrl.currentStateName());
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("+ Add Bool Param")) {
+        auto np = ctrl.params();
+        AnimatorParam ap;
+        ap.name = "NewBool";
+        ap.type = AnimatorParam::Type::Bool;
+        ap.value.b = false;
+        np.push_back(std::move(ap));
+        ctrl.configure(ctrl.states(), ctrl.transitions(), std::move(np), ctrl.currentStateName());
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("+ Trigger")) {
+        auto np = ctrl.params();
+        AnimatorParam ap;
+        ap.name = "NewTrigger";
+        ap.type = AnimatorParam::Type::Trigger;
+        ap.value.b = false;
+        np.push_back(std::move(ap));
+        ctrl.configure(ctrl.states(), ctrl.transitions(), std::move(np), ctrl.currentStateName());
+    }
+
+    if (!clips.empty()) {
+        static int newStateClipIdx = 0;
+        if (newStateClipIdx >= static_cast<int>(clips.size()))
+            newStateClipIdx = 0;
+        ImGui::Separator();
+        // Safety: const_cast is safe here because the lambda only reads
+        auto& nonConstClips = const_cast<std::vector<AnimationClip>&>(clips);
+        ImGui::Combo("Clip##newState", &newStateClipIdx,
+                     [](void* data, int idx, const char** out) -> bool {
+                         if (!data) return false;
+                         const auto& c = *static_cast<const std::vector<AnimationClip>*>(data);
+                         if (idx < 0 || idx >= static_cast<int>(c.size())) return false;
+                         *out = c[idx].name.c_str();
+                         return true;
+                     }, &nonConstClips,
+                     static_cast<int>(clips.size()));
+        if (ImGui::Button("+ Add State") && newStateClipIdx < static_cast<int>(clips.size())) {
+            auto ns = ctrl.states();
+            AnimatorState as;
+            as.name = clips[newStateClipIdx].name;
+            as.clipName = clips[newStateClipIdx].name;
+            ns.push_back(std::move(as));
+            ctrl.configure(ns, ctrl.transitions(), ctrl.params(), ctrl.currentStateName());
+            snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                     "Added state: %s", as.name.c_str());
+        }
+    }
+
+    if (animatorStatusMsg_[0]) {
+        ImGui::Separator();
+        ImGui::TextWrapped("%s", animatorStatusMsg_);
+    }
+
+    ImGui::Separator();
+    if (ImGui::Button("Reset Controller")) {
+        ctrl.reset();
+        ent->previewClipIndex = -1;
+        ent->previewTime = 0.f;
+        snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_), "Controller reset");
+    }
+
+    ImGui::EndChild(); // ##editBottomRight
+    ImGui::EndChild(); // ##animatorBottom
+
+    ImGui::EndGroup();
 
     ImGui::End();
 }

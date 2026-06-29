@@ -1,3 +1,17 @@
+## 2026-06-29
+
+- [ ] 实现 Phase B3 混合品质保障：新增 BlendCurve 枚举（Linear/SmoothStep/EaseIn/EaseOut）与 applyBlendCurve() 工具函数；AnimatorTransition.blendCurve 字段；update() 输出 blendWeight 时应用当前过渡的 ease 曲线；旋转已在 B2 使用 glm::slerp。
+- [ ] 实现 Phase B4 状态机序列化：AnimatorController::saveToFile/loadFromFile 使用 nlohmann/json；MaterialAssetDesc 新增 animControllerPath 字段；MaterialAssetLoader 解析 .ast 的 animController 字段；Application::loadAndApplyMaterialAsset 自动加载控制器；创建 res/animators/example.animctrl.json 示例文件；loadFromFile 对所有 JSON key 做 contains()+is_array() 检查避免异常。
+- [ ] 实现 Phase B5 动画总控面板：三区布局（左侧侧边栏 + 右侧上半双栏 + 底部双栏）；左侧上半显示当前 controller 与 Load/Save 按钮，支持 DND_ANIMCTRL 拖拽源；左侧下半列出动画 clip，每项有 [▶] 预览 / [■] 停止按钮，支持 DND_ANIMCLIP 拖拽源；右侧上半左栏 States 列表用 ● 标记当前状态，接受拖拽创建 state；右侧上半右栏 Outgoing Transitions 列表 + Add Transition 按钮；底部左栏 Transition/State 编辑器（toState 下拉、fade/exitTime/blendCurve/conditions，condition 控件 label 带 _%d 索引避免 ID 冲突）；底部右栏状态信息 + Add Param/State 按钮 + Reset Controller。
+- [ ] 实现 Phase B5 预览模式：ModelEntity 新增 previewClipIndex/previewTime/previewSpeed 字段；Application::drawFrame 在 previewClipIndex >= 0 时绕开状态机直接播放 animationClips[previewClipIndex]。
+- [ ] 实现 Phase B5-6 事件驱动系统：AnimatorEvent 结构体（SetFloat/SetInt/SetBool/SetTrigger + paramName + 值）与 AnimatorController::dispatchEvent/dispatchEvents 方法，为未来 Sequence 系统驱动状态机过渡预留标准接口。
+- [ ] 修复 Animator 面板崩溃：ImGui BeginGroup/EndGroup 不匹配（函数顶部多了一个 BeginGroup 无对应 EndGroup，触发 ErrorRecoveryTryToRecoverWindowState 中的 Missing EndGroup() assert）。
+- [ ] 修复 entity fallback 逻辑：只选择 hasSkin_ && skeleton 的实体，避免第一个模型实体无蒙皮数据时空指针解引用。
+- [ ] 修复 condition 编辑循环的 ImGui ID 冲突：所有控件 label 追加 _%d 索引后缀（Param/Op/Threshold/X）。
+- [ ] 加固 loadFromFile 异常安全：is_object() 检查 + states/params/transitions/conditions 数组的 contains()+is_array() 守卫。
+- [ ] 更新 TDD.md 4.12.3 章节补充 B3-B5 细节、MaterialAssetDesc.animControllerPath 字段和"已知限制"表；更新 animation-system-plan.md B3/B4/B5 checkbox 为 [x] 并新增 B5-6；todolist.md 新增 TODO-016 并标记 TODO-014 完成。
+- [ ] x64-debug 构建通过，0 error。
+
 ## 2026-06-28
 
 - [ ] 以 Git Submodule 方式加入 ufbx，并将 `ufbx.c` 与 include 路径接入 CMake 构建。

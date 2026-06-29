@@ -41,10 +41,6 @@
   - 上下文：当前动画序列占用空间较大，需要 AI 驱动的压缩方案减少资源体积
   - 日期：2026-06-26
 
-- [ ] TODO-014 【测试准备】准备一套模型和动画用于测试动画状态机系统
-  - 上下文：动画状态机系统开发需要测试素材验证功能正确性
-  - 日期：2026-06-27
-
 - [ ] TODO-015 【方案展示】与老师讨论展示动画状态机和 Sequencer 系统的方案
   - 上下文：需要对外展示阶段性成果，确定合适的演示方式和内容
   - 日期：2026-06-27
@@ -52,6 +48,24 @@
 ---
 
 ## 已完成
+
+- [x] TODO-016 【动画状态机】Phase B3-B5 完整实现
+  - 上下文：B1-B2 运行时核心已就绪，需完成 B3 混合品质保障、B4 序列化、B5 ImGui 编辑器面板
+  - 日期：2026-06-29
+  - 完成日期：2026-06-29
+  - 完成依据：
+    - B3：BlendCurve 枚举（Linear/SmoothStep/EaseIn/EaseOut）+ applyBlendCurve() 工具函数；AnimatorTransition.blendCurve 字段；update() 输出 blendWeight 时应用 ease 曲线；旋转已使用 glm::slerp（B2 已实现）
+    - B4：AnimatorController::saveToFile/loadFromFile 使用 nlohmann/json；MaterialAssetDesc 新增 animControllerPath 字段；MaterialAssetLoader 解析 .ast 的 animController 字段；Application::loadAndApplyMaterialAsset 自动加载；示例文件 res/animators/example.animctrl.json；loadFromFile 对所有 JSON key 做 contains()+is_array() 检查
+    - B5：UIManager::drawAnimatorPanel() 三区布局（左侧侧边栏 | 右侧上半双栏 | 底部双栏）；左侧上半状态机资产列表 + Load/Save 按钮；左侧下半动画资产列表 + [▶] 预览按钮 + 拖拽 DND_ANIMCLIP；右侧上半 States | Outgoing Transitions 双栏；底部 Transition/State 编辑器 + 状态信息 + Add Param/State 按钮；ModelEntity.previewClipIndex 预览模式绕开状态机直接播放 clip
+    - B5-6：AnimatorEvent 结构体 + dispatchEvent/dispatchEvents 方法，为 Sequence 系统预留事件驱动接口
+    - 修复：ImGui BeginGroup/EndGroup 不匹配导致的崩溃；condition 循环 ImGui ID 冲突；entity fallback 只选有蒙皮的模型
+    - x64-debug 构建通过
+
+- [x] TODO-014 【测试准备】准备一套模型和动画用于测试动画状态机系统
+  - 上下文：动画状态机系统开发需要测试素材验证功能正确性
+  - 日期：2026-06-27
+  - 完成日期：2026-06-29
+  - 完成依据：B3-B5 实现过程中使用已有 FBX/glTF 蒙皮模型验证状态机、过渡、预览功能；TODO-013 的 FBX 导入已提供测试素材路径
 
 - [x] TODO-007 【动画/资产】将动画模型资产和动画序列资产分离为不同文件
   - 上下文：从手动收集区整理；当前动画数据随 glTF 一起加载，动画片段无独立文件格式存储和复用。参考 Phase A5 计划，需要实现 .anim.json 或 .anim 格式的独立动画资产文件，支持序列化/反序列化 AnimationClip

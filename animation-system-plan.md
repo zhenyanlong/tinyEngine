@@ -443,9 +443,9 @@ private:
 
 **具体任务：**
 
-- [ ] **B3-1** 旋转插值使用 `glm::slerp`（非 `mix`），防止骨骼在大角度过渡时路径走直线（弦插值）
-- [ ] **B3-2** 混合权重曲线：支持三种 ease 模式（Linear、SmoothStep、EaseIn/Out），在 `AnimatorTransition` 中以 `blendCurve` 枚举存储
-- [ ] **B3-3** 验证极端情况：①两 clip 时长差异极大时的时间归一化；②pitch 超过 90° 骨骼不翻转；③权重 = 0.0 和 1.0 时与单 clip 求值结果完全一致
+- [x] **B3-1** 旋转插值使用 `glm::slerp`（非 `mix`），防止骨骼在大角度过渡时路径走直线（弦插值）
+- [x] **B3-2** 混合权重曲线：支持三种 ease 模式（Linear、SmoothStep、EaseIn/Out），在 `AnimatorTransition` 中以 `blendCurve` 枚举存储
+- [x] **B3-3** 验证极端情况：①两 clip 时长差异极大时的时间归一化；②pitch 超过 90° 骨骼不翻转；③权重 = 0.0 和 1.0 时与单 clip 求值结果完全一致
 
 ---
 
@@ -490,13 +490,13 @@ private:
 
 **具体任务：**
 
-- [ ] **B4-1** 在 `AnimatorController` 中实现 `saveToFile(path)` 和 `loadFromFile(path)`（用 nlohmann/json）
-- [ ] **B4-2** 扩展 `.ast` 文件格式，新增可选字段：
+- [x] **B4-1** 在 `AnimatorController` 中实现 `saveToFile(path)` 和 `loadFromFile(path)`（用 nlohmann/json）
+- [x] **B4-2** 扩展 `.ast` 文件格式，新增可选字段：
   ```json
   "animController": "animators/character.animctrl.json"
   ```
-- [ ] **B4-3** 在 `Application::loadAndApplyMaterialAsset` 中，若 `.ast` 含 `animController` 字段，自动加载对应 `.animctrl.json` 并赋值给 `animCtrl_`
-- [ ] **B4-4** 在 `res/animators/` 目录下放置一个 `example.animctrl.json` 作为示例模板
+- [x] **B4-3** 在 `Application::loadAndApplyMaterialAsset` 中，若 `.ast` 含 `animController` 字段，自动加载对应 `.animctrl.json` 并赋值给 `animCtrl_`
+- [x] **B4-4** 在 `res/animators/` 目录下放置一个 `example.animctrl.json` 作为示例模板
 
 **验收标准：** 关闭引擎，删除运行时对象，重启后从 `.animctrl.json` 加载，状态机行为与关闭前完全一致。
 
@@ -510,20 +510,23 @@ private:
 
 **具体任务：**
 
-- [ ] **B5-1** 在 `IMGUIManager.hpp` 中新增 `bool showAnimatorPanel_ = false`，在主面板顶部加一个 `Checkbox("Animator", &showAnimatorPanel_)` 按钮
-- [ ] **B5-2** 实现 `drawAnimatorPanel(AnimatorController* ctrl, const std::vector<AnimationClip>& clips)`：
+> **实际实现说明：** B5 经设计讨论后扩展为"动画总控面板"，采用三区布局（左侧侧边栏 + 右侧上半双栏 + 底部双栏），并新增 B5-6 事件驱动系统。以下任务编号对应原始 plan，实际实现细节见 TDD 4.12.3。
+
+- [x] **B5-1** 在 `IMGUIManager.hpp` 中新增 `bool showAnimatorPanel_ = false`，在主面板顶部加一个 `Checkbox("Animator", &showAnimatorPanel_)` 按钮
+- [x] **B5-2** 实现 `drawAnimatorPanel()`：
   - 左侧列表：所有状态（`ImGui::Selectable`），当前状态高亮绿色
   - 右侧参数区：每个 `AnimatorParam` 对应一个控件（float → SliderFloat，bool → Checkbox，trigger → Button）
   - 底部：当前状态名 + 播放进度条（`ImGui::ProgressBar`）
   - 若正在过渡：同时显示目标状态名和混合进度
-- [ ] **B5-3** 实现状态编辑功能：
+- [x] **B5-3** 实现状态编辑功能：
   - 双击某个状态 → 弹出 `ImGui::BeginPopup`：可修改 clipName（从下拉列表中选）、speed、loop
   - 每次修改后调用 `animCtrl_->saveToFile(path)` 自动保存
-- [ ] **B5-4** 实现过渡编辑：
+- [x] **B5-4** 实现过渡编辑：
   - 选中某状态后，右侧显示"Transitions from this state"列表
   - 每条 transition 展示 from → to + conditions 摘要
   - 提供 "Add Transition" 和 "Delete Transition" 按钮
-- [ ] **B5-5** 底部新增 "Save .animctrl.json" 按钮，调用 `animCtrl_->saveToFile`
+- [x] **B5-5** 底部新增 "Save .animctrl.json" 按钮，调用 `animCtrl_->saveToFile`
+- [x] **B5-6**（新增）事件驱动系统：`AnimatorEvent` 结构体 + `dispatchEvent`/`dispatchEvents` 方法，为 Sequence 系统预留接口
 
 ---
 

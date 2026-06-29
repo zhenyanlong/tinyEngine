@@ -54,6 +54,10 @@ public:
         std::shared_ptr<Skeleton> skeleton;
         std::vector<AnimationClip> animationClips;
         AnimatorController animatorController;
+        // ── 预览模式 ─────────────────────────────────────────
+        int previewClipIndex = -1;   // >=0 时覆盖状态机，直接播放 animationClips[previewClipIndex]
+        float previewTime = 0.f;     // 预览 clip 的当前时间
+        float previewSpeed = 1.f;    // 预览播放速度
     };
 
     void loadModel(const std::string& path, const glm::vec3& position, const BufferManager& bufMgr);

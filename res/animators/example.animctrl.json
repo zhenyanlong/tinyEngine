@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "defaultState": "Idle",
+  "states": [
+    { "name": "Idle",  "clipName": "Idle",  "speed": 1.0, "loop": true },
+    { "name": "Walk",  "clipName": "Walk",  "speed": 1.0, "loop": true },
+    { "name": "Run",   "clipName": "Run",   "speed": 1.2, "loop": true }
+  ],
+  "params": [
+    { "name": "Speed",    "type": "Float", "defaultValue": 0.0 },
+    { "name": "IsJumping","type": "Bool",  "defaultValue": false }
+  ],
+  "transitions": [
+    {
+      "from": "Idle", "to": "Walk",
+      "fadeDuration": 0.2, "hasExitTime": false,
+      "conditions": [{ "param": "Speed", "op": "Greater", "threshold": 0.1 }]
+    },
+    {
+      "from": "Walk", "to": "Idle",
+      "fadeDuration": 0.3, "hasExitTime": false,
+      "conditions": [{ "param": "Speed", "op": "Less", "threshold": 0.1 }]
+    },
+    {
+      "from": "", "to": "Run",
+      "fadeDuration": 0.15, "hasExitTime": false,
+      "conditions": [{ "param": "Speed", "op": "Greater", "threshold": 0.8 }]
+    }
+  ]
+}

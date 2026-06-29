@@ -365,7 +365,7 @@ struct AnimationClip {
 
 #### 4.12.3 AnimatorController（AnimatorController.hpp/.cpp）
 
-Phase B1-B2 的运行时状态机核心。状态机定义由 `AnimatorState`、`AnimatorTransition`、`TransitionCondition` 和 `AnimatorParam` 组成；参数支持 `Float`、`Int`、`Bool`、`Trigger` 四种类型。
+Phase B1-B5 的运行时状态机核心。状态机定义由 `AnimatorState`、`AnimatorTransition`、`TransitionCondition` 和 `AnimatorParam` 组成；参数支持 `Float`、`Int`、`Bool`、`Trigger` 四种类型。
 
 **关键行为：**
 - `configure()` 设置状态、过渡、参数及默认状态；`configureFromClips()` 为实体 clip 建立无过渡的默认状态
@@ -373,6 +373,37 @@ Phase B1-B2 的运行时状态机核心。状态机定义由 `AnimatorState`、`
 - `update(dt, clips)` 推进当前/目标状态时间，检查 AnyState/当前状态过渡、条件和归一化 exit time，返回 `BlendCommand`
 - `BlendCommand` 携带 clip A/B、各自采样时间和混合权重；零时长 fade 立即切换
 - Controller 存放于 `ModelEntity`，不使用原计划中的全局 `AnimationPlayer`/`animCtrl_` 单例
+
+**Phase B3 — 混合品质保障：**
+- `BlendCurve` 枚举（Linear / SmoothStep / EaseIn / EaseOut）存于 `AnimatorTransition::blendCurve`，默认 SmoothStep
+- `applyBlendCurve(t, curve)` 内联工具函数将归一化进度 t ∈ [0,1] 重映射
+- `update()` 输出 `blendWeight` 时应用当前过渡的 `activeBlendCurve_`；过渡启动时从 `transition.blendCurve` 拷贝
+- 旋转插值使用 `glm::slerp`（B2 已实现），Translation/Scale 使用 `glm::mix`
+
+**Phase B4 — 状态机序列化：**
+- `saveToFile(jsonPath)` / `loadFromFile(jsonPath)` 使用 nlohmann/json 实现 `.animctrl.json` 的读写
+- 序列化字段：version、defaultState、states[]（name/clipName/speed/loop）、params[]（name/type/defaultValue）、transitions[]（from/to/fadeDuration/hasExitTime/exitTime/blendCurve/conditions[]）
+- `loadFromFile` 对所有 JSON key 做 `contains()` + `is_array()` 检查，缺失字段使用默认值，避免异常
+- `MaterialAssetDesc` 新增 `animControllerPath` 字段；`MaterialAssetLoader::load` 解析 `.ast` 中的 `animController` 字段
+- `Application::loadAndApplyMaterialAsset` 在模型 swap 后，若 `.ast` 含 `animController` 路径，自动调用 `ents[0].animatorController.loadFromFile()`
+- 示例文件：`res/animators/example.animctrl.json`（3 states / 3 transitions / 2 params）
+
+**Phase B5 — ImGui 动画总控面板（Animator Panel）：**
+- `UIManager::drawAnimatorPanel()` 在 `prepareFrame()` 中由 `showAnimatorPanel_` 开关控制
+- 三区布局：左侧侧边栏（状态机资产 + 动画资产列表）| 右侧上半双栏（States | Outgoing Transitions）| 底部双栏（Transition/State 编辑器 | 状态信息 + 控制按钮）
+- **左侧侧边栏上半**：显示当前 controller，Load/Save `.animctrl.json` 按钮，支持拖拽 payload `DND_ANIMCTRL`
+- **左侧侧边栏下半**：列出 `ent->animationClips`，每项右侧 [▶] 预览按钮 / [■] 停止按钮；支持拖拽 payload `DND_ANIMCLIP` 到右侧 States 列表创建 state
+- **右侧上半左栏 States**：`●` 标记当前状态，点选切换 `animatorSelectedStateIdx_`；接受 `DND_ANIMCLIP` 拖拽自动创建 state（clipName = name）
+- **右侧上半右栏 Transitions**：列出当前选中 state 的 outgoing transitions（含 AnyState），`+ Add Transition` 按钮创建新过渡
+- **底部左栏编辑器**：选中 transition 时编辑 toState/fadeDuration/hasExitTime/exitTime/blendCurve/conditions[]；选中 state 时编辑 speed/loop；condition 编辑使用临时 `char[]` 缓冲区（避免 `std::string` 直接绑定 `InputText`）
+- **底部右栏**：状态机运行时状态（current state / transition progress bar / 计数）+ Add Param 按钮（Float/Bool/Trigger）+ Add State 快捷按钮 + Reset Controller
+- **预览模式**：`ModelEntity::previewClipIndex >= 0` 时，`Application::drawFrame` 绕开状态机直接播放 `animationClips[previewClipIndex]`，`previewTime` 按 `previewSpeed` 推进并 mod duration
+- **ImGui ID 安全**：condition 循环中所有控件 label 带 `_%d` 索引后缀，避免同帧多 condition 的 ID 冲突
+
+**Phase B5-6 — 事件驱动系统：**
+- `AnimatorEvent` 结构体（Type: SetFloat/SetInt/SetBool/SetTrigger + paramName + 值）
+- `AnimatorController::dispatchEvent(event)` / `dispatchEvents(events)` 将事件转发到对应 `set*` 方法
+- 为未来 Sequence 系统预留标准接口：Sequence 可在 clip 开始/结束或特定时间点触发 `dispatchEvent` 改变参数，从而驱动状态机过渡
 
 **逐骨骼混合：** `Application::drawFrame(dt)` 分别采样两个 clip 的局部 TRS，Translation/Scale 使用 `glm::mix`，Rotation 使用 `glm::slerp`，之后再组合为局部矩阵并计算最终骨骼 palette。
 
@@ -417,6 +448,7 @@ struct MaterialAssetDesc {
     MaterialParams params;
     std::string    albedoPath, normalPath, metallicRoughnessPath, aoPath, emissivePath;
     std::string    modelPath;            // resolved path, empty for Material-type
+    std::string    animControllerPath;   // resolved path to .animctrl.json, empty if not specified
     std::vector<std::string> subMaterialPaths;  // from "subMaterials" array, e.g. ["materials/xxx_Body.ast", ...]
 };
 ```
@@ -753,7 +785,7 @@ TINYOBJLOADER_IMPLEMENTATION # tinyobjloader 实现编译
 | 动画运行时播放 | 已完成 | drawFrame 每帧逐实体执行 AnimatorController → TRS 混合 → computeFinalMatrices → updateBoneMatrices |
 | 动画资产序列化 | 已完成 | Phase A5：AnimationAssetLoader (.ast Header + .anim.bin 二进制) + 懒生成 + 启动恢复 |
 | 共享 GPU buffer 缓存 | 已完成 | SceneManager.modelResourceCache_ 共享 vertex/index buffer + animation state，重复拖拽不暴涨 |
-| 动画状态机 | 运行时核心已实现 | Phase B1-B2：参数/状态/过渡/Trigger/exit time + 逐骨骼 TRS cross-fade；B3-B5 待实现 |
+| 动画状态机 | 已完成 | Phase B1-B5：参数/状态/过渡/Trigger/exit time + 逐骨骼 TRS cross-fade（B1-B2）；BlendCurve ease 曲线（B3）；.animctrl.json 序列化 + .ast animController 字段（B4）；ImGui 动画总控面板 + 拖拽创建 state + 预览模式 + 事件驱动系统（B5） |
 | 蒙皮模型 GPU 拾取 | 已完成 | skinned pick pipeline 复用材质 bone UBO，按 submesh/当前动画姿势写入 Entity ID |
 | 重复蒙皮模型独立动画状态 | 受限 | Controller 已逐实体独立，但共享同一 skinned MaterialId 的实例仍共用 BoneMatricesUBO；后续需每实体描述符或 dynamic UBO |
 | Sequencer | 待实现 | Phase C：时间轴编辑器 |
