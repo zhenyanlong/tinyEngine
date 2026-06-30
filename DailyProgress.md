@@ -1,3 +1,12 @@
+## 2026-06-30
+
+- [ ] Added a model-aware Animator Controller asset browser that recursively filters `res/animators/` by clip compatibility and provides Refresh, New AnimController, and Save Current actions.
+- [ ] Reworked Animator clip rows with explicit Preview/Stop and inline Rename controls, and replaced unsupported Unicode state icons with ASCII Active/State labels.
+- [ ] Implemented validated animation clip renaming that updates `.anim.ast` metadata without rewriting `.anim.bin` and synchronizes runtime clips plus current controller state/transition references.
+- [ ] Added per-entity animation/controller asset path tracking for glTF and FBX-backed models so UI edits persist to the correct assets.
+- [ ] Fixed Windows animation-asset replacement failures by releasing the input file before transactional temp/backup rename and using font-safe error codes.
+- [ ] Renamed the selected animation clip from Scene to Idle during UI validation, synchronized TDD.md, and passed the final x64-debug build.
+
 ## 2026-06-29
 
 - [ ] Implemented Phase B3 blend quality: added BlendCurve enum (Linear/SmoothStep/EaseIn/EaseOut) and applyBlendCurve() helper; AnimatorTransition.blendCurve field; update() applies the active curve to blendWeight output; rotation already uses glm::slerp from B2.

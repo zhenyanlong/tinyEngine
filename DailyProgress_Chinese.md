@@ -1,3 +1,12 @@
+## 2026-06-30
+
+- [ ] 新增面向当前模型的 Animator Controller 资产浏览器，递归扫描 `res/animators/` 并按 clip 兼容性筛选，同时提供 Refresh、New AnimController 和 Save Current 操作。
+- [ ] 重构 Animator 动画条目，增加明确的 Preview/Stop 与行内 Rename 控件，并以 ASCII Active/State 标签替换字体不支持的 Unicode 状态图标。
+- [ ] 实现带校验的动画 clip 重命名：仅更新 `.anim.ast` 元数据而不重写 `.anim.bin`，并同步运行时 clip 及当前控制器的状态/过渡引用。
+- [ ] 为 glTF 与 FBX 模型增加逐实体动画资产/控制器资产路径记录，使 UI 编辑能够持久化到正确资产。
+- [ ] 修复 Windows 动画资产替换失败：事务式临时文件/备份 rename 前释放输入文件，并使用字体安全的错误码。
+- [ ] 在 UI 验证中将选中动画 clip 从 Scene 重命名为 Idle，同步更新 TDD.md，并通过最终 x64-debug 构建。
+
 ## 2026-06-29
 
 - [ ] 实现 Phase B3 混合品质保障：新增 BlendCurve 枚举（Linear/SmoothStep/EaseIn/EaseOut）与 applyBlendCurve() 工具函数；AnimatorTransition.blendCurve 字段；update() 输出 blendWeight 时应用当前过渡的 ease 曲线；旋转已在 B2 使用 glm::slerp。

@@ -1,6 +1,6 @@
 # tinyEngine 技术设计文档
 
-> 最后更新：2026-06-28
+> 最后更新：2026-06-30
 
 ---
 
@@ -386,18 +386,23 @@ Phase B1-B5 的运行时状态机核心。状态机定义由 `AnimatorState`、`
 - `loadFromFile` 对所有 JSON key 做 `contains()` + `is_array()` 检查，缺失字段使用默认值，避免异常
 - `MaterialAssetDesc` 新增 `animControllerPath` 字段；`MaterialAssetLoader::load` 解析 `.ast` 中的 `animController` 字段
 - `Application::loadAndApplyMaterialAsset` 在模型 swap 后，若 `.ast` 含 `animController` 路径，自动调用 `ents[0].animatorController.loadFromFile()`
+- `ModelEntity::animatorControllerPath` 记录当前绑定资产；Animator 面板递归扫描 `res/animators/`，仅显示所有 state 的 `clipName` 均存在于当前模型的兼容控制器
+- `New AnimController` 按当前模型全部 clips 生成初始 states 并写入唯一命名的 `.animctrl.json`；`Save Current` 保存当前绑定控制器
 - 示例文件：`res/animators/example.animctrl.json`（3 states / 3 transitions / 2 params）
 
 **Phase B5 — ImGui 动画总控面板（Animator Panel）：**
 - `UIManager::drawAnimatorPanel()` 在 `prepareFrame()` 中由 `showAnimatorPanel_` 开关控制
 - 三区布局：左侧侧边栏（状态机资产 + 动画资产列表）| 右侧上半双栏（States | Outgoing Transitions）| 底部双栏（Transition/State 编辑器 | 状态信息 + 控制按钮）
-- **左侧侧边栏上半**：显示当前 controller，Load/Save `.animctrl.json` 按钮，支持拖拽 payload `DND_ANIMCTRL`
-- **左侧侧边栏下半**：列出 `ent->animationClips`，每项右侧 [▶] 预览按钮 / [■] 停止按钮；支持拖拽 payload `DND_ANIMCLIP` 到右侧 States 列表创建 state
-- **右侧上半左栏 States**：`●` 标记当前状态，点选切换 `animatorSelectedStateIdx_`；接受 `DND_ANIMCLIP` 拖拽自动创建 state（clipName = name）
+- **左侧侧边栏上半**：列出与当前模型 clips 兼容的 `.animctrl.json`，提供 Refresh、New AnimController、Save Current，并显示当前绑定资产
+- **左侧侧边栏下半**：列出 `ent->animationClips`，每项右侧提供 Preview/Stop 与 Rename；支持拖拽 payload `DND_ANIMCLIP` 到右侧 States 列表创建 state
+- **右侧上半左栏 States**：使用 ASCII `[Active]` / `[State]` 标记，避免默认 ImGui 字体缺少 Unicode 图标时显示 `?`；接受 `DND_ANIMCLIP` 拖拽自动创建 state（clipName = name）
 - **右侧上半右栏 Transitions**：列出当前选中 state 的 outgoing transitions（含 AnyState），`+ Add Transition` 按钮创建新过渡
 - **底部左栏编辑器**：选中 transition 时编辑 toState/fadeDuration/hasExitTime/exitTime/blendCurve/conditions[]；选中 state 时编辑 speed/loop；condition 编辑使用临时 `char[]` 缓冲区（避免 `std::string` 直接绑定 `InputText`）
 - **底部右栏**：状态机运行时状态（current state / transition progress bar / 计数）+ Add Param 按钮（Float/Bool/Trigger）+ Add State 快捷按钮 + Reset Controller
 - **预览模式**：`ModelEntity::previewClipIndex >= 0` 时，`Application::drawFrame` 绕开状态机直接播放 `animationClips[previewClipIndex]`，`previewTime` 按 `previewSpeed` 推进并 mod duration
+- **Clip 行内重命名**：Rename 将列表行切换为 InputText + Apply/Cancel；名称必须非空且在当前模型内唯一，成功后同步运行时 clip、当前控制器 `clipName`、同名自动生成 state 与 transition 引用
+- **重命名持久化**：`ModelEntity::animationAssetPath` 记录 clips 来源；`AnimationAssetLoader::renameClip()` 仅修改 `.anim.ast` 的 clip 元数据，不重写 `.anim.bin`，并通过临时文件 + 备份替换保证失败回滚
+- **Windows 文件替换约束**：解析 `.anim.ast` 的输入流必须在 rename 前销毁，避免共享冲突；UI 使用稳定英文错误码，防止系统本地化文本因字体缺字显示为 `?`
 - **ImGui ID 安全**：condition 循环中所有控件 label 带 `_%d` 索引后缀，避免同帧多 condition 的 ID 冲突
 
 **Phase B5-6 — 事件驱动系统：**
@@ -783,9 +788,9 @@ TINYOBJLOADER_IMPLEMENTATION # tinyobjloader 实现编译
 | GPU 蒙皮渲染 | 已完成 | Phase A3：skinned_vert + BoneMatricesUBO + SkinnedPipeline + 多 skin per-palette |
 | 多骨架动画实体 | 已完成 | Phase A4：animation state 下沉到 ModelEntity，drawFrame 逐实体求值，不再依赖全局单例 |
 | 动画运行时播放 | 已完成 | drawFrame 每帧逐实体执行 AnimatorController → TRS 混合 → computeFinalMatrices → updateBoneMatrices |
-| 动画资产序列化 | 已完成 | Phase A5：AnimationAssetLoader (.ast Header + .anim.bin 二进制) + 懒生成 + 启动恢复 |
+| 动画资产序列化 | 已完成 | Phase A5：AnimationAssetLoader (.ast Header + .anim.bin 二进制) + 懒生成 + 启动恢复 + clip 元数据事务式重命名 |
 | 共享 GPU buffer 缓存 | 已完成 | SceneManager.modelResourceCache_ 共享 vertex/index buffer + animation state，重复拖拽不暴涨 |
-| 动画状态机 | 已完成 | Phase B1-B5：参数/状态/过渡/Trigger/exit time + 逐骨骼 TRS cross-fade（B1-B2）；BlendCurve ease 曲线（B3）；.animctrl.json 序列化 + .ast animController 字段（B4）；ImGui 动画总控面板 + 拖拽创建 state + 预览模式 + 事件驱动系统（B5） |
+| 动画状态机 | 已完成 | Phase B1-B5：参数/状态/过渡/Trigger/exit time + 逐骨骼 TRS cross-fade（B1-B2）；BlendCurve ease 曲线（B3）；.animctrl.json 序列化、兼容资产筛选与新建/保存（B4）；ImGui 动画总控面板 + 拖拽创建 state + 预览/重命名 + 事件驱动系统（B5） |
 | 蒙皮模型 GPU 拾取 | 已完成 | skinned pick pipeline 复用材质 bone UBO，按 submesh/当前动画姿势写入 Entity ID |
 | 重复蒙皮模型独立动画状态 | 受限 | Controller 已逐实体独立，但共享同一 skinned MaterialId 的实例仍共用 BoneMatricesUBO；后续需每实体描述符或 dynamic UBO |
 | Sequencer | 待实现 | Phase C：时间轴编辑器 |
