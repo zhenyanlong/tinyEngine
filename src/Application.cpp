@@ -905,6 +905,16 @@ bool Application::ensureAnimationAssetForMeshAst(const std::string& meshAstRelPa
     if (!modelPath.is_absolute())
         modelPath = resRoot / modelRel;
 
+    std::vector<std::string> animAstPaths;
+    if (meshJson.contains("animations") && meshJson["animations"].is_array()) {
+        for (const auto& item : meshJson["animations"]) {
+            if (item.is_string())
+                animAstPaths.push_back(stripResPrefix(item.get<std::string>()));
+        }
+    }
+    if (auto* entity = sceneMgr_.getModelEntity(entityId); entity && !animAstPaths.empty())
+        entity->animationAssetPath = animAstPaths.front();
+
     const std::string ext = toLowerCopy(modelPath.extension().string());
     if (ext != ".gltf" && ext != ".glb")
         return false;
@@ -922,6 +932,8 @@ bool Application::ensureAnimationAssetForMeshAst(const std::string& meshAstRelPa
         std::string animErr;
         if (AnimationAssetLoader::load(stripResPrefix(animAstRel), animAsset, &animErr)) {
             sceneMgr_.setEntityAnimationData(entityId, animAsset.skeleton, std::move(animAsset.clips));
+            if (auto* entity = sceneMgr_.getModelEntity(entityId))
+                entity->animationAssetPath = stripResPrefix(animAstRel);
             return true;
         }
         std::cerr << "[AnimationAsset] load failed (" << animAstRel << "): "
@@ -942,14 +954,6 @@ bool Application::ensureAnimationAssetForMeshAst(const std::string& meshAstRelPa
         }
         return loadAnim(animAstRel);
     };
-
-    std::vector<std::string> animAstPaths;
-    if (meshJson.contains("animations") && meshJson["animations"].is_array()) {
-        for (const auto& item : meshJson["animations"]) {
-            if (item.is_string())
-                animAstPaths.push_back(stripResPrefix(item.get<std::string>()));
-        }
-    }
 
     for (const std::string& animAstRel : animAstPaths) {
         const std::filesystem::path animAstAbs = resRoot / animAstRel;
@@ -1086,7 +1090,8 @@ bool Application::loadAndApplyMaterialAsset(const std::string& astRelPath)
 
         // 若 .ast 指定了 animController 路径，加载并应用到实体
         if (peekOk && !peeked.animControllerPath.empty() && !ents.empty()) {
-            ents[0].animatorController.loadFromFile(peeked.animControllerPath);
+            if (ents[0].animatorController.loadFromFile(peeked.animControllerPath))
+                ents[0].animatorControllerPath = peeked.animControllerPath;
         }
     }
 

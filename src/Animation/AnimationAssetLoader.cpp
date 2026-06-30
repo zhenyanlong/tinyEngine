@@ -365,6 +365,100 @@ bool AnimationAssetLoader::load(const std::string& astRelPath,
     return true;
 }
 
+bool AnimationAssetLoader::renameClip(const std::string& astRelPath,
+                                      const std::string& oldName,
+                                      const std::string& newName,
+                                      std::string* err)
+{
+    if (newName.empty()) {
+        if (err) *err = "animation clip name cannot be empty";
+        return false;
+    }
+    if (oldName == newName) return true;
+
+    const std::filesystem::path astPath = resolveResPath(astRelPath);
+    json j;
+    {
+        // Windows 不允许 rename 仍被打开的文件，因此解析完成后必须先销毁输入流。
+        std::ifstream in(astPath);
+        if (!in.is_open()) {
+            if (err) *err = "cannot open animation asset: " + astPath.string();
+            return false;
+        }
+        try {
+            in >> j;
+        } catch (const std::exception& e) {
+            if (err) *err = std::string("json parse error: ") + e.what();
+            return false;
+        }
+    }
+
+    if (!j.contains("clips") || !j["clips"].is_array()) {
+        if (err) *err = "animation asset has no clips array: " + astPath.string();
+        return false;
+    }
+
+    json* target = nullptr;
+    for (auto& clip : j["clips"]) {
+        if (!clip.is_object()) continue;
+        const std::string name = clip.value("name", std::string{});
+        if (name == newName) {
+            if (err) *err = "animation clip name already exists: " + newName;
+            return false;
+        }
+        if (name == oldName) {
+            if (target) {
+                if (err) *err = "animation asset contains duplicate clip name: " + oldName;
+                return false;
+            }
+            target = &clip;
+        }
+    }
+    if (!target) {
+        if (err) *err = "animation clip not found: " + oldName;
+        return false;
+    }
+    (*target)["name"] = newName;
+
+    const std::filesystem::path tempPath = astPath.string() + ".rename.tmp";
+    const std::filesystem::path backupPath = astPath.string() + ".rename.bak";
+    {
+        std::ofstream out(tempPath, std::ios::trunc);
+        if (!out.is_open()) {
+            if (err) *err = "cannot create temporary animation asset: " + tempPath.string();
+            return false;
+        }
+        out << j.dump(2) << '\n';
+        if (!out.good()) {
+            if (err) *err = "failed writing temporary animation asset: " + tempPath.string();
+            return false;
+        }
+    }
+
+    std::error_code ec;
+    std::filesystem::remove(backupPath, ec);
+    ec.clear();
+    std::filesystem::rename(astPath, backupPath, ec);
+    if (ec) {
+        std::filesystem::remove(tempPath);
+        if (err) *err = "cannot prepare animation asset replacement (error "
+            + std::to_string(ec.value()) + ")";
+        return false;
+    }
+
+    std::filesystem::rename(tempPath, astPath, ec);
+    if (ec) {
+        std::error_code restoreError;
+        std::filesystem::rename(backupPath, astPath, restoreError);
+        if (err) *err = "cannot replace animation asset (error "
+            + std::to_string(ec.value()) + ", restore "
+            + std::to_string(restoreError.value()) + ")";
+        return false;
+    }
+    std::filesystem::remove(backupPath, ec);
+    return true;
+}
+
 bool AnimationAssetLoader::saveFromGltf(const std::string& gltfPath,
                                         const std::string& astRelPath,
                                         const std::string& binaryRelPath,

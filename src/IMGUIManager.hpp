@@ -117,6 +117,11 @@ public:
 	int      animatorSelectedTransitionIdx_ = -1;  ///< 底部选中的 transition 索引
 	bool     animatorEditingTransition_ = false;  ///< 底部是否正在编辑某条 transition
 	char     animatorStatusMsg_[256]{};
+	std::vector<std::string> animatorControllerAssets_; ///< 与当前模型动画片段兼容的控制器资产绝对路径。
+	uint64_t animatorControllerAssetsEntityId_ = 0;
+	bool     animatorControllerAssetsDirty_ = true;
+	int      animatorRenamingClipIdx_ = -1;
+	char     animatorClipRenameBuffer_[128]{};
 
 	int gizmoOperation_ = 7;  // ImGuizmo::TRANSLATE (bitmask: 7=TRANSLATE, 120=ROTATE, 896=SCALE)
 

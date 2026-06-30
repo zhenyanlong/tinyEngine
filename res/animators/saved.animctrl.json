@@ -1,0 +1,14 @@
+{
+  "defaultState": "Scene",
+  "params": null,
+  "states": [
+    {
+      "clipName": "Scene",
+      "loop": true,
+      "name": "Scene",
+      "speed": 1.0
+    }
+  ],
+  "transitions": null,
+  "version": 1
+}

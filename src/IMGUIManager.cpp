@@ -1,5 +1,6 @@
 #include "IMGUIManager.hpp"
 #include "Application.hpp"
+#include "Animation/AnimationAssetLoader.hpp"
 #include "ImGuizmo.h"
 #include "nlohmann/json.hpp"
 #ifdef _WIN32
@@ -16,6 +17,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <filesystem>
 #include <functional>
@@ -23,6 +25,93 @@
 #include <iostream>
 #include <map>
 #include <set>
+
+namespace {
+
+bool isAnimatorControllerAsset(const std::filesystem::path& path)
+{
+    const std::string filename = path.filename().string();
+    constexpr const char* suffix = ".animctrl.json";
+    constexpr size_t suffixLength = 14;
+    return filename.size() >= suffixLength
+        && filename.compare(filename.size() - suffixLength, suffixLength, suffix) == 0;
+}
+
+bool isControllerCompatibleWithClips(const std::filesystem::path& path,
+                                     const std::vector<AnimationClip>& clips)
+{
+    AnimatorController candidate;
+    if (!candidate.loadFromFile(path.string())) return false;
+
+    for (const auto& state : candidate.states()) {
+        if (state.clipName.empty()) return false;
+        const auto match = std::find_if(clips.begin(), clips.end(), [&](const AnimationClip& clip) {
+            return clip.name == state.clipName;
+        });
+        if (match == clips.end()) return false;
+    }
+    return true;
+}
+
+std::vector<std::string> scanCompatibleAnimatorControllers(
+    const std::filesystem::path& resRoot,
+    const std::vector<AnimationClip>& clips)
+{
+    std::vector<std::string> result;
+    const std::filesystem::path root = resRoot / "animators";
+    std::error_code ec;
+    if (!std::filesystem::is_directory(root, ec)) return result;
+
+    for (std::filesystem::recursive_directory_iterator it(root, ec), end;
+         it != end && !ec; it.increment(ec)) {
+        if (!it->is_regular_file(ec) || !isAnimatorControllerAsset(it->path())) continue;
+        if (isControllerCompatibleWithClips(it->path(), clips))
+            result.push_back(it->path().lexically_normal().string());
+    }
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
+std::string makeAnimatorControllerStem(const SceneManager::ModelEntity& entity)
+{
+    std::string stem = entity.displayName;
+    if (stem.empty() && !entity.astRelPath.empty())
+        stem = std::filesystem::path(entity.astRelPath).stem().string();
+    if (stem.empty()) stem = "NewAnimController";
+
+    for (char& ch : stem) {
+        const unsigned char value = static_cast<unsigned char>(ch);
+        if (!std::isalnum(value) && ch != '-' && ch != '_') ch = '_';
+    }
+    return stem;
+}
+
+std::filesystem::path makeUniqueAnimatorControllerPath(
+    const std::filesystem::path& directory,
+    const std::string& stem)
+{
+    std::filesystem::path candidate = directory / (stem + ".animctrl.json");
+    std::error_code ec;
+    for (int suffix = 1; std::filesystem::exists(candidate, ec); ++suffix) {
+        ec.clear();
+        candidate = directory / (stem + "_" + std::to_string(suffix) + ".animctrl.json");
+    }
+    return candidate;
+}
+
+std::string trimCopy(const std::string& value)
+{
+    const auto first = std::find_if_not(value.begin(), value.end(), [](unsigned char ch) {
+        return std::isspace(ch) != 0;
+    });
+    const auto last = std::find_if_not(value.rbegin(), value.rend(), [](unsigned char ch) {
+        return std::isspace(ch) != 0;
+    }).base();
+    return first < last ? std::string(first, last) : std::string{};
+}
+
+} // namespace
+
 /** @brief ImGui Vulkan 后端的错误回调：非 0 打印并中止（教学：发布版可改为日志） */
 static void check_vk_result(VkResult err)
 {
@@ -964,10 +1053,107 @@ void UIManager::drawAnimatorPanel()
         return;
     }
 
-    const auto& clips = ent->animationClips;
+    auto& clips = ent->animationClips;
     auto& ctrl = ent->animatorController;
-    const std::vector<AnimatorState> states = ctrl.states();
-    const int selState = animatorSelectedStateIdx_;
+
+    if (animatorControllerAssetsEntityId_ != ent->entityId) {
+        animatorControllerAssetsEntityId_ = ent->entityId;
+        animatorControllerAssetsDirty_ = true;
+        animatorSelectedStateIdx_ = -1;
+        animatorSelectedTransitionIdx_ = -1;
+        animatorEditingTransition_ = false;
+        animatorRenamingClipIdx_ = -1;
+        animatorClipRenameBuffer_[0] = '\0';
+    }
+    auto refreshControllerAssets = [&]() {
+        animatorControllerAssets_ = scanCompatibleAnimatorControllers(
+            vulkanRender->getResRoot(), clips);
+        animatorControllerAssetsDirty_ = false;
+    };
+    if (animatorControllerAssetsDirty_) refreshControllerAssets();
+
+    auto applyClipRename = [&](int clipIndex) {
+        if (clipIndex < 0 || clipIndex >= static_cast<int>(clips.size())) return;
+
+        const std::string oldName = clips[clipIndex].name;
+        const std::string newName = trimCopy(animatorClipRenameBuffer_);
+        if (newName.empty()) {
+            snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                     "Rename failed: name cannot be empty");
+            return;
+        }
+        if (newName == oldName) {
+            animatorRenamingClipIdx_ = -1;
+            return;
+        }
+        const bool duplicate = std::any_of(clips.begin(), clips.end(), [&](const AnimationClip& clip) {
+            return clip.name == newName;
+        });
+        if (duplicate) {
+            snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                     "Rename failed: clip '%s' already exists", newName.c_str());
+            return;
+        }
+        if (ent->animationAssetPath.empty()) {
+            snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                     "Rename failed: model has no persisted .anim.ast asset");
+            return;
+        }
+
+        AnimationAssetLoader::setResRoot(vulkanRender->getResRoot());
+        std::string renameError;
+        if (!AnimationAssetLoader::renameClip(ent->animationAssetPath,
+                                              oldName, newName, &renameError)) {
+            snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                     "Rename failed: %s", renameError.c_str());
+            return;
+        }
+
+        auto statesForRename = ctrl.states();
+        auto transitionsForRename = ctrl.transitions();
+        const auto paramsForRename = ctrl.params();
+        std::string nextDefaultState = ctrl.currentStateName();
+        const bool newStateNameAvailable = std::none_of(
+            statesForRename.begin(), statesForRename.end(), [&](const AnimatorState& state) {
+                return state.name == newName;
+            });
+        bool renamedGeneratedState = false;
+        for (auto& state : statesForRename) {
+            const bool generatedState = state.name == oldName && state.clipName == oldName;
+            if (state.clipName == oldName) state.clipName = newName;
+            if (generatedState && newStateNameAvailable) {
+                state.name = newName;
+                renamedGeneratedState = true;
+            }
+        }
+        if (renamedGeneratedState) {
+            for (auto& transition : transitionsForRename) {
+                if (transition.fromState == oldName) transition.fromState = newName;
+                if (transition.toState == oldName) transition.toState = newName;
+            }
+            if (nextDefaultState == oldName) nextDefaultState = newName;
+        }
+
+        clips[clipIndex].name = newName;
+        ctrl.configure(std::move(statesForRename), std::move(transitionsForRename),
+                       paramsForRename, nextDefaultState);
+
+        bool controllerSaved = true;
+        if (!ent->animatorControllerPath.empty())
+            controllerSaved = ctrl.saveToFile(ent->animatorControllerPath);
+
+        animatorControllerAssetsDirty_ = true;
+        animatorRenamingClipIdx_ = -1;
+        animatorClipRenameBuffer_[0] = '\0';
+        if (controllerSaved) {
+            snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                     "Renamed animation: %s -> %s", oldName.c_str(), newName.c_str());
+        } else {
+            snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                     "Renamed animation, but controller save failed: %s",
+                     ent->animatorControllerPath.c_str());
+        }
+    };
 
     // ── 三区布局：左侧侧边栏 | 右侧上半 | 底部 ──────────────────────
     static float leftWidth = 220.f;
@@ -976,32 +1162,85 @@ void UIManager::drawAnimatorPanel()
     ImGui::BeginChild("##animLeft", ImVec2(leftWidth, -ImGui::GetFrameHeightWithSpacing() * 1.5f), true);
 
     if (ImGui::CollapsingHeader("Animator Controllers", ImGuiTreeNodeFlags_DefaultOpen)) {
-        if (ctrl.hasStates()) {
-            ImGui::Selectable("current controller##animctrl", false);
-            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
-                ImGui::SetDragDropPayload("DND_ANIMCTRL", ctrl.currentStateName().c_str(),
-                                          ctrl.currentStateName().size() + 1);
-                ImGui::Text("Current AnimatorController");
-                ImGui::EndDragDropSource();
-            }
+        ImGui::TextDisabled("Compatible with this model");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Refresh##animctrl")) refreshControllerAssets();
+
+        ImGui::BeginChild("##animControllerAssets", ImVec2(0, 96.f), true);
+        if (animatorControllerAssets_.empty()) {
+            ImGui::TextDisabled("(no compatible assets)");
         } else {
-            ImGui::TextDisabled("No controller loaded");
+            for (const std::string& assetPath : animatorControllerAssets_) {
+                const std::filesystem::path path(assetPath);
+                const bool active = !ent->animatorControllerPath.empty()
+                    && std::filesystem::path(ent->animatorControllerPath).lexically_normal()
+                        == path.lexically_normal();
+                if (ImGui::Selectable(path.filename().string().c_str(), active)) {
+                    if (ctrl.loadFromFile(assetPath)) {
+                        ent->animatorControllerPath = assetPath;
+                        ent->previewClipIndex = -1;
+                        ent->previewTime = 0.f;
+                        animatorSelectedStateIdx_ = -1;
+                        animatorSelectedTransitionIdx_ = -1;
+                        animatorEditingTransition_ = false;
+                        snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                                 "Loaded: %s", path.filename().string().c_str());
+                    } else {
+                        snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                                 "Load failed: %s", path.filename().string().c_str());
+                    }
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", assetPath.c_str());
+            }
+        }
+        ImGui::EndChild();
+
+        if (ent->animatorControllerPath.empty()) {
+            ImGui::TextDisabled("Current: runtime controller");
+        } else {
+            ImGui::Text("Current: %s",
+                        std::filesystem::path(ent->animatorControllerPath).filename().string().c_str());
         }
         ImGui::Separator();
-        if (ImGui::Button("Load .animctrl.json##animload")) {
-            const std::string path = vulkanRender->getResRoot() + "/animators/example.animctrl.json";
-            if (ctrl.loadFromFile(path))
-                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_), "Loaded: example.animctrl.json");
-            else
-                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_), "Load failed: %s", path.c_str());
+        if (ImGui::Button("New AnimController")) {
+            const std::filesystem::path directory =
+                std::filesystem::path(vulkanRender->getResRoot()) / "animators";
+            std::error_code ec;
+            std::filesystem::create_directories(directory, ec);
+            const std::filesystem::path path = makeUniqueAnimatorControllerPath(
+                directory, makeAnimatorControllerStem(*ent));
+
+            AnimatorController newController;
+            newController.configureFromClips(clips);
+            if (!ec && newController.saveToFile(path.string())) {
+                ctrl = std::move(newController);
+                ent->animatorControllerPath = path.lexically_normal().string();
+                ent->previewClipIndex = -1;
+                ent->previewTime = 0.f;
+                animatorControllerAssetsDirty_ = true;
+                animatorSelectedStateIdx_ = -1;
+                animatorSelectedTransitionIdx_ = -1;
+                animatorEditingTransition_ = false;
+                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                         "Created: %s", path.filename().string().c_str());
+            } else {
+                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                         "Create failed: %s", path.string().c_str());
+            }
         }
         ImGui::SameLine();
-        if (ImGui::Button("Save##animctrlSave")) {
-            const std::string path = vulkanRender->getResRoot() + "/animators/saved.animctrl.json";
-            if (ctrl.saveToFile(path))
-                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_), "Saved: saved.animctrl.json");
-            else
-                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_), "Save failed: %s", path.c_str());
+        if (ImGui::Button("Save Current")) {
+            if (ent->animatorControllerPath.empty()) {
+                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                         "Use New AnimController before saving");
+            } else if (ctrl.saveToFile(ent->animatorControllerPath)) {
+                animatorControllerAssetsDirty_ = true;
+                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_), "Saved: %s",
+                         std::filesystem::path(ent->animatorControllerPath).filename().string().c_str());
+            } else {
+                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_), "Save failed: %s",
+                         ent->animatorControllerPath.c_str());
+            }
         }
     }
 
@@ -1014,32 +1253,68 @@ void UIManager::drawAnimatorPanel()
             for (int i = 0; i < static_cast<int>(clips.size()); ++i) {
                 const bool isPreview = (ent->previewClipIndex == i);
                 ImGui::PushID(i);
-                char label[256];
-                snprintf(label, sizeof(label), "[%d] %s%s", i, clips[i].name.c_str(),
-                         isPreview ? " [▶]" : "");
-                ImGui::Selectable(label, isPreview);
-
-                if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
-                    int payloadIdx = i;
-                    ImGui::SetDragDropPayload("DND_ANIMCLIP", &payloadIdx, sizeof(int));
-                    ImGui::Text("Drag %s to create state", clips[i].name.c_str());
-                    ImGui::EndDragDropSource();
-                }
-
-                if (!isPreview) {
+                if (animatorRenamingClipIdx_ == i) {
+                    const float applyWidth = ImGui::CalcTextSize("Apply").x
+                        + ImGui::GetStyle().FramePadding.x * 2.f;
+                    const float cancelWidth = ImGui::CalcTextSize("Cancel").x
+                        + ImGui::GetStyle().FramePadding.x * 2.f;
+                    const float editWidth = std::max(
+                        60.f, ImGui::GetContentRegionAvail().x - applyWidth - cancelWidth
+                            - ImGui::GetStyle().ItemSpacing.x * 2.f);
+                    ImGui::SetNextItemWidth(editWidth);
+                    const bool enterPressed = ImGui::InputText(
+                        "##clipRename", animatorClipRenameBuffer_,
+                        sizeof(animatorClipRenameBuffer_), ImGuiInputTextFlags_EnterReturnsTrue);
                     ImGui::SameLine();
-                    char btnLbl[32];
-                    snprintf(btnLbl, sizeof(btnLbl), "▶##preview%d", i);
-                    if (ImGui::SmallButton(btnLbl)) {
-                        ent->previewClipIndex = i;
-                        ent->previewTime = 0.f;
-                        ent->previewSpeed = 1.f;
+                    const bool applyPressed = ImGui::SmallButton("Apply");
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Cancel")) {
+                        animatorRenamingClipIdx_ = -1;
+                        animatorClipRenameBuffer_[0] = '\0';
+                    } else if (enterPressed || applyPressed) {
+                        applyClipRename(i);
                     }
                 } else {
+                    const char* previewLabel = isPreview ? "Stop" : "Preview";
+                    const float previewWidth = ImGui::CalcTextSize(previewLabel).x
+                        + ImGui::GetStyle().FramePadding.x * 2.f;
+                    const float renameWidth = ImGui::CalcTextSize("Rename").x
+                        + ImGui::GetStyle().FramePadding.x * 2.f;
+                    const float labelWidth = std::max(
+                        60.f, ImGui::GetContentRegionAvail().x - previewWidth - renameWidth
+                            - ImGui::GetStyle().ItemSpacing.x * 2.f);
+                    char label[256];
+                    snprintf(label, sizeof(label), "[%d] %s%s", i, clips[i].name.c_str(),
+                             isPreview ? " [Previewing]" : "");
+                    ImGui::Selectable(label, isPreview, ImGuiSelectableFlags_None,
+                                      ImVec2(labelWidth, 0.f));
+
+                    if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
+                        int payloadIdx = i;
+                        ImGui::SetDragDropPayload("DND_ANIMCLIP", &payloadIdx, sizeof(int));
+                        ImGui::Text("Drag %s to create state", clips[i].name.c_str());
+                        ImGui::EndDragDropSource();
+                    }
+
                     ImGui::SameLine();
-                    if (ImGui::SmallButton("■##stopPreview")) {
-                        ent->previewClipIndex = -1;
-                        ent->previewTime = 0.f;
+                    if (ImGui::SmallButton(previewLabel)) {
+                        if (isPreview) {
+                            ent->previewClipIndex = -1;
+                            ent->previewTime = 0.f;
+                        } else {
+                            ent->previewClipIndex = i;
+                            ent->previewTime = 0.f;
+                            ent->previewSpeed = 1.f;
+                        }
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Rename")) {
+                        animatorRenamingClipIdx_ = i;
+                        snprintf(animatorClipRenameBuffer_, sizeof(animatorClipRenameBuffer_),
+                                 "%s", clips[i].name.c_str());
+                    }
+                    if (ImGui::IsItemHovered() && ent->animationAssetPath.empty()) {
+                        ImGui::SetTooltip("This model has no persisted .anim.ast asset");
                     }
                 }
                 ImGui::PopID();
@@ -1053,6 +1328,9 @@ void UIManager::drawAnimatorPanel()
 
     // ── 右侧区域 ──────────────────────────────────────────────────────────
     ImGui::BeginGroup();
+
+    const std::vector<AnimatorState> states = ctrl.states();
+    const int selState = animatorSelectedStateIdx_;
 
     // ── 右侧上半：双栏 States | Outgoing Transitions ──────────────────────
     const float halfW = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
@@ -1069,7 +1347,7 @@ void UIManager::drawAnimatorPanel()
             ImGui::PushID(i);
             char label[256];
             snprintf(label, sizeof(label), "%s%s##state_%d",
-                     isCurrent ? "\xe2\x97\x8f " : "\xe2\x97\x8b ",
+                     isCurrent ? "[Active] " : "[State] ",
                      states[i].name.c_str(), i);
             if (ImGui::Selectable(label, isSelected)) {
                 animatorSelectedStateIdx_ = i;
@@ -1134,7 +1412,7 @@ void UIManager::drawAnimatorPanel()
             const bool sel = (ti == animatorSelectedTransitionIdx_);
             ImGui::PushID(ti);
             char buf[256];
-            snprintf(buf, sizeof(buf), "%s \xe2\x86\x92 %s##trans_%d",
+            snprintf(buf, sizeof(buf), "%s -> %s##trans_%d",
                      t.fromState.empty() ? "(Any)" : t.fromState.c_str(),
                      t.toState.c_str(), ti);
             if (ImGui::Selectable(buf, sel)) {
