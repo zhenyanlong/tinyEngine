@@ -905,7 +905,7 @@ TINYOBJLOADER_IMPLEMENTATION # tinyobjloader 实现编译
 | 重复蒙皮模型独立动画状态 | 受限 | Controller 已逐实体独立，但共享同一 skinned MaterialId 的实例仍共用 BoneMatricesUBO；后续需每实体描述符或 dynamic UBO |
 | 多 .anim.ast 合并加载 | **已修复** | 2026-07-02：根因是 `loadAndApplyMaterialAsset` 传入的 `astRelPath` 可能是 `.material.ast` 路径，不含 `animations` 数组。修复：(1) `ensureAnimationAssetForMeshAst` 增加回退逻辑，当打开的文件无 `animations` 数组时，检查实体 `astRelPath` 并以 `.mesh.ast` 路径重新读取；(2) `loadAndApplyMaterialAsset` 中记录实体 `astRelPath` 供回退使用。|
 | Sequencer | 待实现（Phase C1-C6） | 2026-07-03 ~ 2026-07-09 计划实现：C1 数据结构、C2 播放控制器、C3 相机路径、C4 TransformTween、C5 序列化、C6 ImGui 时间轴编辑器 |
-| Content Browser 离屏缩略图 | 待修复 | 当前使用 res/icons/model.png 占位符；ThumbnailRenderer 已能生成离屏渲染 PNG 到 res/thumbnails/，需扩展扫描路径并在 Content Browser 中显示实际缩略图 |
+| Content Browser 离屏缩略图 | **修复中** | 使用离屏渲染（128×128）生成 mesh 缩略图，当前三个待修复问题：<br>1. **材质未显示**：glTF 材质已加载但渲染结果仍偏灰；OBJ/FBX 无 .ast 路径全用默认材质 — 需排查 UBO 更新或 descriptor set 绑定时机<br>2. **相机角度错误**：当前从 (1,1,1) 方向观察，用户反馈方向是反的，需调整摄像机朝向<br>3. **Remy skinned 模型全灰**：FBX 带动画蒙皮模型渲染结果为纯色，非蒙皮 pipeline 未正确处理其顶点数据 |
 | Sequencer Camera + PiP | 待实现 | 新增 SequencerCamera 类（独立 position/orientation/fov），场景中可添加可视化摄像机模型，选中后右下角显示 PiP 小窗渲染该摄像机视角 |
 | 资产系统扩充 | 待实现 | Phase D1-D3：AnimationAssetRegistry 资产注册、.ast 文件扩展（animationAssetPath/animControllerPath）、ImGui Assets 浏览器面板（TabBar 重构） |
 | PBR 管线 | 基础支持（metallic/roughness/ao） | 已有 |

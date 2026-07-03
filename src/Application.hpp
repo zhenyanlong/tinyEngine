@@ -117,6 +117,10 @@ public:
     bool       setMaterialAlbedo(MaterialId id, const std::string& path);
     bool       setMaterialNormal(MaterialId id, const std::string& path);
 
+    // Thumbnail renderer access
+    ThumbnailRenderer& getThumbnailRenderer() { return thumbnailRenderer_; }
+    void refreshAllThumbnails() { thumbnailRenderer_.generateAll(modelRegistry_.getResRoot()); }
+
 private:
     GLFWwindow* window_  = nullptr;
     bool        framebufferResized_ = false;

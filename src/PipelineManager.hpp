@@ -46,6 +46,11 @@ public:
                                const std::string& vertSpvPath,
                                const std::string& fragSpvPath);
 
+    // Build VkPipeline only (layout reused). Returns VK_NULL_HANDLE on failure.
+    VkPipeline buildMainPipeline(const VulkanContext& ctx, VkRenderPass renderPass,
+                                 const std::string& vertSpv, const std::string& fragSpv,
+                                 VkExtent2D extent);
+
     static std::vector<char> readFile(const std::string& path);
     VkShaderModule createShaderModule(const VulkanContext& ctx, const std::vector<char>& code) const;
 
@@ -84,10 +89,6 @@ private:
                                const std::string& skinnedVertSpv, const std::string& fragSpv,
                                VkExtent2D extent);
 
-    // Build VkPipeline only (layout reused). Returns VK_NULL_HANDLE on failure.
-    VkPipeline buildMainPipeline(const VulkanContext& ctx, VkRenderPass renderPass,
-                                 const std::string& vertSpv, const std::string& fragSpv,
-                                 VkExtent2D extent);
     VkPipeline buildBoxPipeline(const VulkanContext& ctx, VkRenderPass renderPass,
                                 const std::string& vertSpv, const std::string& fragSpv,
                                 VkExtent2D extent);

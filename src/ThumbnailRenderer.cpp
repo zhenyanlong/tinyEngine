@@ -5,6 +5,8 @@
 #include "MaterialManager.hpp"
 #include "SceneManager.hpp"
 #include "BufferManager.hpp"
+#include "FramebufferManager.hpp"
+#include "nlohmann/json.hpp"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
@@ -16,6 +18,7 @@
 #include <cctype>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <vector>
@@ -91,14 +94,18 @@ static void transitionImage(const VulkanContext& ctx, VkCommandBuffer cb,
 void ThumbnailRenderer::create(const VulkanContext& ctx,
                                const CommandManager& cmdMgr,
                                const PipelineManager& pipeMgr,
+                               const FramebufferManager& fbMgr,
                                MaterialManager& matMgr,
                                SceneManager& sceneMgr,
                                const BufferManager& bufMgr,
-                               const std::string& resRoot)
+                               const std::string& resRoot,
+                               const std::string& vertSpv,
+                               const std::string& fragSpv)
 {
     ctx_      = const_cast<VulkanContext*>(&ctx);
     cmdMgr_   = &cmdMgr;
     pipeMgr_  = &pipeMgr;
+    fbMgr_   = &fbMgr;
     matMgr_   = &matMgr;
     sceneMgr_ = &sceneMgr;
     bufMgr_   = &bufMgr;
@@ -112,11 +119,15 @@ void ThumbnailRenderer::create(const VulkanContext& ctx,
     createFramebuffer(colorFmt, depthFmt);
     createReadbackBuffer();
     createThumbCommandBuffer();
+    createPipeline(ctx, vertSpv, fragSpv);
 }
 
 void ThumbnailRenderer::destroy(const VulkanContext& ctx, MaterialManager&, SceneManager&)
 {
     auto dev = ctx.getDevice();
+
+    if (pipeline_ != VK_NULL_HANDLE) { vkDestroyPipeline(dev, pipeline_, nullptr); pipeline_ = VK_NULL_HANDLE; }
+    pipelineLayout_ = VK_NULL_HANDLE; // owned by PipelineManager
 
     if (cmdBuf_)  { vkFreeCommandBuffers(dev, cmdPool_, 1, &cmdBuf_); cmdBuf_ = VK_NULL_HANDLE; }
     if (cmdPool_) { vkDestroyCommandPool(dev, cmdPool_, nullptr);       cmdPool_ = VK_NULL_HANDLE; }
@@ -312,6 +323,22 @@ void ThumbnailRenderer::createThumbCommandBuffer()
     vkAllocateCommandBuffers(ctx_->getDevice(), &ai, &cmdBuf_);
 }
 
+void ThumbnailRenderer::createPipeline(const VulkanContext& ctx,
+                                        const std::string& vertSpv,
+                                        const std::string& fragSpv)
+{
+    VkExtent2D extent{ kThumbSize, kThumbSize };
+    pipeline_ = const_cast<PipelineManager*>(pipeMgr_)->buildMainPipeline(ctx, renderPass_, vertSpv, fragSpv, extent);
+    if (pipeline_ == VK_NULL_HANDLE) {
+        std::cerr << "[Thumbnail] Failed to create thumbnail pipeline.\n";
+        return;
+    }
+    pipelineLayout_ = pipeMgr_->getMainPipelineLayout();
+    if (pipelineLayout_ == VK_NULL_HANDLE) {
+        std::cerr << "[Thumbnail] Main pipeline layout is null, thumbnail may not render.\n";
+    }
+}
+
 // ─── Render & Save ────────────────────────────────────────────────────────────
 
 bool ThumbnailRenderer::renderAndSave(const std::string& modelPath, const std::string& pngOutputPath)
@@ -325,22 +352,58 @@ bool ThumbnailRenderer::renderAndSave(const std::string& modelPath, const std::s
 
     // 1. Load model temporarily
     vkDeviceWaitIdle(ctx_->getDevice());
-    const uint64_t eid = sceneMgr_->createModelEntity(modelPath, glm::vec3(0.f), *bufMgr_, false);
-    SceneManager::ModelEntity* ent = sceneMgr_->getModelEntity(eid);
+    uint64_t eid = 0;
+    SceneManager::ModelEntity* ent = nullptr;
+    try {
+        eid = sceneMgr_->createModelEntity(modelPath, glm::vec3(0.f), *bufMgr_, false);
+        ent = sceneMgr_->getModelEntity(eid);
+    } catch (const std::exception& ex) {
+        std::cerr << "[Thumbnail] createModelEntity failed: " << ex.what() << "\n";
+        return false;
+    } catch (...) {
+        std::cerr << "[Thumbnail] createModelEntity failed (unknown exception)\n";
+        return false;
+    }
     if (!ent || ent->indexCount == 0) {
-        std::cerr << "[Thumbnail] Failed to load model: " << modelPath << "\n";
+        std::cerr << "[Thumbnail] Failed to load model: " << modelPath
+                  << " (ent=" << (ent ? "non-null" : "null")
+                  << ", indexCount=" << (ent ? ent->indexCount : 0) << ")\n";
         if (eid) sceneMgr_->removeModelEntity(eid, *ctx_);
         return false;
     }
+    std::cout << "[Thumbnail] Loaded " << modelPath
+              << " verts=" << ent->vertexBuffer
+              << " idx=" << ent->indexBuffer
+              << " indexCount=" << ent->indexCount
+              << " subMeshes=" << ent->subMeshes.size() << "\n";
 
-    // 2. Compute camera position (fit model in frame)
+    // 2. Load materials for each subMesh (auto-generated .ast files from glTF)
+    if (!ent->autoAstPaths.empty()) {
+        if (ent->subMeshMaterials.size() < ent->autoAstPaths.size())
+            ent->subMeshMaterials.resize(ent->autoAstPaths.size(), 0u);
+        for (size_t slot = 0; slot < ent->autoAstPaths.size(); ++slot) {
+            const MaterialId mid = matMgr_->loadMaterialFromAsset(
+                ent->autoAstPaths[slot], *ctx_, *cmdMgr_, *bufMgr_, *fbMgr_, *pipeMgr_);
+            if (mid != kInvalidMaterialId && slot < ent->subMeshMaterials.size()) {
+                ent->subMeshMaterials[slot] = mid;
+            }
+        }
+        if (!ent->subMeshMaterials.empty() && ent->subMeshMaterials[0] != 0u)
+            ent->materialId = ent->subMeshMaterials[0];
+    }
+
+    // 3. Compute camera position (fit model in frame)
+    // 等距视角：从中心偏移，沿 X/Y/Z 各斜 45° 方向观察
     glm::vec3 modelMin = sceneMgr_->getModelBoundsMin();
     glm::vec3 modelMax = sceneMgr_->getModelBoundsMax();
     glm::vec3 center = 0.5f * (modelMin + modelMax);
     float extent = glm::length(modelMax - modelMin);
     if (extent < 1e-5f) extent = 2.f;
-    const float camDist = extent * 1.5f;
-    const glm::vec3 camPos = center + glm::vec3(0.f, 0.f, camDist);
+
+    // 从 (1,1,1) 方向斜 45° 观察，保证模型最大维度刚好填满画面
+    const float camDist = extent * 2.2f;
+    const glm::vec3 camDir = glm::normalize(glm::vec3(1.f, 1.f, 1.f));
+    const glm::vec3 camPos = center + camDir * camDist;
 
     glm::mat4 view = glm::lookAt(camPos, center, glm::vec3(0.f, 1.f, 0.f));
     float aspect = 1.0f; // square
@@ -385,29 +448,50 @@ bool ThumbnailRenderer::renderAndSave(const std::string& modelPath, const std::s
     vkCmdBindVertexBuffers(cmdBuf_, 0, 1, &ent->vertexBuffer, &off);
     vkCmdBindIndexBuffer(cmdBuf_, ent->indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
-    // Render with default mesh material
-    MaterialId matId = ent->materialId;
-    if (!matMgr_->isValid(matId)) matId = matMgr_->getDefaultMeshMaterialId();
-
-    VkPipeline pipe = matMgr_->getPipeline(matId, *ctx_, const_cast<PipelineManager&>(*pipeMgr_));
+    // Render with per-subMesh materials
+    // For skinned models: force non-skinned pipeline (simple T-pose)
+    const VkPipeline pipe = pipeline_;
     vkCmdBindPipeline(cmdBuf_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
-
-    VkDescriptorSet ds = matMgr_->getDescriptorSet(matId, 0);
-    vkCmdBindDescriptorSets(cmdBuf_, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipeMgr_->getMainPipelineLayout(), 0, 1, &ds, 0, nullptr);
 
     // Push constants: model matrix at origin (we offset the camera instead)
     struct { glm::mat4 model; glm::mat4 normal; } pc;
     pc.model  = ent->transform.GetModelMatrix();
     pc.normal = ent->transform.GetNormalMatrix();
-    vkCmdPushConstants(cmdBuf_, pipeMgr_->getMainPipelineLayout(),
-                       VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
 
-    if (ent->subMeshes.empty())
+    if (ent->subMeshes.empty()) {
+        MaterialId matId = ent->materialId;
+        if (!matMgr_->isValid(matId)) matId = matMgr_->getDefaultMeshMaterialId();
+        VkDescriptorSet ds = matMgr_->getDescriptorSet(matId, 0);
+        if (ds != VK_NULL_HANDLE) {
+            vkCmdBindDescriptorSets(cmdBuf_, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    pipelineLayout_, 0, 1, &ds, 0, nullptr);
+        }
+        vkCmdPushConstants(cmdBuf_, pipelineLayout_,
+                           VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
         vkCmdDrawIndexed(cmdBuf_, ent->indexCount, 1, 0, 0, 0);
-    else
-        for (const auto& sm : ent->subMeshes)
+    } else {
+        for (const auto& sm : ent->subMeshes) {
+            MaterialId matId = ent->materialId;
+            if (sm.materialSlot >= 0
+                && sm.materialSlot < static_cast<int>(ent->subMeshMaterials.size())
+                && ent->subMeshMaterials[sm.materialSlot] != 0u)
+            {
+                const MaterialId slotMat = static_cast<MaterialId>(ent->subMeshMaterials[sm.materialSlot]);
+                if (matMgr_->isValid(slotMat))
+                    matId = slotMat;
+            }
+            if (!matMgr_->isValid(matId)) matId = matMgr_->getDefaultMeshMaterialId();
+
+            VkDescriptorSet ds = matMgr_->getDescriptorSet(matId, 0);
+            if (ds != VK_NULL_HANDLE) {
+                vkCmdBindDescriptorSets(cmdBuf_, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        pipelineLayout_, 0, 1, &ds, 0, nullptr);
+            }
+            vkCmdPushConstants(cmdBuf_, pipelineLayout_,
+                               VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
             vkCmdDrawIndexed(cmdBuf_, sm.indexCount, 1, sm.indexOffset, 0, 0);
+        }
+    }
 
     vkCmdEndRenderPass(cmdBuf_);
 
@@ -488,6 +572,25 @@ bool ThumbnailRenderer::renderAndSave(const std::string& modelPath, const std::s
     const int result = stbi_write_png(pngOutputPath.c_str(), kThumbSize, kThumbSize, 4,
                                       rgba.data(), kThumbSize * 4);
 
+    // 诊断：检查是否全是清除色（模型未被正确渲染）
+    {
+        uint8_t firstR = rgba[0], firstG = rgba[1], firstB = rgba[2];
+        bool solid = true;
+        for (size_t i = 0; i < pixelCount; ++i) {
+            if (rgba[i*4] != firstR || rgba[i*4+1] != firstG || rgba[i*4+2] != firstB) {
+                solid = false;
+                break;
+            }
+        }
+        if (solid) {
+            std::cout << "[Thumbnail] WARNING: " << pngOutputPath
+                      << " is solid color (" << (int)firstR << "," << (int)firstG << "," << (int)firstB << ")"
+                      << " — model may not have rendered.\n";
+        } else {
+            std::cout << "[Thumbnail] OK: " << pngOutputPath << " has varied pixels.\n";
+        }
+    }
+
     // 7. Cleanup temp entity
     sceneMgr_->removeModelEntity(eid, *ctx_);
 
@@ -498,20 +601,63 @@ bool ThumbnailRenderer::renderAndSave(const std::string& modelPath, const std::s
     return true;
 }
 
+bool ThumbnailRenderer::renderForAst(const std::string& astRelPath)
+{
+    const std::filesystem::path astFull = std::filesystem::path(resRoot_) / astRelPath;
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(astFull, ec)) {
+        std::cerr << "[Thumbnail] .ast file not found: " << astFull << "\n";
+        return false;
+    }
+
+    // 解析 .ast JSON，提取 model 路径
+    std::ifstream f(astFull);
+    if (!f.is_open()) return false;
+    std::string modelRelPath;
+    try {
+        nlohmann::json j;
+        f >> j;
+        // 只处理 Mesh 类型资产：Anim/Material 资产没有可渲染的模型
+        std::string astType = j.value("type", std::string("Mesh"));
+        if (astType != "Mesh") return false;
+        if (j.contains("model")) {
+            const auto& m = j["model"];
+            if (m.is_string())
+                modelRelPath = m.get<std::string>();
+            else if (m.is_object() && m.contains("path"))
+                modelRelPath = m["path"].get<std::string>();
+        }
+    } catch (...) {
+        return false;
+    }
+
+    if (modelRelPath.empty()) {
+        std::cerr << "[Thumbnail] No model path in .ast: " << astFull << "\n";
+        return false;
+    }
+
+    const std::string modelFullPath = (std::filesystem::path(resRoot_) / modelRelPath).string();
+    const std::string stem = astFull.stem().string();
+    const std::string pngPath = (std::filesystem::path(resRoot_) / "thumbnails" / (stem + ".png")).string();
+
+    return renderAndSave(modelFullPath, pngPath);
+}
+
 int ThumbnailRenderer::generateAll(const std::string& resRoot)
 {
     const std::filesystem::path thumbDir  = std::filesystem::path(resRoot) / "thumbnails";
     std::error_code ec;
 
-    // resRoot 已是项目根/res/，thumbnails 直接写入唯一基准路径，无需双写。
     std::filesystem::create_directories(thumbDir, ec);
 
     int generated = 0;
-    const std::filesystem::path roots[] = {
+
+    // 阶段1：扫描原始模型目录（旧路径兼容）
+    const std::filesystem::path modelRoots[] = {
         std::filesystem::path(resRoot) / "bin" / "mesh",
-        std::filesystem::path(resRoot) / "models", // 旧目录兼容
+        std::filesystem::path(resRoot) / "models",
     };
-    for (const auto& root : roots) {
+    for (const auto& root : modelRoots) {
         if (!std::filesystem::is_directory(root, ec)) continue;
         for (const auto& entry : std::filesystem::recursive_directory_iterator(root, ec)) {
             if (!entry.is_regular_file(ec)) continue;
@@ -525,6 +671,24 @@ int ThumbnailRenderer::generateAll(const std::string& resRoot)
             if (std::filesystem::exists(pngPath)) continue;
 
             if (renderAndSave(entry.path().string(), pngPath))
+                ++generated;
+        }
+    }
+
+    // 阶段2：扫描 res/content/ 下的 .ast 文件，通过 .ast 中的 model 路径生成缩略图
+    const std::filesystem::path contentRoot = std::filesystem::path(resRoot) / "content";
+    if (std::filesystem::is_directory(contentRoot, ec)) {
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(contentRoot, ec)) {
+            if (!entry.is_regular_file(ec) || entry.path().extension() != ".ast") continue;
+
+            const std::string stem = entry.path().stem().string();
+            const std::string pngPath = (thumbDir / (stem + ".png")).string();
+            if (std::filesystem::exists(pngPath) && std::filesystem::file_size(pngPath, ec) > 100) continue;
+
+            const std::string relAst = std::filesystem::relative(entry.path(), std::filesystem::path(resRoot), ec).generic_string();
+            if (ec) continue;
+
+            if (renderForAst(relAst))
                 ++generated;
         }
     }

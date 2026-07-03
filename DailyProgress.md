@@ -1,5 +1,13 @@
 ## 2026-07-03
 
+- [ ] Diagnosed and documented 3 ThumbnailRenderer rendering bugs (material not showing on screen, wrong camera angle, skinned model full grey)
+- [ ] Fixed ThumbnailRenderer to load per-subMesh materials from .ast files before rendering
+- [ ] Fixed ThumbnailRenderer camera to use isometric (1,1,1) angle (user reports still wrong direction)
+- [ ] Added debug logging to confirm material loading works correctly (glTF: 10 unique materials loaded, OBJ/FBX: no .ast paths fallback to default)
+- [ ] Added FramebufferManager dependency to ThumbnailRenderer to support material loading
+- [ ] Updated TDD.md §15 known-limitations table with detailed description of the 3 thumbnail bugs
+- [ ] Cleaned up debug logging after diagnosis session
+
 - [ ] Planned the remaining 7-day development roadmap for Phase C (Sequencer) and Phase D (Asset System), plus two new feature additions: Content Browser offscreen thumbnail fix and Sequencer Camera with PiP view
 - [ ] Updated TDD.md: added §4.12.5 Sequencer system spec (C1-C6), §4.12.6 AnimationAssetRegistry spec, updated directory structure (animators/, sequences/, icons/), updated init order with thumbnail generation and asset scanning, extended §15 known-limitations table with new planned items
 - [ ] Updated todolist.md with 7-day plan: Day 1 (C1+C5+thumbnail fix), Day 2 (C2+C4), Day 3 (C3+Camera PiP), Day 4 (C6 panel top), Day 5 (C6 panel bottom+D1), Day 6 (D2/D3+Camera model), Day 7 (integration test+build)

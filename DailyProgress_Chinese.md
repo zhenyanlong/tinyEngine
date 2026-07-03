@@ -1,5 +1,13 @@
 ## 2026-07-03
 
+- [ ] 诊断并记录了 ThumbnailRenderer 的三个渲染 bug（材质未显示、相机角度错误、蒙皮模型全灰）
+- [ ] 修复 ThumbnailRenderer 在渲染前从 .ast 文件加载逐 subMesh 材质
+- [ ] 修复 ThumbnailRenderer 相机改为等距 (1,1,1) 角度（用户反馈方向仍不正确）
+- [ ] 添加调试日志确认材质加载正确（glTF：10 个不同材质加载成功，OBJ/FBX：无 .ast 路径回退到默认材质）
+- [ ] 为 ThumbnailRenderer 添加 FramebufferManager 依赖以支持材质加载
+- [ ] 更新 TDD.md §15 已知限制表，详细描述了三个缩略图 bug
+- [ ] 诊断完成后清理调试日志
+
 - [ ] 制定了剩余 7 天开发路线图：Phase C（Sequencer）+ Phase D（资产系统），以及两个新功能：Content Browser 离屏缩略图修复和 Sequencer 摄像机 + PiP 小窗
 - [ ] 更新 TDD.md：新增 §4.12.5 Sequencer 系统规范（C1-C6）、§4.12.6 AnimationAssetRegistry 规范、更新目录结构（animators/、sequences/、icons/）、更新初始化顺序（缩略图生成和资产扫描）、扩展 §15 已知限制表
 - [ ] 更新 todolist.md 7 天计划：第1天（C1+C5+缩略图修复）、第2天（C2+C4）、第3天（C3+摄像机PiP）、第4天（C6面板上半）、第5天（C6面板下半+D1）、第6天（D2/D3+摄像机模型）、第7天（集成测试+构建）

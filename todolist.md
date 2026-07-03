@@ -35,14 +35,17 @@
 - [ ] TODO-018 【Sequencer】实现 C1：SequenceTrack / SequenceClip 数据结构
   - 上下文：Phase C1 基础。新建 `src/Animation/Sequence.hpp`，定义 SequenceClipBase、TrackType、AnimTrackClip、CameraPathClip、TransformTweenClip、EventClip、SequenceTrack、Sequence 等结构体
   - 日期：2026-07-03
+  - **未完成**：实际工作为 ThumbnailRenderer bug 修复
 
 - [ ] TODO-019 【Sequencer】实现 C5 序列化：SequenceAssetLoader
   - 上下文：Phase C5 的序列化部分。新建 `src/Animation/SequenceAssetLoader.hpp/.cpp`，实现 Sequence 的 `saveSequence/loadSequence`（.seq.json）和 CameraPath 的 `saveCameraPath/loadCameraPath`（.campath.json）
   - 日期：2026-07-03
+  - **未完成**：实际工作为 ThumbnailRenderer bug 修复
 
 - [ ] TODO-020 【Content Browser】修复离屏渲染缩略图 icon
   - 上下文：当前 Content Browser 中资产使用共享的 `res/icons/model.png` 占位符，而非实际模型的离屏渲染缩略图。`ThumbnailRenderer` 已能生成 `.png` 到 `res/thumbnails/`，但 Content Browser 的 `drawContentBrowser` 在缩略图不存在时回退到占位图标，且 `ThumbnailRenderer::generateAll` 只在 `res/bin/mesh/` 和 `res/models/` 下扫描，未覆盖新 `res/content/` 下的模型。修复：(1) 在 `Application::initVulkan` 末尾或模型导入后自动调用 `ThumbnailRenderer::generateAll`；(2) `generateAll` 扫描路径扩展至 `res/content/**/*.mesh.ast` 中引用的模型；(3) Content Browser 中缺失缩略图时显示"生成中"状态而非空白方块
   - 日期：2026-07-03
+  - **部分完成**：ThumbnailRenderer pipeline 已修复（使用专用 thumbnail render pass，支持 per-subMesh 材质加载），但仍有三个渲染 bug 未解决（材质未显示、相机角度错误、skinned 模型全灰），Content Browser 显示逻辑尚未接入
 
 ### 第 2 天（2026-07-04）— Sequencer 播放控制器 + 基础轨道
 

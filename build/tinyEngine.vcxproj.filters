@@ -13,6 +13,12 @@
     <ClCompile Include="E:\Projects\tinyEngine\src\Animation\AnimatorController.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="E:\Projects\tinyEngine\src\Animation\Sequence.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Projects\tinyEngine\src\Animation\SequenceAssetLoader.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="E:\Projects\tinyEngine\src\Animation\Skeleton.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

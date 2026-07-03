@@ -805,7 +805,11 @@ void UIManager::drawContentBrowser()
     ImGui::InputTextWithHint("##cbSearch", "Search...", contentBrowserSearch_, sizeof(contentBrowserSearch_));
     ImGui::SameLine();
     if (ImGui::Button("Refresh")) {
+        // 清除缩略图缓存，让下次显示重新从磁盘加载新生成的 PNG
+        thumbCache_.clear();
+        thumbSamplers_.clear();
         if (reg) reg->refresh();
+        if (vulkanRender) vulkanRender->refreshAllThumbnails();
     }
     ImGui::SameLine();
     if (ImGui::Button("Import...")) {
@@ -816,6 +820,7 @@ void UIManager::drawContentBrowser()
                 std::string animFbxPath;
                 if (vulkanRender->importModel(selected, currentFolder_, &animFbxPath)) {
                     if (reg) reg->refresh();
+                    vulkanRender->refreshAllThumbnails();
                 } else if (!animFbxPath.empty()) {
                     // Without-skin 动画 FBX → 弹出 mesh 选择
                     importAnimFbxPath_ = animFbxPath;

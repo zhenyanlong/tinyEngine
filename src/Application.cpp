@@ -276,8 +276,9 @@ void Application::initVulkan()
 
     // 缩略图渲染器初始化 + 首次生成缺失缩略图
     {
-        thumbnailRenderer_.create(ctx_, cmdMgr_, pipeMgr_, matMgr_,
-                                  sceneMgr_, bufMgr_, resRoot);
+        thumbnailRenderer_.create(ctx_, cmdMgr_, pipeMgr_, fbMgr_, matMgr_,
+                                      sceneMgr_, bufMgr_, resRoot,
+                                      ui_->vertexShaderPath, ui_->fragShaderPath);
         // 生成所有缺失的缩略图（首次启动时，之后跳过已有）
         thumbnailRenderer_.generateAll(resRoot);
         // 刷新模型注册表使新缩略图生效
