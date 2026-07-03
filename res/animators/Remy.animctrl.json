@@ -1,0 +1,14 @@
+{
+  "defaultState": "mixamo.com",
+  "params": null,
+  "states": [
+    {
+      "clipName": "mixamo.com",
+      "loop": true,
+      "name": "mixamo.com",
+      "speed": 1.0
+    }
+  ],
+  "transitions": null,
+  "version": 1
+}

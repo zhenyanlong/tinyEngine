@@ -1,0 +1,18 @@
+{
+  "animations": [
+    "content/Remy/Remy.anim.ast",
+    "content/Remy/Remy.mesh_Body Block.anim.ast",
+    "content/Remy/Remy.mesh_Body Block_alt.anim.ast"
+  ],
+  "materials": [
+    "content/Remy/Shoesmat.material.ast",
+    "content/Remy/Topmat.material.ast",
+    "content/Remy/Bottommat.material.ast",
+    "content/Remy/Hairmat.material.ast",
+    "content/Remy/Bodymat.material.ast",
+    "content/Remy/Eyelashmat.material.ast"
+  ],
+  "model": "bin/mesh/Remy.fbx",
+  "name": "Remy",
+  "type": "Mesh"
+}

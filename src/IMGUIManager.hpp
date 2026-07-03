@@ -214,7 +214,12 @@ private:
 	float                    placementDistance_ = 5.0f;
 	std::string              currentFolder_;             ///< 当前浏览的子文件夹（空 = 根目录）
 	char                     newFolderName_[128]{};       ///< 新文件夹名输入缓冲
-	int                      typeFilterIdx_ = 0;          ///< 类型筛选: 0=All, 1=Mesh, 2=Box, 3=Material
+	int                      typeFilterIdx_ = 0;          ///< 类型筛选: 0=All, 1=Mesh, 2=Box, 3=Material, 4=Anim
+
+	// ── Import Animation state ───────────────────────────────────────────
+	std::string              importAnimFbxPath_;           ///< 用户通过文件对话框选择的 FBX 路径
+	bool                     showMeshPicker_ = false;      ///< 选择目标 mesh 的弹窗可见
+	int                      meshPickerSelected_ = 0;      ///< mesh 列表当前选中的索引
 
 	/** @brief 绘制 Content Browser 面板 */
 	void drawContentBrowser();

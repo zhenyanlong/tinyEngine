@@ -813,8 +813,14 @@ void UIManager::drawContentBrowser()
         if (vulkanRender) {
             const std::string selected = openFileDialog(vulkanRender->getMainWindow());
             if (!selected.empty()) {
-                if (vulkanRender->importModel(selected, currentFolder_)) {
+                std::string animFbxPath;
+                if (vulkanRender->importModel(selected, currentFolder_, &animFbxPath)) {
                     if (reg) reg->refresh();
+                } else if (!animFbxPath.empty()) {
+                    // Without-skin 动画 FBX → 弹出 mesh 选择
+                    importAnimFbxPath_ = animFbxPath;
+                    meshPickerSelected_ = 0;
+                    showMeshPicker_ = true;
                 }
             }
         }
@@ -942,6 +948,59 @@ void UIManager::drawContentBrowser()
 
     ImGui::EndChild();
     ImGui::End();
+
+    // ── Import Anim: 目标 mesh 选择弹窗 ──────────────────────────────────
+    if (showMeshPicker_ && reg && !importAnimFbxPath_.empty()) {
+        ImGui::OpenPopup("Select Target Mesh");
+        ImGui::SetNextWindowSize(ImVec2(420, 360), ImGuiCond_Appearing);
+        if (ImGui::BeginPopupModal("Select Target Mesh", &showMeshPicker_,
+                                   ImGuiWindowFlags_None)) {
+            ImGui::Text("Animation FBX: %s", importAnimFbxPath_.c_str());
+            ImGui::Separator();
+            ImGui::Text("Select the mesh asset to bind this animation to:");
+            ImGui::Separator();
+
+            // Collect Mesh-type assets
+            const auto& all = reg->getAll();
+            std::vector<const ModelAsset*> meshes;
+            for (const auto& a : all) {
+                if (a.astType == "Mesh")
+                    meshes.push_back(&a);
+            }
+
+            if (meshes.empty()) {
+                ImGui::TextDisabled("No mesh assets found. Import a mesh first.");
+            } else {
+                ImGui::BeginChild("##meshPickerList", ImVec2(0, -50), true);
+                for (int i = 0; i < static_cast<int>(meshes.size()); ++i) {
+                    if (ImGui::Selectable(meshes[i]->name.c_str(), i == meshPickerSelected_))
+                        meshPickerSelected_ = i;
+                }
+                ImGui::EndChild();
+
+                if (ImGui::Button("Import", ImVec2(120, 0))) {
+                    const std::string& targetAst = meshes[meshPickerSelected_]->astRelPath;
+                    if (vulkanRender) {
+                        const bool ok = vulkanRender->importAnimationFbx(
+                            importAnimFbxPath_, targetAst);
+                        if (ok) {
+                            if (reg) reg->refresh();
+                        }
+                    }
+                    showMeshPicker_ = false;
+                    importAnimFbxPath_.clear();
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+                    showMeshPicker_ = false;
+                    importAnimFbxPath_.clear();
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+            ImGui::EndPopup();
+        }
+    }
 }
 
 // ─── Scene Outliner & Properties ────────────────────────────────────────────
@@ -1094,16 +1153,23 @@ void UIManager::drawAnimatorPanel()
                      "Rename failed: clip '%s' already exists", newName.c_str());
             return;
         }
-        if (ent->animationAssetPath.empty()) {
+        if (ent->animationAssetPaths.empty()) {
             snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
                      "Rename failed: model has no persisted .anim.ast asset");
             return;
         }
 
+        // 遍历所有 .anim.ast 文件，找到包含该 clip 的文件
         AnimationAssetLoader::setResRoot(vulkanRender->getResRoot());
         std::string renameError;
-        if (!AnimationAssetLoader::renameClip(ent->animationAssetPath,
-                                              oldName, newName, &renameError)) {
+        bool renameDone = false;
+        for (const std::string& astPath : ent->animationAssetPaths) {
+            if (AnimationAssetLoader::renameClip(astPath, oldName, newName, &renameError)) {
+                renameDone = true;
+                break;
+            }
+        }
+        if (!renameDone) {
             snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
                      "Rename failed: %s", renameError.c_str());
             return;
@@ -1245,7 +1311,9 @@ void UIManager::drawAnimatorPanel()
     }
 
     ImGui::Spacing();
-    if (ImGui::CollapsingHeader("Animation Clips", ImGuiTreeNodeFlags_DefaultOpen)) {
+    char clipsHeader[64];
+    snprintf(clipsHeader, sizeof(clipsHeader), "Animation Clips (%zu)", clips.size());
+    if (ImGui::CollapsingHeader(clipsHeader, ImGuiTreeNodeFlags_DefaultOpen)) {
         if (clips.empty()) {
             ImGui::TextDisabled("(no clips)");
         } else {
@@ -1313,7 +1381,7 @@ void UIManager::drawAnimatorPanel()
                         snprintf(animatorClipRenameBuffer_, sizeof(animatorClipRenameBuffer_),
                                  "%s", clips[i].name.c_str());
                     }
-                    if (ImGui::IsItemHovered() && ent->animationAssetPath.empty()) {
+                    if (ImGui::IsItemHovered() && ent->animationAssetPaths.empty()) {
                         ImGui::SetTooltip("This model has no persisted .anim.ast asset");
                     }
                 }

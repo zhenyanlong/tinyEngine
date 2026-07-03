@@ -23,9 +23,104 @@
 > 在这里随手写不规范需求。之后调用 `$todo-normalize-inbox`，将本区内容整理为正式待办项。
 
 （当前为空）
+
 ---
 
-## 待办
+## 7 天开发计划（2026-07-03 ~ 2026-07-09）
+
+> 基于当前进度：Phase A/B 全部完成，Phase C（Sequencer）和 Phase D（资产系统）待实现。加入两个新功能规划。
+
+### 第 1 天（2026-07-03）— Sequencer 数据结构 + Content Browser 缩略图修复
+
+- [ ] TODO-018 【Sequencer】实现 C1：SequenceTrack / SequenceClip 数据结构
+  - 上下文：Phase C1 基础。新建 `src/Animation/Sequence.hpp`，定义 SequenceClipBase、TrackType、AnimTrackClip、CameraPathClip、TransformTweenClip、EventClip、SequenceTrack、Sequence 等结构体
+  - 日期：2026-07-03
+
+- [ ] TODO-019 【Sequencer】实现 C5 序列化：SequenceAssetLoader
+  - 上下文：Phase C5 的序列化部分。新建 `src/Animation/SequenceAssetLoader.hpp/.cpp`，实现 Sequence 的 `saveSequence/loadSequence`（.seq.json）和 CameraPath 的 `saveCameraPath/loadCameraPath`（.campath.json）
+  - 日期：2026-07-03
+
+- [ ] TODO-020 【Content Browser】修复离屏渲染缩略图 icon
+  - 上下文：当前 Content Browser 中资产使用共享的 `res/icons/model.png` 占位符，而非实际模型的离屏渲染缩略图。`ThumbnailRenderer` 已能生成 `.png` 到 `res/thumbnails/`，但 Content Browser 的 `drawContentBrowser` 在缩略图不存在时回退到占位图标，且 `ThumbnailRenderer::generateAll` 只在 `res/bin/mesh/` 和 `res/models/` 下扫描，未覆盖新 `res/content/` 下的模型。修复：(1) 在 `Application::initVulkan` 末尾或模型导入后自动调用 `ThumbnailRenderer::generateAll`；(2) `generateAll` 扫描路径扩展至 `res/content/**/*.mesh.ast` 中引用的模型；(3) Content Browser 中缺失缩略图时显示"生成中"状态而非空白方块
+  - 日期：2026-07-03
+
+### 第 2 天（2026-07-04）— Sequencer 播放控制器 + 基础轨道
+
+- [ ] TODO-021 【Sequencer】实现 C2：SequencePlayer 播放控制器
+  - 上下文：Phase C2。新建 `src/Animation/SequencePlayer.hpp/.cpp`，实现 play/pause/stop/seek 和 `update(dt, FrameCallbacks)`，按时间轴驱动各轨道片段，支持 loop、event clip 防重复触发
+  - 依赖：TODO-018（C1 数据结构）
+  - 日期：2026-07-04
+
+- [ ] TODO-022 【Sequencer】实现 C4：TransformTween 轨道
+  - 上下文：Phase C4。实现 TransformTweenClip 的 evaluate 和 ease 函数（Linear/SmoothStep/EaseIn/EaseOut），在 `SequencePlayer::update` 的 `onTransformEval` callback 中更新场景对象的 position/rotation/scale
+  - 依赖：TODO-021
+  - 日期：2026-07-04
+
+- [ ] TODO-023 【Sequencer】将 SequencePlayer 接入 Application 主循环
+  - 上下文：Phase C2-3/4。在 Application 中增加 `seqPlayer_` 和 `currentSequence_`，在 `drawFrame` 中调用 `seqPlayer_->update(dt, callbacks)`，Sequencer 播放期间屏蔽右键拖拽相机
+  - 依赖：TODO-021
+  - 日期：2026-07-04
+
+### 第 3 天（2026-07-05）— Sequencer 相机路径 + 摄像机类
+
+- [ ] TODO-024 【Sequencer】实现 C3：CameraPath 轨道
+  - 上下文：Phase C3。新建 `src/Animation/CameraPath.hpp/.cpp`，实现 CameraKeyframe、CameraPath 结构和 CatmullRom/Linear 插值 evaluate(t)，接入 Application 的录制功能（recordingCameraPath_ / recordingPath_）
+  - 依赖：TODO-021
+  - 日期：2026-07-05
+
+- [ ] TODO-025 【Sequencer】实现 Sequencer 摄像机类与 PiP 小窗
+  - 上下文：新增一个 SequencerCamera 类，封装独立的相机状态（Position、orientation、Fov）。在场景中添加一个可视化的摄像机模型（如三角锥 + 镜头框），选中后可在右下角打开一个小窗口（Picture-in-Picture），显示该摄像机视角的渲染画面。类似 UE 的"在视口中查看所选摄像机"功能。需要：(1) 新建 `SequencerCamera` 数据结构（独立的 Position/orientation/Fov/AspectRatio）; (2) 创建摄像机模型的 .mesh.ast 资产（可用简单的三角锥网格）; (3) 在 Content Browser 中可拖入场景; (4) 选中摄像机实体后，右下角出现 PiP 子窗口，通过第二个 Camera/Viewport 渲染场景（离屏 framebuffer → ImGui Image）
+  - 日期：2026-07-05
+
+### 第 4 天（2026-07-06）— Sequencer ImGui 编辑器面板（上）
+
+- [ ] TODO-026 【Sequencer】实现 C6 ImGui 面板：时间线 + 轨道列表
+  - 上下文：Phase C6-1/2。在 `IMGUIManager` 中增加 `showSequencerPanel_` 开关，实现 `drawSequencerPanel()` 的顶部工具栏（Play/Pause/Stop、时间显示、Loop 勾选）、时间线刻度尺（手绘刻度 + 数字标签）、当前时间指示线（可拖动红色竖线触发 seek）、轨道列表（左列：名称 + Mute/Solo 图标）、片段区域（右列：各 track 的 clip 彩色矩形）
+  - 依赖：TODO-018（C1 数据结构）
+  - 日期：2026-07-06
+
+- [ ] TODO-027 【Sequencer】实现 C6 ImGui 面板：片段属性编辑器 + 录制控制
+  - 上下文：Phase C6-3/4。选中 clip 后底部显示属性编辑（AnimTrackClip：clipName 下拉、offset、speed；CameraPathClip：path 路径；TransformTweenClip：start/end TRS InputFloat3 + ease 下拉）。录制控制区域（Record Camera Path 开始/结束按钮、录制中红点指示、结束后自动保存 .campath.json）
+  - 依赖：TODO-026
+  - 日期：2026-07-06
+
+### 第 5 天（2026-07-07）— Sequencer ImGui 面板（下）+ 资产系统 D1
+
+- [ ] TODO-028 【Sequencer】实现 C6 ImGui 面板：轨道管理 + 加载/保存
+  - 上下文：Phase C6-5/6。"Add Track"按钮 → Combo 选轨道类型 → 插入新 track；右键 track → 上下文菜单"Delete Track"。面板顶部右侧 InputText + Load/Save 按钮，实现 .seq.json 的加载与保存
+  - 依赖：TODO-027
+  - 日期：2026-07-07
+
+- [ ] TODO-029 【资产系统】实现 D1：AnimationAssetRegistry
+  - 上下文：Phase D1。新建 `src/Animation/AnimationAssetRegistry.hpp/.cpp`，实现 `scan(resRoot)` 扫描 res/ 下所有 .anim.ast / .animctrl.json / .seq.json / .campath.json 并分类注册。在 `Application::initVulkan` 末尾调用 `assetRegistry_.scan()`
+  - 日期：2026-07-07
+
+### 第 6 天（2026-07-08）— 资产系统 D2/D3 + 摄像机模型完善
+
+- [ ] TODO-030 【资产系统】实现 D2：.ast 文件扩展 + D3：资产浏览器面板
+  - 上下文：Phase D2/D3。D2：`MaterialAssetLoader` 解析 `animationAssetPath` / `animControllerPath`，`.ast` 自动填入动画引用；D3：在 `UIManager` 主面板新增 `TabBar`，将现有控件整理为 Scene/Assets/Animator/Sequencer 标签，Assets 标签展示动画资产列表（.anim.ast / .animctrl.json / .seq.json / .campath.json）+ 双击加载 + 拖拽到轨道
+  - 依赖：TODO-029
+  - 日期：2026-07-08
+
+- [ ] TODO-031 【摄像机】完善摄像机模型与 PiP 渲染管线
+  - 上下文：在 TODO-025 的基础上完善：(1) 摄像机模型在场景中显示为三角锥 + 视锥线框（用简单的顶点/索引数据或 box 组合）；(2) PiP 小窗口的离屏渲染使用独立的 RenderPass + Framebuffer，分辨率可调（默认 320x240），每帧渲染后通过 ImGui Image 显示；(3) PiP 窗口支持拖拽调整大小、右键关闭；(4) 选中摄像机实体时，主视口可切换为该摄像机视角（按 G 键切换）
+  - 依赖：TODO-025
+  - 日期：2026-07-08
+
+### 第 7 天（2026-07-09）— 整合、调试、构建验证
+
+- [ ] TODO-032 【整合】端到端集成测试：完整的 Sequencer 工作流
+  - 上下文：验证以下完整流程：(1) 导入带骨骼动画的模型 → (2) 在 Animator 面板创建状态机（Idle/Walk 切换）→ (3) 在 Sequencer 面板创建 Sequence，添加 AnimationClip 轨道和 CameraPath 轨道 → (4) 播放 Sequence，验证动画 + 相机路径同时驱动 → (5) 保存 .seq.json 重启后恢复一致。修复集成过程中发现的 bug
+  - 依赖：TODO-018 ~ TODO-031
+  - 日期：2026-07-09
+
+- [ ] TODO-033 【构建】x64-debug 构建通过 + smoke test
+  - 上下文：完成所有 Phase C/D 代码后的最终构建验证。使用 VS 2022 CMake 执行 `cmake --build --preset x64-debug`，修复所有编译/链接错误。运行 smoke test：加载模型、播放动画、Sequencer 时间轴驱动、PiP 窗口渲染均无崩溃
+  - 日期：2026-07-09
+
+---
+
+## 待办（长期 / 低优先级）
 
 - [ ] TODO-006 【引擎/调试】支持 Agent 截图场景来调试和验证功能点
   - 上下文：从手动收集区整理；调试时需手动截图上传到外部 LLM 分析，流程繁琐。在 tinyEngine 中内置截图/帧捕获功能（如 RenderDoc 触发、离屏渲染到文件、或 Vulkan 帧缓冲导出），使 agent 可直接获取渲染画面进行分析和验证
@@ -48,6 +143,12 @@
 ---
 
 ## 已完成
+
+- [x] TODO-017 【动画/加载】修复多个 .anim.ast 文件中的 clips 无法正确合并加载的问题
+  - 上下文：Remy 模型有 3 个 .anim.ast 文件（通过 mesh.ast 的 animations 数组引用），每个包含 1 个 clip。当前加载后只显示 1 个 clip。
+  - 日期：2026-07-02
+  - 完成日期：2026-07-02
+  - 完成依据：根因是 `loadAndApplyMaterialAsset` 调用 `ensureAnimationAssetForMeshAst` 时传入的 `astRelPath` 可能是 `.material.ast` 路径（不含 `animations` 数组），导致函数无法从该文件中读取动画引用。修复方案：(1) 在 `ensureAnimationAssetForMeshAst` 中增加回退逻辑：如果打开的 `.ast` 文件没有 `animations` 数组，则检查目标实体已有的 `astRelPath`（即 `.mesh.ast` 路径），若存在则以该路径重新读取；(2) 在 `loadAndApplyMaterialAsset` 中，当通过 `.mesh.ast` 交换模型时，将 `astRelPath` 记录到实体上，供回退逻辑使用。
 
 - [x] TODO-016 【动画状态机】Phase B3-B5 完整实现
   - 上下文：B1-B2 运行时核心已就绪，需完成 B3 混合品质保障、B4 序列化、B5 ImGui 编辑器面板
@@ -129,5 +230,4 @@
   - 上下文：手动收集区整理；当前 Create 按钮固定在 content/ 根下创建目录，未拼接 currentFolder_。用户在子文件夹浏览时点 Create，新文件夹应创建在当前子文件夹内而非 content 根
   - 日期：2026-06-26
   - 来源：手动收集
-  - 完成日期：2026-06-26
   - 完成依据：IMGUIManager Create 按钮逻辑改为拼接 currentFolder_ + name 作为完整相对路径，create_directories 在 content/<currentFolder_>/<name> 下创建；currentFolder_ 为空时回退到 content/ 根；x64-debug 构建通过

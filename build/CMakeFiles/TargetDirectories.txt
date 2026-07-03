@@ -1,0 +1,15 @@
+E:/Projects/tinyEngine/build/CMakeFiles/tinyEngine.dir
+E:/Projects/tinyEngine/build/CMakeFiles/INSTALL.dir
+E:/Projects/tinyEngine/build/CMakeFiles/ALL_BUILD.dir
+E:/Projects/tinyEngine/build/CMakeFiles/ZERO_CHECK.dir
+E:/Projects/tinyEngine/build/thirdParty/glfw/CMakeFiles/uninstall.dir
+E:/Projects/tinyEngine/build/thirdParty/glfw/CMakeFiles/INSTALL.dir
+E:/Projects/tinyEngine/build/thirdParty/glfw/CMakeFiles/ALL_BUILD.dir
+E:/Projects/tinyEngine/build/thirdParty/glfw/src/CMakeFiles/glfw.dir
+E:/Projects/tinyEngine/build/thirdParty/glfw/src/CMakeFiles/update_mappings.dir
+E:/Projects/tinyEngine/build/thirdParty/glfw/src/CMakeFiles/INSTALL.dir
+E:/Projects/tinyEngine/build/thirdParty/glfw/docs/CMakeFiles/INSTALL.dir
+E:/Projects/tinyEngine/build/thirdParty/glm/CMakeFiles/INSTALL.dir
+E:/Projects/tinyEngine/build/thirdParty/glm/CMakeFiles/ALL_BUILD.dir
+E:/Projects/tinyEngine/build/thirdParty/glm/glm/CMakeFiles/glm.dir
+E:/Projects/tinyEngine/build/thirdParty/glm/glm/CMakeFiles/INSTALL.dir

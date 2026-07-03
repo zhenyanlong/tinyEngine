@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <iostream>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -110,6 +111,120 @@ void appendQuatChannel(AnimationClip& clip,
 
 } // namespace
 
+namespace {
+
+struct SkeletonParseResult {
+    std::shared_ptr<Skeleton> skeleton;
+    std::vector<const ufbx_node*> orderedBoneNodes;
+    std::unordered_map<const ufbx_node*, int> nodeToBone;
+    std::vector<const ufbx_skin_deformer*> skins;
+    std::unordered_map<const ufbx_skin_deformer*, int> skinToIndex;
+};
+
+bool parseSkeletonAndAnimation(ufbx_scene* scene,
+                               SkeletonParseResult& parseOut,
+                               std::vector<AnimationClip>& clipsOut)
+{
+    std::unordered_set<const ufbx_node*> boneNodes;
+    for (const ufbx_mesh* mesh : scene->meshes) {
+        for (const ufbx_skin_deformer* skin : mesh->skin_deformers) {
+            if (parseOut.skinToIndex.emplace(skin, static_cast<int>(parseOut.skins.size())).second)
+                parseOut.skins.push_back(skin);
+            for (const ufbx_skin_cluster* cluster : skin->clusters) {
+                for (const ufbx_node* node = cluster->bone_node; node; node = node->parent)
+                    boneNodes.insert(node);
+            }
+        }
+    }
+
+    if (boneNodes.empty())
+        return false;
+
+    parseOut.skeleton = std::make_shared<Skeleton>();
+    for (const ufbx_node* node : scene->nodes) {
+        if (!boneNodes.count(node)) continue;
+        const int boneIndex = static_cast<int>(parseOut.skeleton->bones.size());
+        parseOut.nodeToBone[node] = boneIndex;
+        parseOut.orderedBoneNodes.push_back(node);
+
+        Bone bone;
+        bone.name = toString(node->name);
+        if (bone.name.empty()) bone.name = "bone_" + std::to_string(boneIndex);
+        if (parseOut.skeleton->boneNameToIndex.count(bone.name))
+            bone.name += "_" + std::to_string(boneIndex);
+        parseOut.skeleton->boneNameToIndex[bone.name] = boneIndex;
+        bone.localBindTransform = toMat4(node->local_transform);
+        bone.globalBindTransform = toMat4(node->node_to_world);
+        parseOut.skeleton->bones.push_back(std::move(bone));
+    }
+
+    for (size_t i = 0; i < parseOut.orderedBoneNodes.size(); ++i) {
+        const ufbx_node* parent = parseOut.orderedBoneNodes[i]->parent;
+        while (parent) {
+            const auto it = parseOut.nodeToBone.find(parent);
+            if (it != parseOut.nodeToBone.end()) {
+                parseOut.skeleton->bones[i].parentIndex = it->second;
+                break;
+            }
+            parent = parent->parent;
+        }
+    }
+
+    std::vector<bool> hasInverseBind(parseOut.skeleton->bones.size(), false);
+    parseOut.skeleton->skinBoneIndices.resize(parseOut.skins.size());
+    for (size_t skinIndex = 0; skinIndex < parseOut.skins.size(); ++skinIndex) {
+        const ufbx_skin_deformer* skin = parseOut.skins[skinIndex];
+        auto& remap = parseOut.skeleton->skinBoneIndices[skinIndex];
+        const size_t clusterCount = std::min(skin->clusters.count,
+                                             static_cast<size_t>(kMaxBones));
+        remap.reserve(clusterCount);
+        for (size_t clusterIndex = 0; clusterIndex < clusterCount; ++clusterIndex) {
+            const ufbx_skin_cluster* cluster = skin->clusters.data[clusterIndex];
+            const auto it = parseOut.nodeToBone.find(cluster->bone_node);
+            const int boneIndex = it != parseOut.nodeToBone.end() ? it->second : 0;
+            remap.push_back(boneIndex);
+            if (boneIndex >= 0 && static_cast<size_t>(boneIndex) < hasInverseBind.size()
+                && !hasInverseBind[boneIndex]) {
+                parseOut.skeleton->bones[boneIndex].inverseBindMatrix = toMat4(cluster->geometry_to_bone);
+                hasInverseBind[boneIndex] = true;
+            }
+        }
+    }
+
+    for (const ufbx_anim_stack* stack : scene->anim_stacks) {
+        ufbx_bake_opts bakeOpts{};
+        bakeOpts.trim_start_time = true;
+        bakeOpts.resample_rate = 30.0;
+        bakeOpts.key_reduction_enabled = true;
+        bakeOpts.key_reduction_rotation = true;
+
+        ufbx_error bakeError{};
+        ufbx_baked_anim* baked = ufbx_bake_anim(scene, stack->anim, &bakeOpts, &bakeError);
+        if (!baked) continue;
+
+        AnimationClip clip;
+        clip.name = toString(stack->name);
+        if (clip.name.empty()) clip.name = "anim_" + std::to_string(clipsOut.size());
+        clip.duration = static_cast<float>(baked->playback_duration);
+        for (size_t boneIndex = 0; boneIndex < parseOut.orderedBoneNodes.size(); ++boneIndex) {
+            ufbx_baked_node* bakedNode = ufbx_find_baked_node(
+                baked, const_cast<ufbx_node*>(parseOut.orderedBoneNodes[boneIndex]));
+            if (!bakedNode) continue;
+            appendVec3Channel(clip, static_cast<int>(boneIndex),
+                              AnimChannel::Target::Translation, bakedNode->translation_keys);
+            appendQuatChannel(clip, static_cast<int>(boneIndex), bakedNode->rotation_keys);
+            appendVec3Channel(clip, static_cast<int>(boneIndex),
+                              AnimChannel::Target::Scale, bakedNode->scale_keys);
+        }
+        ufbx_free_baked_anim(baked);
+        if (!clip.channels.empty()) clipsOut.push_back(std::move(clip));
+    }
+
+    return true;
+}
+
+} // namespace
+
 bool FbxImporter::load(const std::string& path, FbxImportResult& out, std::string* error)
 {
     ufbx_load_opts opts{};
@@ -160,74 +275,12 @@ bool FbxImporter::load(const std::string& path, FbxImportResult& out, std::strin
         result.materials.push_back(std::move(dst));
     }
 
-    // 收集所有 skin 及其骨骼节点，同时包含未直接加权但维持层级所需的祖先节点。
-    std::vector<const ufbx_skin_deformer*> skins;
-    std::unordered_map<const ufbx_skin_deformer*, int> skinToIndex;
-    std::unordered_set<const ufbx_node*> boneNodes;
-    for (const ufbx_mesh* mesh : scene->meshes) {
-        for (const ufbx_skin_deformer* skin : mesh->skin_deformers) {
-            if (skinToIndex.emplace(skin, static_cast<int>(skins.size())).second)
-                skins.push_back(skin);
-            for (const ufbx_skin_cluster* cluster : skin->clusters) {
-                for (const ufbx_node* node = cluster->bone_node; node; node = node->parent)
-                    boneNodes.insert(node);
-            }
-        }
-    }
-
-    std::unordered_map<const ufbx_node*, int> nodeToBone;
-    std::vector<const ufbx_node*> orderedBoneNodes;
-    if (!boneNodes.empty()) {
-        result.skeleton = std::make_shared<Skeleton>();
-        for (const ufbx_node* node : scene->nodes) {
-            if (!boneNodes.count(node)) continue;
-            const int boneIndex = static_cast<int>(result.skeleton->bones.size());
-            nodeToBone[node] = boneIndex;
-            orderedBoneNodes.push_back(node);
-
-            Bone bone;
-            bone.name = toString(node->name);
-            if (bone.name.empty()) bone.name = "bone_" + std::to_string(boneIndex);
-            if (result.skeleton->boneNameToIndex.count(bone.name))
-                bone.name += "_" + std::to_string(boneIndex);
-            result.skeleton->boneNameToIndex[bone.name] = boneIndex;
-            bone.localBindTransform = toMat4(node->local_transform);
-            bone.globalBindTransform = toMat4(node->node_to_world);
-            result.skeleton->bones.push_back(std::move(bone));
-        }
-
-        for (size_t i = 0; i < orderedBoneNodes.size(); ++i) {
-            const ufbx_node* parent = orderedBoneNodes[i]->parent;
-            while (parent) {
-                const auto it = nodeToBone.find(parent);
-                if (it != nodeToBone.end()) {
-                    result.skeleton->bones[i].parentIndex = it->second;
-                    break;
-                }
-                parent = parent->parent;
-            }
-        }
-
-        std::vector<bool> hasInverseBind(result.skeleton->bones.size(), false);
-        result.skeleton->skinBoneIndices.resize(skins.size());
-        for (size_t skinIndex = 0; skinIndex < skins.size(); ++skinIndex) {
-            const ufbx_skin_deformer* skin = skins[skinIndex];
-            auto& remap = result.skeleton->skinBoneIndices[skinIndex];
-            const size_t clusterCount = std::min(skin->clusters.count,
-                                                 static_cast<size_t>(kMaxBones));
-            remap.reserve(clusterCount);
-            for (size_t clusterIndex = 0; clusterIndex < clusterCount; ++clusterIndex) {
-                const ufbx_skin_cluster* cluster = skin->clusters.data[clusterIndex];
-                const auto it = nodeToBone.find(cluster->bone_node);
-                const int boneIndex = it != nodeToBone.end() ? it->second : 0;
-                remap.push_back(boneIndex);
-                if (boneIndex >= 0 && static_cast<size_t>(boneIndex) < hasInverseBind.size()
-                    && !hasInverseBind[boneIndex]) {
-                    result.skeleton->bones[boneIndex].inverseBindMatrix = toMat4(cluster->geometry_to_bone);
-                    hasInverseBind[boneIndex] = true;
-                }
-            }
-        }
+    SkeletonParseResult parseOut;
+    std::vector<AnimationClip> parsedClips;
+    if (parseSkeletonAndAnimation(scene, parseOut, parsedClips)) {
+        result.skeleton = std::move(parseOut.skeleton);
+        result.animationClips = std::move(parsedClips);
+        result.hasSkin = !parseOut.skins.empty();
     }
 
     std::unordered_map<Vertex, uint32_t, VertexHash> uniqueVertices;
@@ -237,7 +290,7 @@ bool FbxImporter::load(const std::string& path, FbxImportResult& out, std::strin
 
         const ufbx_skin_deformer* skin = mesh->skin_deformers.count > 0
             ? mesh->skin_deformers.data[0] : nullptr;
-        const int skinIndex = skin ? skinToIndex[skin] : -1;
+        const int skinIndex = skin ? parseOut.skinToIndex[skin] : -1;
         const ufbx_matrix normalMatrix = ufbx_matrix_for_normals(&node->geometry_to_world);
         std::vector<uint32_t> triangleIndices(mesh->max_face_triangles * 3);
 
@@ -307,7 +360,6 @@ bool FbxImporter::load(const std::string& path, FbxImportResult& out, std::strin
                         }
                         if (totalWeight > 1e-6f) vertex.boneWeights /= totalWeight;
                         else vertex.boneWeights = {1.f, 0.f, 0.f, 0.f};
-                        result.hasSkin = true;
                     }
 
                     const ufbx_vec3 boundPosition = ufbx_transform_position(
@@ -333,43 +385,119 @@ bool FbxImporter::load(const std::string& path, FbxImportResult& out, std::strin
         }
     }
 
-    if (result.skeleton) {
-        for (const ufbx_anim_stack* stack : scene->anim_stacks) {
-            ufbx_bake_opts bakeOpts{};
-            bakeOpts.trim_start_time = true;
-            bakeOpts.resample_rate = 30.0;
-            bakeOpts.key_reduction_enabled = true;
-            bakeOpts.key_reduction_rotation = true;
-
-            ufbx_error bakeError{};
-            ufbx_baked_anim* baked = ufbx_bake_anim(scene, stack->anim, &bakeOpts, &bakeError);
-            if (!baked) continue;
-
-            AnimationClip clip;
-            clip.name = toString(stack->name);
-            if (clip.name.empty()) clip.name = "anim_" + std::to_string(result.animationClips.size());
-            clip.duration = static_cast<float>(baked->playback_duration);
-            for (size_t boneIndex = 0; boneIndex < orderedBoneNodes.size(); ++boneIndex) {
-                ufbx_baked_node* bakedNode = ufbx_find_baked_node(baked,
-                                                                  const_cast<ufbx_node*>(orderedBoneNodes[boneIndex]));
-                if (!bakedNode) continue;
-                appendVec3Channel(clip, static_cast<int>(boneIndex),
-                                  AnimChannel::Target::Translation, bakedNode->translation_keys);
-                appendQuatChannel(clip, static_cast<int>(boneIndex), bakedNode->rotation_keys);
-                appendVec3Channel(clip, static_cast<int>(boneIndex),
-                                  AnimChannel::Target::Scale, bakedNode->scale_keys);
-            }
-            ufbx_free_baked_anim(baked);
-            if (!clip.channels.empty()) result.animationClips.push_back(std::move(clip));
-        }
-    }
-
     ufbx_free_scene(scene);
 
     if (result.vertices.empty() || result.indices.empty()) {
         if (error) *error = "FBX contains no usable triangle meshes";
+        // 虽然没有网格，但骨架/动画数据可能已经解析出来了，
+        // 仍然传出给调用方，用于 without-skin 动画 FBX 兜底判断
+        out = std::move(result);
         return false;
     }
+    out = std::move(result);
+    return true;
+}
+
+bool FbxImporter::loadAnimationOnly(const std::string& path,
+                                    FbxAnimationOnlyResult& out,
+                                    std::string* error)
+{
+    ufbx_load_opts opts{};
+    opts.target_axes = ufbx_axes_right_handed_y_up;
+    opts.target_unit_meters = 1.0;
+    opts.generate_missing_normals = true;
+    opts.load_external_files = true;
+
+    ufbx_error loadError{};
+    ufbx_scene* scene = ufbx_load_file(path.c_str(), &opts, &loadError);
+    if (!scene) {
+        if (error) *error = toString(loadError.description);
+        return false;
+    }
+
+    // For without-skin FBX, collect all non-root nodes as bones
+    // (there are no mesh skin deformers to drive the skeleton)
+    std::vector<const ufbx_node*> orderedBoneNodes;
+    std::unordered_map<const ufbx_node*, int> nodeToBone;
+    auto skeleton = std::make_shared<Skeleton>();
+
+    for (const ufbx_node* node : scene->nodes) {
+        if (node->is_root) continue;
+
+        const int boneIndex = static_cast<int>(skeleton->bones.size());
+        nodeToBone[node] = boneIndex;
+        orderedBoneNodes.push_back(node);
+
+        Bone bone;
+        bone.name = toString(node->name);
+        if (bone.name.empty()) bone.name = "bone_" + std::to_string(boneIndex);
+        if (skeleton->boneNameToIndex.count(bone.name)) {
+            std::string suffixed = bone.name + "_" + std::to_string(boneIndex);
+            while (skeleton->boneNameToIndex.count(suffixed))
+                suffixed += "_";
+            bone.name = suffixed;
+        }
+        skeleton->boneNameToIndex[bone.name] = boneIndex;
+        bone.localBindTransform = toMat4(node->local_transform);
+        bone.globalBindTransform = toMat4(node->node_to_world);
+        skeleton->bones.push_back(std::move(bone));
+    }
+
+    if (skeleton->bones.empty()) {
+        ufbx_free_scene(scene);
+        if (error) *error = "FBX animation file contains no skeleton nodes";
+        return false;
+    }
+
+    for (size_t i = 0; i < orderedBoneNodes.size(); ++i) {
+        const ufbx_node* parent = orderedBoneNodes[i]->parent;
+        while (parent) {
+            const auto it = nodeToBone.find(parent);
+            if (it != nodeToBone.end()) {
+                skeleton->bones[i].parentIndex = it->second;
+                break;
+            }
+            parent = parent->parent;
+        }
+    }
+
+    FbxAnimationOnlyResult result;
+    result.skeleton = std::move(skeleton);
+
+    for (const ufbx_anim_stack* stack : scene->anim_stacks) {
+        ufbx_bake_opts bakeOpts{};
+        bakeOpts.trim_start_time = true;
+        bakeOpts.resample_rate = 30.0;
+        bakeOpts.key_reduction_enabled = true;
+        bakeOpts.key_reduction_rotation = true;
+
+        ufbx_error bakeError{};
+        ufbx_baked_anim* baked = ufbx_bake_anim(scene, stack->anim, &bakeOpts, &bakeError);
+        if (!baked) continue;
+
+        AnimationClip clip;
+        clip.name = toString(stack->name);
+        if (clip.name.empty()) clip.name = "anim_" + std::to_string(result.animationClips.size());
+        clip.duration = static_cast<float>(baked->playback_duration);
+        for (size_t boneIndex = 0; boneIndex < orderedBoneNodes.size(); ++boneIndex) {
+            ufbx_baked_node* bakedNode = ufbx_find_baked_node(
+                baked, const_cast<ufbx_node*>(orderedBoneNodes[boneIndex]));
+            if (!bakedNode) continue;
+            appendVec3Channel(clip, static_cast<int>(boneIndex),
+                              AnimChannel::Target::Translation, bakedNode->translation_keys);
+            appendQuatChannel(clip, static_cast<int>(boneIndex), bakedNode->rotation_keys);
+            appendVec3Channel(clip, static_cast<int>(boneIndex),
+                              AnimChannel::Target::Scale, bakedNode->scale_keys);
+        }
+        ufbx_free_baked_anim(baked);
+        if (!clip.channels.empty()) result.animationClips.push_back(std::move(clip));
+    }
+
+    if (result.animationClips.empty()) {
+        std::cout << "[FbxImporter] warning: no animation clips found in " << path << "\n";
+    }
+
+    ufbx_free_scene(scene);
     out = std::move(result);
     return true;
 }

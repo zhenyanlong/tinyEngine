@@ -46,10 +46,21 @@ struct FbxImportResult {
     bool hasSkin = false;
 };
 
+/** @brief 仅含骨架和动画数据的 FBX 解析结果（用于 without-skin 动画文件）。 */
+struct FbxAnimationOnlyResult {
+    std::shared_ptr<Skeleton> skeleton;
+    std::vector<AnimationClip> animationClips;
+};
+
 /** @brief 使用 ufbx 将 FBX 转换为 tinyEngine 的 CPU 侧模型与动画数据。 */
 class FbxImporter {
 public:
     static bool load(const std::string& path,
                      FbxImportResult& out,
                      std::string* error = nullptr);
+
+    /** @brief 仅解析骨架和动画，不要求网格数据。用于 Mixamo without-skin 等纯动画 FBX。 */
+    static bool loadAnimationOnly(const std::string& path,
+                                  FbxAnimationOnlyResult& out,
+                                  std::string* error = nullptr);
 };

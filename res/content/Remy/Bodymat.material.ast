@@ -1,0 +1,25 @@
+{
+  "name": "Bodymat",
+  "params": {
+    "baseColor": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "emissiveColor": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "emissiveIntensity": 0.0,
+    "metallic": 0.0,
+    "roughness": 0.5527864098548889
+  },
+  "textures": {
+    "albedo": "bin/texture/Remy/Remy_Bodymat_albedo.png",
+    "normal": "bin/texture/Remy/Remy_Bodymat_normal.png"
+  },
+  "type": "Material"
+}

@@ -54,6 +54,7 @@ public:
         std::shared_ptr<Skeleton> skeleton;
         std::vector<AnimationClip> animationClips;
         std::string animationAssetPath; ///< 提供当前 clips 的 .anim.ast 路径，用于元数据编辑与持久化。
+        std::vector<std::string> animationAssetPaths; ///< mesh.ast 中引用的全部 .anim.ast 路径
         AnimatorController animatorController;
         std::string animatorControllerPath; ///< 当前绑定的 .animctrl.json 资产路径；为空表示运行时临时控制器。
         // ── 预览模式 ─────────────────────────────────────────

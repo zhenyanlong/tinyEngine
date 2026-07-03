@@ -1,4 +1,27 @@
+## 2026-07-03
+
+- [ ] 制定了剩余 7 天开发路线图：Phase C（Sequencer）+ Phase D（资产系统），以及两个新功能：Content Browser 离屏缩略图修复和 Sequencer 摄像机 + PiP 小窗
+- [ ] 更新 TDD.md：新增 §4.12.5 Sequencer 系统规范（C1-C6）、§4.12.6 AnimationAssetRegistry 规范、更新目录结构（animators/、sequences/、icons/）、更新初始化顺序（缩略图生成和资产扫描）、扩展 §15 已知限制表
+- [ ] 更新 todolist.md 7 天计划：第1天（C1+C5+缩略图修复）、第2天（C2+C4）、第3天（C3+摄像机PiP）、第4天（C6面板上半）、第5天（C6面板下半+D1）、第6天（D2/D3+摄像机模型）、第7天（集成测试+构建）
+- [ ] 记录 VS 2022 CMake 路径供后续构建使用：C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe
+
+## 2026-07-02
+
+- [ ] 修复 `ensureAnimationAssetForMeshAst` 的回退逻辑：当传入的 `.ast` 路径是非 mesh 类型（如 `.material.ast`）且不含 `"animations"` 数组时，函数现在会检查目标实体的 `astRelPath`，回退到读取 `.mesh.ast` 以找到所有 `.anim.ast` 引用
+- [ ] 修复 `loadAndApplyMaterialAsset`：当通过 `.mesh.ast` 交换模型时，将 `astRelPath` 记录到实体上，使后续的 `ensureAnimationAssetForMeshAst` 调用能正确找到动画资产
+- [ ] 完成 TODO-017：Remy 模型现在能正确加载全部 3 个 `.anim.ast` clip，而非仅 1 个
+
 ## 2026-06-30
+
+- [ ] 新增 `FbxImporter::loadAnimationOnly()` 从场景节点层级解析无蒙皮（Mixamo 风格）FBX 为虚拟骨架。
+- [ ] 新增 `AnimationRetargeter` 模块，支持 `buildMapping()`、`retargetClip()` 和 `retargetPose()`，实现基于名称的源/目标骨骼重映射。
+- [ ] 新增 `Application::importAnimationFbx()` 编排完整动画重定向管线：加载目标 Mesh 骨架 → 解析源 FBX 动画 → 重定向 clip → 持久化为 `.anim.ast` + `.anim.bin` 并更新目标 Mesh `.ast` 的 animations 字段。
+- [ ] 将动画重定向集成到导入模型流程，使含动画的 FBX 模型同样经过重定向管线。
+- [ ] 在 Content Browser UI 新增 Import Anim... 按钮和目标 Mesh 选择弹窗，用于导入无蒙皮动画 FBX 文件。
+- [ ] 修复 `ensureAnimationAssetForMeshAst` 中 `existingAnimAsts` 变量作用域 bug（在块内声明但后续在块外使用导致编译错误）。
+- [ ] 修复 `contentPrefix` 双写路径 bug：动画资产路径误写为 `content/content/...` 应改为 `content/...`。
+- [ ] 移除未使用的 `FbxAnimationOnlyResult::clipName` 字段及相关代码。
+- [ ] 在 UI 验证中将选中动画 clip 从 Scene 重命名为 Idle，同步更新 TDD.md，并通过最终 x64-debug 构建。
 
 - [ ] 新增面向当前模型的 Animator Controller 资产浏览器，递归扫描 `res/animators/` 并按 clip 兼容性筛选，同时提供 Refresh、New AnimController 和 Save Current 操作。
 - [ ] 重构 Animator 动画条目，增加明确的 Preview/Stop 与行内 Rename 控件，并以 ASCII Active/State 标签替换字体不支持的 Unicode 状态图标。

@@ -1,4 +1,27 @@
+## 2026-07-03
+
+- [ ] Planned the remaining 7-day development roadmap for Phase C (Sequencer) and Phase D (Asset System), plus two new feature additions: Content Browser offscreen thumbnail fix and Sequencer Camera with PiP view
+- [ ] Updated TDD.md: added §4.12.5 Sequencer system spec (C1-C6), §4.12.6 AnimationAssetRegistry spec, updated directory structure (animators/, sequences/, icons/), updated init order with thumbnail generation and asset scanning, extended §15 known-limitations table with new planned items
+- [ ] Updated todolist.md with 7-day plan: Day 1 (C1+C5+thumbnail fix), Day 2 (C2+C4), Day 3 (C3+Camera PiP), Day 4 (C6 panel top), Day 5 (C6 panel bottom+D1), Day 6 (D2/D3+Camera model), Day 7 (integration test+build)
+- [ ] Recorded VS 2022 CMake path for future builds: C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe
+
+## 2026-07-02
+
+- [ ] Fixed `ensureAnimationAssetForMeshAst` fallback logic: when called with a non-mesh `.ast` path (e.g. `.material.ast`) that lacks an `"animations"` array, the function now checks the target entity's `astRelPath` and falls back to reading the mesh `.ast` to find all `.anim.ast` references
+- [ ] Fixed `loadAndApplyMaterialAsset` to record `astRelPath` on the entity when swapping via a `.mesh.ast`, so subsequent `ensureAnimationAssetForMeshAst` calls can correctly locate animation assets
+- [ ] Completed TODO-017: Remy model now correctly loads all 3 `.anim.ast` clips instead of only 1
+
 ## 2026-06-30
+
+- [ ] Added `FbxImporter::loadAnimationOnly()` to parse without-skin (Mixamo-style) FBX as a virtual skeleton from scene node hierarchy.
+- [ ] Added `AnimationRetargeter` module with `buildMapping()`, `retargetClip()` and `retargetPose()` for name-based bone remapping between source and target skeletons.
+- [ ] Added `Application::importAnimationFbx()` to orchestrate the full animation retarget pipeline: load target mesh skeleton, parse source FBX animation, retarget clips, persist as `.anim.ast` + `.anim.bin`, and update the target mesh `.ast` animations field.
+- [ ] Integrated animation retarget into the import model flow so FBX models with embedded animations also go through the retarget pipeline.
+- [ ] Added `Import Anim...` button and target-mesh picker modal to the Content Browser UI for importing without-skin animation FBX files.
+- [ ] Fixed `existingAnimAsts` variable scope bug in `ensureAnimationAssetForMeshAst` that caused a compile error (declared inside a block but used later outside it).
+- [ ] Fixed `contentPrefix` double-prefix bug where the animation asset path was written as `content/content/...` instead of `content/...`.
+- [ ] Removed unused `FbxAnimationOnlyResult::clipName` field and its related code.
+- [ ] Renamed the selected animation clip from Scene to Idle during UI validation, synchronized TDD.md, and passed the final x64-debug build.
 
 - [ ] Added a model-aware Animator Controller asset browser that recursively filters `res/animators/` by clip compatibility and provides Refresh, New AnimController, and Save Current actions.
 - [ ] Reworked Animator clip rows with explicit Preview/Stop and inline Rename controls, and replaced unsupported Unicode state icons with ASCII Active/State labels.

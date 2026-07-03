@@ -1,0 +1,1528 @@
+{
+  "binary": "bin/anim/Remy.mesh_Body Block_alt.anim.bin",
+  "clips": [
+    {
+      "channels": [
+        {
+          "boneIndex": 1,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 1,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 1,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 2,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 2,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 2,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 3,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 3,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 3,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 4,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 4,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 4,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 5,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 5,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 5,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 6,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 6,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 6,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 7,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 7,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 7,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 8,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 8,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 8,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 9,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 9,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 9,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 10,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 10,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 10,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 11,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 11,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 11,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 12,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 12,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 12,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 13,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 13,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 13,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 14,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 14,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 18,
+          "valueCount": 18
+        },
+        {
+          "boneIndex": 14,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 15,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 15,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 39,
+          "valueCount": 39
+        },
+        {
+          "boneIndex": 15,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 16,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 16,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 16,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 17,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 17,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 17,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 18,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 18,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 18,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 24,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 24,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 24,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 25,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 25,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 25,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 26,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 26,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 26,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 27,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 27,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 27,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 28,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 28,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 28,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 29,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 29,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 29,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 30,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 30,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 30,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 31,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 31,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 31,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 32,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 32,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 32,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 33,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 33,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 33,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 34,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 34,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 34,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 35,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 35,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 35,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 36,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 36,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 36,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 37,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 37,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 37,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 38,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 38,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 38,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 39,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 39,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 39,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 40,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 40,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 40,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 41,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 41,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 41,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 42,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 42,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 103,
+          "valueCount": 103
+        },
+        {
+          "boneIndex": 42,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 43,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 43,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 43,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 44,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 44,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 64,
+          "valueCount": 64
+        },
+        {
+          "boneIndex": 44,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 45,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 45,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 45,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 46,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 46,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 46,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 47,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 47,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 47,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 48,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 48,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 102,
+          "valueCount": 102
+        },
+        {
+          "boneIndex": 48,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 49,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 49,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 49,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 50,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 50,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 100,
+          "valueCount": 100
+        },
+        {
+          "boneIndex": 50,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 51,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 51,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 103,
+          "valueCount": 103
+        },
+        {
+          "boneIndex": 51,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 52,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 52,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 102,
+          "valueCount": 102
+        },
+        {
+          "boneIndex": 52,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 53,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 53,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 53,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 54,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 54,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 54,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 55,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 55,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 103,
+          "valueCount": 103
+        },
+        {
+          "boneIndex": 55,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 56,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 56,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 104,
+          "valueCount": 104
+        },
+        {
+          "boneIndex": 56,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 57,
+          "interpolation": "Linear",
+          "target": "Translation",
+          "timeCount": 2,
+          "valueCount": 2
+        },
+        {
+          "boneIndex": 57,
+          "interpolation": "Linear",
+          "target": "Rotation",
+          "timeCount": 103,
+          "valueCount": 103
+        },
+        {
+          "boneIndex": 57,
+          "interpolation": "Linear",
+          "target": "Scale",
+          "timeCount": 2,
+          "valueCount": 2
+        }
+      ],
+      "duration": 3.433333396911621,
+      "name": "mixamo.com"
+    }
+  ],
+  "name": "Remy.mesh_Body Block_alt.anim",
+  "rootModel": "content/Remy/Remy.mesh.ast",
+  "skeleton": {
+    "boneCount": 68,
+    "bones": [
+      {
+        "name": "bone_0",
+        "parentIndex": -1
+      },
+      {
+        "name": "mixamorig:Hips",
+        "parentIndex": 0
+      },
+      {
+        "name": "mixamorig:Spine",
+        "parentIndex": 1
+      },
+      {
+        "name": "mixamorig:LeftUpLeg",
+        "parentIndex": 1
+      },
+      {
+        "name": "mixamorig:RightUpLeg",
+        "parentIndex": 1
+      },
+      {
+        "name": "mixamorig:Spine1",
+        "parentIndex": 2
+      },
+      {
+        "name": "mixamorig:LeftLeg",
+        "parentIndex": 3
+      },
+      {
+        "name": "mixamorig:RightLeg",
+        "parentIndex": 4
+      },
+      {
+        "name": "mixamorig:Spine2",
+        "parentIndex": 5
+      },
+      {
+        "name": "mixamorig:LeftFoot",
+        "parentIndex": 6
+      },
+      {
+        "name": "mixamorig:RightFoot",
+        "parentIndex": 7
+      },
+      {
+        "name": "mixamorig:Neck",
+        "parentIndex": 8
+      },
+      {
+        "name": "mixamorig:LeftShoulder",
+        "parentIndex": 8
+      },
+      {
+        "name": "mixamorig:RightShoulder",
+        "parentIndex": 8
+      },
+      {
+        "name": "mixamorig:LeftToeBase",
+        "parentIndex": 9
+      },
+      {
+        "name": "mixamorig:RightToeBase",
+        "parentIndex": 10
+      },
+      {
+        "name": "mixamorig:Head",
+        "parentIndex": 11
+      },
+      {
+        "name": "mixamorig:LeftArm",
+        "parentIndex": 12
+      },
+      {
+        "name": "mixamorig:RightArm",
+        "parentIndex": 13
+      },
+      {
+        "name": "mixamorig:LeftToe_End",
+        "parentIndex": 14
+      },
+      {
+        "name": "mixamorig:RightToe_End",
+        "parentIndex": 15
+      },
+      {
+        "name": "mixamorig:HeadTop_End",
+        "parentIndex": 16
+      },
+      {
+        "name": "mixamorig:RightEye",
+        "parentIndex": 16
+      },
+      {
+        "name": "mixamorig:LeftEye",
+        "parentIndex": 16
+      },
+      {
+        "name": "mixamorig:LeftForeArm",
+        "parentIndex": 17
+      },
+      {
+        "name": "mixamorig:RightForeArm",
+        "parentIndex": 18
+      },
+      {
+        "name": "mixamorig:LeftHand",
+        "parentIndex": 24
+      },
+      {
+        "name": "mixamorig:RightHand",
+        "parentIndex": 25
+      },
+      {
+        "name": "mixamorig:LeftHandMiddle1",
+        "parentIndex": 26
+      },
+      {
+        "name": "mixamorig:LeftHandThumb1",
+        "parentIndex": 26
+      },
+      {
+        "name": "mixamorig:LeftHandIndex1",
+        "parentIndex": 26
+      },
+      {
+        "name": "mixamorig:LeftHandRing1",
+        "parentIndex": 26
+      },
+      {
+        "name": "mixamorig:LeftHandPinky1",
+        "parentIndex": 26
+      },
+      {
+        "name": "mixamorig:RightHandMiddle1",
+        "parentIndex": 27
+      },
+      {
+        "name": "mixamorig:RightHandThumb1",
+        "parentIndex": 27
+      },
+      {
+        "name": "mixamorig:RightHandIndex1",
+        "parentIndex": 27
+      },
+      {
+        "name": "mixamorig:RightHandRing1",
+        "parentIndex": 27
+      },
+      {
+        "name": "mixamorig:RightHandPinky1",
+        "parentIndex": 27
+      },
+      {
+        "name": "mixamorig:LeftHandMiddle2",
+        "parentIndex": 28
+      },
+      {
+        "name": "mixamorig:LeftHandThumb2",
+        "parentIndex": 29
+      },
+      {
+        "name": "mixamorig:LeftHandIndex2",
+        "parentIndex": 30
+      },
+      {
+        "name": "mixamorig:LeftHandRing2",
+        "parentIndex": 31
+      },
+      {
+        "name": "mixamorig:LeftHandPinky2",
+        "parentIndex": 32
+      },
+      {
+        "name": "mixamorig:RightHandMiddle2",
+        "parentIndex": 33
+      },
+      {
+        "name": "mixamorig:RightHandThumb2",
+        "parentIndex": 34
+      },
+      {
+        "name": "mixamorig:RightHandIndex2",
+        "parentIndex": 35
+      },
+      {
+        "name": "mixamorig:RightHandRing2",
+        "parentIndex": 36
+      },
+      {
+        "name": "mixamorig:RightHandPinky2",
+        "parentIndex": 37
+      },
+      {
+        "name": "mixamorig:LeftHandMiddle3",
+        "parentIndex": 38
+      },
+      {
+        "name": "mixamorig:LeftHandThumb3",
+        "parentIndex": 39
+      },
+      {
+        "name": "mixamorig:LeftHandIndex3",
+        "parentIndex": 40
+      },
+      {
+        "name": "mixamorig:LeftHandRing3",
+        "parentIndex": 41
+      },
+      {
+        "name": "mixamorig:LeftHandPinky3",
+        "parentIndex": 42
+      },
+      {
+        "name": "mixamorig:RightHandMiddle3",
+        "parentIndex": 43
+      },
+      {
+        "name": "mixamorig:RightHandThumb3",
+        "parentIndex": 44
+      },
+      {
+        "name": "mixamorig:RightHandIndex3",
+        "parentIndex": 45
+      },
+      {
+        "name": "mixamorig:RightHandRing3",
+        "parentIndex": 46
+      },
+      {
+        "name": "mixamorig:RightHandPinky3",
+        "parentIndex": 47
+      },
+      {
+        "name": "mixamorig:LeftHandMiddle4",
+        "parentIndex": 48
+      },
+      {
+        "name": "mixamorig:LeftHandThumb4",
+        "parentIndex": 49
+      },
+      {
+        "name": "mixamorig:LeftHandIndex4",
+        "parentIndex": 50
+      },
+      {
+        "name": "mixamorig:LeftHandRing4",
+        "parentIndex": 51
+      },
+      {
+        "name": "mixamorig:LeftHandPinky4",
+        "parentIndex": 52
+      },
+      {
+        "name": "mixamorig:RightHandMiddle4",
+        "parentIndex": 53
+      },
+      {
+        "name": "mixamorig:RightHandThumb4",
+        "parentIndex": 54
+      },
+      {
+        "name": "mixamorig:RightHandIndex4",
+        "parentIndex": 55
+      },
+      {
+        "name": "mixamorig:RightHandRing4",
+        "parentIndex": 56
+      },
+      {
+        "name": "mixamorig:RightHandPinky4",
+        "parentIndex": 57
+      }
+    ],
+    "skins": [
+      {
+        "boneIndices": [
+          6,
+          9,
+          14,
+          19,
+          7,
+          10,
+          15,
+          20
+        ]
+      },
+      {
+        "boneIndices": [
+          1,
+          2,
+          5,
+          8,
+          11,
+          16,
+          12,
+          17,
+          24,
+          13,
+          18,
+          25,
+          3,
+          4
+        ]
+      },
+      {
+        "boneIndices": [
+          1,
+          2,
+          5,
+          3,
+          6,
+          4,
+          7
+        ]
+      },
+      {
+        "boneIndices": [
+          8,
+          11,
+          16,
+          21,
+          22,
+          23,
+          12,
+          13
+        ]
+      },
+      {
+        "boneIndices": [
+          1,
+          2,
+          5,
+          8,
+          11,
+          16,
+          21,
+          22,
+          23,
+          12,
+          17,
+          24,
+          26,
+          28,
+          38,
+          48,
+          58,
+          29,
+          39,
+          49,
+          59,
+          30,
+          40,
+          50,
+          60,
+          31,
+          41,
+          51,
+          61,
+          32,
+          42,
+          52,
+          62,
+          13,
+          18,
+          25,
+          27,
+          33,
+          43,
+          53,
+          63,
+          34,
+          44,
+          54,
+          64,
+          35,
+          45,
+          55,
+          65,
+          36,
+          46,
+          56,
+          66,
+          37,
+          47,
+          57,
+          67,
+          3,
+          6,
+          9,
+          14,
+          19,
+          4,
+          7,
+          10,
+          15,
+          20
+        ]
+      },
+      {
+        "boneIndices": [
+          11,
+          16,
+          21,
+          22,
+          23
+        ]
+      },
+      {
+        "boneIndices": [
+          11,
+          16,
+          21,
+          22,
+          23
+        ]
+      }
+    ]
+  },
+  "type": "Anim",
+  "version": 1
+}

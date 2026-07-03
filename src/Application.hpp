@@ -67,9 +67,16 @@ public:
     /** @brief 从 .scene.json 加载场景 */
     bool loadScene(const std::string& path);
 
-    /** @brief 导入外部模型文件到 res/ 并创建入口 .ast，返回 true 表示成功 */
+    /** @brief 导入外部模型文件到 res/ 并创建入口 .ast，返回 true 表示成功
+     *  @param outAnimFbxPath  非空时表示该 FBX 是 without-skin 动画文件，
+     *                         调用方应使用此路径弹出 mesh 选择弹窗后调用 importAnimationFbx */
     bool importModel(const std::string& sourcePath,
-                     const std::string& subFolder = "");
+                     const std::string& subFolder = "",
+                     std::string* outAnimFbxPath = nullptr);
+
+    /** @brief 导入 Mixamo without-skin 动画 FBX，链接到指定 mesh.ast 的骨架。 */
+    bool importAnimationFbx(const std::string& fbxPath,
+                            const std::string& targetMeshAstRelPath);
 
     /** @brief 返回资源根目录 */
     std::string getResRoot() const { return modelRegistry_.getResRoot(); }

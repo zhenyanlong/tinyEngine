@@ -1,6 +1,6 @@
 # tinyEngine 技术设计文档
 
-> 最后更新：2026-06-30
+> 最后更新：2026-07-03
 
 ---
 
@@ -50,15 +50,24 @@ tinyEngine/
 │       ├── Skeleton.hpp/.cpp      # Bone / Skeleton 数据结构 + computeFinalMatrices
 │       ├── AnimationClip.hpp/.cpp # AnimChannel / AnimationClip + 关键帧求值
 │       ├── AnimationAssetLoader.hpp/.cpp # Anim .ast + .anim.bin 二进制资产序列化
-│       └── AnimatorController.hpp/.cpp # 状态、参数、过渡条件与运行时状态机
+│       ├── AnimatorController.hpp/.cpp # 状态、参数、过渡条件与运行时状态机
+│       ├── AnimationRetargeter.hpp/.cpp # 骨骼名称映射 + 动画重定向工具
+│       ├── Sequence.hpp            # SequenceTrack / SequenceClip 数据结构（Phase C1，待实现）
+│       ├── SequencePlayer.hpp/.cpp # Sequence 播放控制器（Phase C2，待实现）
+│       ├── CameraPath.hpp/.cpp     # 相机路径关键帧与插值（Phase C3，待实现）
+│       └── SequenceAssetLoader.hpp/.cpp # .seq.json / .campath.json 序列化（Phase C5，待实现）
 │
 ├── res/                           # 运行时资源（唯一基准，不再复制到 exe 旁）
 │   ├── content/                   # 新资产描述文件根（.mesh.ast / .material.ast / .anim.ast）
 │   ├── bin/                       # 二进制 payload（mesh/ anim/ texture/ 分类）
 │   ├── models/                    # 旧 3D 模型文件（兼容保留）
 │   ├── materials/                 # 旧模型资产定义（兼容保留）
+│   ├── animators/                 # 状态机资产文件（.animctrl.json）
+│   ├── sequences/                 # Sequencer 时间轴资产
+│   │   └── paths/                 # 相机路径资产（.campath.json）
 │   ├── scenes/                    # 场景持久化文件（.scene.json）
 │   ├── shaders/                   # GLSL 源码 + 编译后的 .spv
+│   ├── icons/                     # UI 图标（model.png 占位符）
 │   ├── textures/                  # 旧纹理（兼容保留）
 │   └── thumbnails/                # 模型缩略图 PNG
 │
@@ -90,8 +99,9 @@ tinyEngine/
 ```
 main() → Application::run()
   ├── initGLFW()           # 创建窗口，注册回调
-  ├── initVulkan()         # 初始化所有 Manager + 加载默认模型
-  └── gameLoop()
+  └── initVulkan()         # 初始化所有 Manager + 加载默认模型 + 收缩略图 + 扫描资产
+        │                    （末尾可选调用 ThumbnailRenderer::generateAll + assetRegistry_.scan()）
+        └── gameLoop()
         ├── glfwPollEvents()
         ├── processInput()        # WASD / QE 相机移动
         ├── camera_.UpdataCameraPosition(dt)
@@ -126,8 +136,10 @@ matMgr_.init(ctx_, cmdMgr_, ...)             # 10. 材质管理器
 descMgr_.create(ctx_, swapChain_, ...)      # 11. 描述符管理器
 ui_->initIMGUI()                            # 12. ImGui 后端
 pickSys_.create(ctx_, cmdMgr_)              # 13. 拾取系统
-cmdMgr_.allocateCommandBuffers(...)         # 14. 分配绘制命令缓冲
-cmdMgr_.createSyncObjects(...)              # 15. 同步原语
+thumbRenderer_.generateAll(resRoot)         # 14. 离屏缩略图（可选，模型导入后触发）
+// assetRegistry_.scan(resRoot)             # 15. 资产注册扫描（Phase D1，待实现）
+cmdMgr_.allocateCommandBuffers(...)         # 16. 分配绘制命令缓冲
+cmdMgr_.createSyncObjects(...)              # 17. 同步原语
 ```
 
 ---
@@ -367,6 +379,28 @@ struct AnimationClip {
 
 Phase B1-B5 的运行时状态机核心。状态机定义由 `AnimatorState`、`AnimatorTransition`、`TransitionCondition` 和 `AnimatorParam` 组成；参数支持 `Float`、`Int`、`Bool`、`Trigger` 四种类型。
 
+### 4.12.4 AnimationRetargeter（AnimationRetargeter.hpp/.cpp）
+
+动画重定向工具，通过骨骼名称映射将源动画数据重定向到目标骨架。
+
+**关键数据结构：**
+
+```cpp
+struct BoneMapping {
+    std::unordered_map<std::string, std::string> sourceToTarget; // 源骨骼名称 → 目标骨骼名称
+    std::unordered_map<std::string, std::string> targetToSource; // 反向映射
+};
+```
+
+**关键方法：**
+- `buildMapping(sourceSkeleton, targetSkeleton, nameMatchingFunc)` — 根据名称匹配策略自动构建映射表，默认按完全名称匹配；支持传入自定义匹配函数（如忽略大小写、前缀匹配）
+- `retargetClip(sourceClip, sourceSkeleton, targetSkeleton)` — 将源动画 clip 重定向到目标骨架，返回新的 AnimationClip。重定向过程中：
+  1. 遍历 sourceClip 的所有通道
+  2. 查询 BoneMapping 获取对应目标骨骼索引
+  3. 若目标骨骼不存在，丢弃该通道
+  4. 保持关键帧时间/插值类型不变，复制变换值
+- `retargetPose(sourceLocalTransforms, mapping)` — 直接将源骨架局部变换数组按映射复制到目标数组，未映射骨骼保持绑定姿势
+
 **关键行为：**
 - `configure()` 设置状态、过渡、参数及默认状态；`configureFromClips()` 为实体 clip 建立无过渡的默认状态
 - `setFloat/setInt/setBool/setTrigger` 修改运行时参数；Trigger 在命中过渡后自动消费
@@ -411,6 +445,62 @@ Phase B1-B5 的运行时状态机核心。状态机定义由 `AnimatorState`、`
 - 为未来 Sequence 系统预留标准接口：Sequence 可在 clip 开始/结束或特定时间点触发 `dispatchEvent` 改变参数，从而驱动状态机过渡
 
 **逐骨骼混合：** `Application::drawFrame(dt)` 分别采样两个 clip 的局部 TRS，Translation/Scale 使用 `glm::mix`，Rotation 使用 `glm::slerp`，之后再组合为局部矩阵并计算最终骨骼 palette。
+
+**AnimationRetargeter 重定向流程（见 4.12.4）：**
+- `buildMapping()` 按名称匹配建立源/目标骨骼映射
+- `retargetClip()` 遍历源 clip 通道，查询映射表将骨骼索引转为目标骨架索引，未映射通道丢弃
+- `retargetPose()` 直接将局部变换数组按映射复制到目标数组
+- `FbxImporter::loadAnimationOnly()` 收集 without-skin FBX 的 scene 节点为骨骼树，供后续重定向使用
+- `Application::importAnimationFbx()` 是重定向的完整工作流：加载目标骨架 → 解析源动画 → retarget → 持久化 → 更新 Mesh .ast
+
+### 4.12.5 Sequencer 时序动画系统（Phase C，待实现）
+
+Phase C 提供时间轴驱动的多轨道动画系统，支持骨骼动画片段、相机路径、Transform 补间和事件触发。
+
+**C1 — SequenceTrack / SequenceClip 数据结构（`src/Animation/Sequence.hpp`）**
+- `SequenceClipBase`：所有片段基类（startTime / duration）
+- `TrackType` 枚举：AnimationClip / CameraPath / TransformTween / Event
+- 各 Clip 派生类型：`AnimTrackClip`（clipName / clipOffset / playSpeed）、`CameraPathClip`（pathAssetPath）、`TransformTweenClip`（start/end TRS + ease）、`EventClip`（eventName）
+- `SequenceTrack`：name、type、每条轨道存同类型片段的 vector
+- `Sequence`：name、tracks、totalDuration
+
+**C2 — SequencePlayer 播放控制器（`src/Animation/SequencePlayer.hpp/.cpp`）**
+- play / pause / stop / seek 接口
+- `update(dt, FrameCallbacks)`：按 ticks 逐帧推进，遍历各 track 的 clip 判断当前时间是否在区间内
+- `FrameCallbacks` 通过 lambda 连接相机路径求值、动画 clip 求值、变换更新、事件触发
+- Event clip 首次进入时通过 `firedEvents_` 去重
+- Sequencer 播放期间屏蔽右键拖拽（camera track 存在时）
+
+**C3 — CameraPath 相机路径轨道（`src/Animation/CameraPath.hpp/.cpp`）**
+- `CameraKeyframe`：time / position / orientation / fovDeg
+- `CameraPath`：keyframes 数组 + CatmullRom（默认）/ Linear 插值
+- `evaluate(t)` 返回位置、朝向、FOV 的 EvalResult
+- 录制功能：每 0.1s 自动抓取当前相机状态插入关键帧
+
+**C4 — TransformTween 轨道**
+- 对场景对象（主模型/box）做 start→end TRS 关键帧补间
+- ease 模式：Linear / SmoothStep / EaseIn / EaseOut
+
+**C5 — 序列化（`src/Animation/SequenceAssetLoader.hpp/.cpp`）**
+- `.seq.json`：Sequence 完整保存（tracks / clips / 所有参数）
+- `.campath.json`：CameraPath 单独保存（keyframes / interpolation）
+- nlohmann/json 实现
+
+**C6 — ImGui Sequencer 编辑器面板**
+- 顶部工具栏：Play / Pause / Stop、时间显示、Loop 勾选
+- 手动绘制的时间线刻度尺（每 0.5s 一小格，每 1s 一大格 + 数字）
+- 可拖动的红色当前时间指示线
+- 左列轨道列表（名称 + Mute/Solo）+ 右列 clip 彩色矩形
+- 底部选中 clip 的属性编辑器（clipName 下拉 / path 路径 / TRS 输入）
+- 录制控制（Record Camera Path 开始/结束、自动保存 .campath.json）
+- Add/Delete Track、Load/Save .seq.json
+
+### 4.12.6 AnimationAssetRegistry（Phase D1，待实现）
+
+`src/Animation/AnimationAssetRegistry.hpp/.cpp`
+- `scan(resRoot)` 使用 `std::filesystem::recursive_directory_iterator` 扫描 res/ 下所有 .anim.ast / .animctrl.json / .seq.json / .campath.json
+- 按扩展名分类填入对应的 vector
+- 在 `Application::initVulkan` 末尾调用，供 ImGui Assets 面板读取
 
 ### 4.13 ModelRegistry（ModelRegistry.hpp）
 
@@ -586,7 +676,7 @@ For subMaterials (SceneSerializer::load / beginDragPlace):
 ### 5.3 FBX 导入与运行时加载数据流
 
 ```
-外部 *.fbx
+外部 *.fbx (with-skin mesh)
     │
     ▼ FbxImporter::load() / ufbx
     │   ├── Vertex + Index + SubMesh(materialSlot/skinIndex)
@@ -603,6 +693,24 @@ For subMaterials (SceneSerializer::load / beginDragPlace):
         ├── 创建/复用 GPU vertex/index buffer
         ├── 逐槽位加载 Material .ast
         └── 将 Skeleton/AnimationClip 绑定到 ModelEntity Animator
+
+外部 *.fbx (without-skin, Mixamo 动画文件)
+    │
+    ▼ FbxImporter::loadAnimationOnly() / ufbx
+    │   ├── 收集所有非根场景节点作为骨骼
+    │   └── 烘焙 AnimStack → AnimationClip[]
+    │
+    ▼ Application::importAnimationFbx() + AnimationRetargeter
+    │   ├── 加载目标 Mesh .ast 的骨架
+    │   ├── 通过骨骼名称映射将动画重定向到目标骨架
+    │   ├── 保存为 .anim.ast + .anim.bin（关联目标 Mesh）
+    │   └── 更新目标 Mesh .ast 的 animations 字段
+    │
+    ▼ Content Browser Import Anim... 按钮流程
+        ├── 打开文件对话框选择 FBX 动画文件
+        ├── 弹出目标 Mesh 选择弹窗
+        ├── 调用 importAnimationFbx() 完成导入与重定向
+        └── 刷新 Content Browser 显示新 Anim 资产
 ```
 
 ---
@@ -697,7 +805,8 @@ struct PushConstants {
   - **文件夹导航：** 左侧面板列出 `content/` 下所有子文件夹，支持在当前浏览目录创建新文件夹。点击 `/ (root)` 浏览根目录，点击子文件夹切换浏览。
   - **类型筛选：** 提供 `All` / `Mesh` / `Box` / `Material` / `Anim` 下拉筛选器，根据 `.ast` 的 `type` 字段过滤显示。
   - **Import 导入：** Windows 原生文件对话框支持 `.obj/.gltf/.glb/.fbx`。导入结果写入 `res/content/<当前目录>/<模型名>/` 与对应 `res/bin/` 分类目录；glTF/FBX 会预生成材质，带动画时同时生成独立 Anim 资产。
-  - **拖拽限制：** `Material` 类型资产（无 `model` 引用）不显示拖拽源，禁止拖入场景。
+  - **Import Anim：** 独立按钮（仅在选中文件夹后显示），通过 Windows 文件对话框选择 without-skin 动画 FBX 文件，随后弹出 Mesh 选择弹窗让用户指定目标骨架，自动完成骨骼重定向和资产写入。
+  - **拖拽限制：** `Material` 类型资产（无 `model` 引用）不显示拖拽源，禁止拖入场景；`Anim` 类型资产不可拖拽（需通过关联 Mesh 播放）。
 - **Scene Outliner：** 场景实体列表，单选/多选
 - **Properties：** 选中实体的 Transform 编辑 + Material 材质参数/纹理内联编辑；纹理路径输入在切换材质时同步，Load 支持绝对路径和相对 `res/` 路径并显示成功/失败状态
 - **Box 面板：** 添加/删除 Box、选中 Box 属性
@@ -789,11 +898,16 @@ TINYOBJLOADER_IMPLEMENTATION # tinyobjloader 实现编译
 | 多骨架动画实体 | 已完成 | Phase A4：animation state 下沉到 ModelEntity，drawFrame 逐实体求值，不再依赖全局单例 |
 | 动画运行时播放 | 已完成 | drawFrame 每帧逐实体执行 AnimatorController → TRS 混合 → computeFinalMatrices → updateBoneMatrices |
 | 动画资产序列化 | 已完成 | Phase A5：AnimationAssetLoader (.ast Header + .anim.bin 二进制) + 懒生成 + 启动恢复 + clip 元数据事务式重命名 |
+| Mixamo 无蒙皮动画 FBX 导入 | 已完成 | FbxImporter::loadAnimationOnly 将 scene 节点推断为骨骼树；AnimationRetargeter 按名称映射重定向到目标 Mesh 骨架；Application::importAnimationFbx 完成动画重定向持久化；Content Browser Import Anim... + Mesh 选择弹窗 UI |
 | 共享 GPU buffer 缓存 | 已完成 | SceneManager.modelResourceCache_ 共享 vertex/index buffer + animation state，重复拖拽不暴涨 |
 | 动画状态机 | 已完成 | Phase B1-B5：参数/状态/过渡/Trigger/exit time + 逐骨骼 TRS cross-fade（B1-B2）；BlendCurve ease 曲线（B3）；.animctrl.json 序列化、兼容资产筛选与新建/保存（B4）；ImGui 动画总控面板 + 拖拽创建 state + 预览/重命名 + 事件驱动系统（B5） |
 | 蒙皮模型 GPU 拾取 | 已完成 | skinned pick pipeline 复用材质 bone UBO，按 submesh/当前动画姿势写入 Entity ID |
 | 重复蒙皮模型独立动画状态 | 受限 | Controller 已逐实体独立，但共享同一 skinned MaterialId 的实例仍共用 BoneMatricesUBO；后续需每实体描述符或 dynamic UBO |
-| Sequencer | 待实现 | Phase C：时间轴编辑器 |
+| 多 .anim.ast 合并加载 | **已修复** | 2026-07-02：根因是 `loadAndApplyMaterialAsset` 传入的 `astRelPath` 可能是 `.material.ast` 路径，不含 `animations` 数组。修复：(1) `ensureAnimationAssetForMeshAst` 增加回退逻辑，当打开的文件无 `animations` 数组时，检查实体 `astRelPath` 并以 `.mesh.ast` 路径重新读取；(2) `loadAndApplyMaterialAsset` 中记录实体 `astRelPath` 供回退使用。|
+| Sequencer | 待实现（Phase C1-C6） | 2026-07-03 ~ 2026-07-09 计划实现：C1 数据结构、C2 播放控制器、C3 相机路径、C4 TransformTween、C5 序列化、C6 ImGui 时间轴编辑器 |
+| Content Browser 离屏缩略图 | 待修复 | 当前使用 res/icons/model.png 占位符；ThumbnailRenderer 已能生成离屏渲染 PNG 到 res/thumbnails/，需扩展扫描路径并在 Content Browser 中显示实际缩略图 |
+| Sequencer Camera + PiP | 待实现 | 新增 SequencerCamera 类（独立 position/orientation/fov），场景中可添加可视化摄像机模型，选中后右下角显示 PiP 小窗渲染该摄像机视角 |
+| 资产系统扩充 | 待实现 | Phase D1-D3：AnimationAssetRegistry 资产注册、.ast 文件扩展（animationAssetPath/animControllerPath）、ImGui Assets 浏览器面板（TabBar 重构） |
 | PBR 管线 | 基础支持（metallic/roughness/ao） | 已有 |
 | 阴影 | 不支持 | 未规划 |
 | 后处理 | 不支持 | 未规划 |

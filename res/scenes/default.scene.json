@@ -137,6 +137,175 @@
         1.0,
         1.0
       ],
+      "subMaterialOverrides": [
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+          "slot": 0
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+          "slot": 1
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+          "slot": 2
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+          "slot": 3
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+          "slot": 4
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+          "slot": 5
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+          "slot": 6
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+          "slot": 7
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+          "slot": 8
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+          "slot": 9
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Pod_001.material.ast",
+          "slot": 10
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+          "slot": 11
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+          "slot": 12
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+          "slot": 13
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Pod.material.ast",
+          "slot": 14
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Skirt.material.ast",
+          "slot": 15
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Body.material.ast",
+          "slot": 16
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Face.material.ast",
+          "slot": 17
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Lashes.material.ast",
+          "slot": 18
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Body.material.ast",
+          "slot": 19
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Body.material.ast",
+          "slot": 20
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Violin.material.ast",
+          "slot": 21
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Hair.material.ast",
+          "slot": 22
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Body.material.ast",
+          "slot": 23
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Body.material.ast",
+          "slot": 24
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Body.material.ast",
+          "slot": 25
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Sword.material.ast",
+          "slot": 26
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Violin.material.ast",
+          "slot": 27
+        },
+        {
+          "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc_Body.material.ast",
+          "slot": 28
+        }
+      ],
+      "visible": true
+    },
+    {
+      "astRelPath": "content/Remy/Remy.mesh.ast",
+      "materialOverride": {
+        "albedoPath": "E:\\Projects\\tinyEngine\\res\\bin\\texture\\Remy\\Remy_Shoesmat_albedo.png",
+        "normalPath": "E:\\Projects\\tinyEngine\\res\\bin\\texture\\Remy\\Remy_Shoesmat_normal.png",
+        "roughness": 0.5527864098548889
+      },
+      "position": [
+        0.8999179601669312,
+        0.8968815803527832,
+        2.1096291542053223
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "subMaterialOverrides": [
+        {
+          "astRelPath": "content/Remy/Shoesmat.material.ast",
+          "slot": 0
+        },
+        {
+          "astRelPath": "content/Remy/Topmat.material.ast",
+          "slot": 1
+        },
+        {
+          "astRelPath": "content/Remy/Bottommat.material.ast",
+          "slot": 2
+        },
+        {
+          "astRelPath": "content/Remy/Hairmat.material.ast",
+          "slot": 3
+        },
+        {
+          "astRelPath": "content/Remy/Bodymat.material.ast",
+          "slot": 4
+        },
+        {
+          "astRelPath": "content/Remy/Eyelashmat.material.ast",
+          "slot": 5
+        }
+      ],
       "visible": true
     }
   ],

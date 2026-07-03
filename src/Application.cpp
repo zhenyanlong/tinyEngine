@@ -1,5 +1,6 @@
 #include "Application.hpp"
 #include "Animation/AnimationAssetLoader.hpp"
+#include "Animation/AnimationRetargeter.hpp"
 #include "FbxImporter.hpp"
 #include "MaterialAssetLoader.hpp"
 #include "SceneSerializer.hpp"
@@ -891,6 +892,31 @@ bool Application::ensureAnimationAssetForMeshAst(const std::string& meshAstRelPa
         return false;
     }
 
+    // 如果传入的 .ast 文件没有 "animations" 数组（例如一个 .material.ast），
+    // 则检查实体是否已有已知的 mesh .ast 路径，若有则以其为准重新读取。
+    if (!meshJson.contains("animations") || !meshJson["animations"].is_array()) {
+        if (auto* entity = sceneMgr_.getModelEntity(entityId)) {
+            if (!entity->astRelPath.empty()) {
+                const std::filesystem::path fallbackAst = resRoot / stripResPrefix(entity->astRelPath);
+                if (fallbackAst != meshAstAbs) {
+                    std::ifstream fallbackIn(fallbackAst);
+                    if (fallbackIn.is_open()) {
+                        try {
+                            json fallbackJson;
+                            fallbackIn >> fallbackJson;
+                            if (fallbackJson.contains("animations") && fallbackJson["animations"].is_array()) {
+                                meshJson = std::move(fallbackJson);
+                            }
+                        } catch (const std::exception& e) {
+                            std::cerr << "[AnimationAsset] fallback mesh ast parse failed ("
+                                      << fallbackAst.string() << "): " << e.what() << "\n";
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     std::string modelRel = stripResPrefix(modelPathOrRel);
     if (modelRel.empty() && meshJson.contains("model")) {
         const auto& model = meshJson["model"];
@@ -912,12 +938,6 @@ bool Application::ensureAnimationAssetForMeshAst(const std::string& meshAstRelPa
                 animAstPaths.push_back(stripResPrefix(item.get<std::string>()));
         }
     }
-    if (auto* entity = sceneMgr_.getModelEntity(entityId); entity && !animAstPaths.empty())
-        entity->animationAssetPath = animAstPaths.front();
-
-    const std::string ext = toLowerCopy(modelPath.extension().string());
-    if (ext != ".gltf" && ext != ".glb")
-        return false;
 
     const std::string normalizedMeshAstRel = stripResPrefix(meshAstRelPath);
     const std::string baseName = defaultAnimBaseName(normalizedMeshAstRel);
@@ -927,32 +947,29 @@ bool Application::ensureAnimationAssetForMeshAst(const std::string& meshAstRelPa
         return relativeToRes(desired, resRoot);
     };
 
-    auto loadAnim = [&](const std::string& animAstRel) {
+    // 加载 mesh.ast 中引用的所有动画资产（支持 FBX/glTF），累积所有 clips
+    std::vector<AnimationClip> mergedClips;
+    std::shared_ptr<Skeleton> mergedSkeleton;
+    std::vector<std::string> loadedPaths;
+    bool anyLoaded = false;
+
+    // 加载单个 .anim.ast 文件，累积到 mergedClips
+    auto loadSingleAnim = [&](const std::string& astRel) -> bool {
         AnimationAsset animAsset;
         std::string animErr;
-        if (AnimationAssetLoader::load(stripResPrefix(animAstRel), animAsset, &animErr)) {
-            sceneMgr_.setEntityAnimationData(entityId, animAsset.skeleton, std::move(animAsset.clips));
-            if (auto* entity = sceneMgr_.getModelEntity(entityId))
-                entity->animationAssetPath = stripResPrefix(animAstRel);
+        if (AnimationAssetLoader::load(stripResPrefix(astRel), animAsset, &animErr)) {
+            if (!anyLoaded) {
+                mergedSkeleton = std::move(animAsset.skeleton);
+                anyLoaded = true;
+            }
+            for (auto& clip : animAsset.clips)
+                mergedClips.push_back(std::move(clip));
+            loadedPaths.push_back(stripResPrefix(astRel));
             return true;
         }
-        std::cerr << "[AnimationAsset] load failed (" << animAstRel << "): "
+        std::cerr << "[AnimationAsset] load failed (" << astRel << "): "
                   << animErr << "\n";
         return false;
-    };
-
-    auto saveThenLoad = [&](const std::string& animAstRel, const std::string& binaryRel) {
-        std::string saveErr;
-        if (!AnimationAssetLoader::saveFromGltf(modelPath.string(),
-                                                stripResPrefix(animAstRel),
-                                                stripResPrefix(binaryRel),
-                                                normalizedMeshAstRel,
-                                                &saveErr)) {
-            std::cerr << "[AnimationAsset] generate failed (" << modelPath.string()
-                      << "): " << saveErr << "\n";
-            return false;
-        }
-        return loadAnim(animAstRel);
     };
 
     for (const std::string& animAstRel : animAstPaths) {
@@ -992,45 +1009,129 @@ bool Application::ensureAnimationAssetForMeshAst(const std::string& meshAstRelPa
             binaryRel = defaultBinaryRel();
 
         if (hasAnimMeta && std::filesystem::exists(resRoot / binaryRel)) {
-            if (loadAnim(animAstRel))
-                return true;
+            if (loadSingleAnim(animAstRel))
+                continue;
             std::cerr << "[AnimationAsset] existing binary was unreadable; regenerating "
                       << binaryRel << "\n";
         }
 
-        if (saveThenLoad(animAstRel, binaryRel))
-            return true;
-    }
-
-    std::filesystem::path meshAstPath(normalizedMeshAstRel);
-    const std::string newAnimAstRel =
-        (meshAstPath.parent_path() / (baseName + ".anim.ast")).generic_string();
-    const std::string newBinaryRel = defaultBinaryRel();
-
-    if (!saveThenLoad(newAnimAstRel, newBinaryRel))
-        return false;
-
-    if (!meshJson.contains("animations") || !meshJson["animations"].is_array())
-        meshJson["animations"] = json::array();
-
-    bool alreadyReferenced = false;
-    for (const auto& item : meshJson["animations"]) {
-        if (item.is_string() && stripResPrefix(item.get<std::string>()) == newAnimAstRel) {
-            alreadyReferenced = true;
-            break;
+        // glTF 动画可自动生成；FBX 动画已由 importAnimationFbx 持久化，跳过生成
+        const std::string extNow = toLowerCopy(modelPath.extension().string());
+        if (extNow == ".gltf" || extNow == ".glb") {
+            std::string saveErr;
+            if (AnimationAssetLoader::saveFromGltf(modelPath.string(),
+                                                    stripResPrefix(animAstRel),
+                                                    stripResPrefix(binaryRel),
+                                                    normalizedMeshAstRel,
+                                                    &saveErr)) {
+                loadSingleAnim(animAstRel);
+            } else {
+                std::cerr << "[AnimationAsset] generate failed (" << modelPath.string()
+                          << "): " << saveErr << "\n";
+            }
         }
     }
-    if (!alreadyReferenced)
-        meshJson["animations"].push_back(newAnimAstRel);
 
-    std::ofstream meshOut(meshAstAbs);
-    if (meshOut.is_open()) {
-        meshOut << meshJson.dump(2) << "\n";
-        if (refreshRegistryAfterWrite)
-            modelRegistry_.refresh();
-    } else {
-        std::cerr << "[AnimationAsset] failed to update mesh ast animations: "
-                  << meshAstAbs.string() << "\n";
+    // glTF 自动生成：无 animations 引用时尝试创建默认动画资产
+    const std::string fileExtGl = toLowerCopy(modelPath.extension().string());
+    if (fileExtGl == ".gltf" || fileExtGl == ".glb") {
+        const std::string newAnimAstRel =
+            (std::filesystem::path(normalizedMeshAstRel).parent_path() / (baseName + ".anim.ast")).generic_string();
+        const std::string newBinaryRel = defaultBinaryRel();
+
+        auto saveThenLoad = [&](const std::string& animAstRel, const std::string& binaryRel) {
+            std::string saveErr;
+            if (!AnimationAssetLoader::saveFromGltf(modelPath.string(),
+                                                    stripResPrefix(animAstRel),
+                                                    stripResPrefix(binaryRel),
+                                                    normalizedMeshAstRel,
+                                                    &saveErr)) {
+                std::cerr << "[AnimationAsset] generate failed (" << modelPath.string()
+                          << "): " << saveErr << "\n";
+                return false;
+            }
+            return loadSingleAnim(animAstRel);
+        };
+
+        for (const std::string& animAstRel : animAstPaths) {
+            const std::filesystem::path animAstAbs = resRoot / animAstRel;
+            json animJson;
+            bool hasAnimMeta = false;
+            {
+                std::ifstream animIn(animAstAbs);
+                if (animIn.is_open()) {
+                    try {
+                        animIn >> animJson;
+                        hasAnimMeta = true;
+                    } catch (const std::exception& e) {
+                        std::cerr << "[AnimationAsset] anim ast parse failed ("
+                                  << animAstAbs.string() << "): " << e.what() << "\n";
+                    }
+                }
+            }
+
+            if (hasAnimMeta && animJson.value("type", std::string{}) != "Anim")
+                continue;
+
+            const std::string rootModel = hasAnimMeta
+                ? stripResPrefix(animJson.value("rootModel", std::string{}))
+                : std::string{};
+            if (!rootModel.empty() && rootModel != normalizedMeshAstRel) {
+                std::cerr << "[AnimationAsset] rootModel mismatch: " << animAstRel
+                          << " belongs to " << rootModel
+                          << ", expected " << normalizedMeshAstRel << "\n";
+                continue;
+            }
+
+            std::string binaryRel = hasAnimMeta
+                ? stripResPrefix(animJson.value("binary", std::string{}))
+                : std::string{};
+            if (binaryRel.empty())
+                binaryRel = defaultBinaryRel();
+
+            if (hasAnimMeta && !std::filesystem::exists(resRoot / binaryRel)) {
+                std::cerr << "[AnimationAsset] binary not found; regenerating "
+                          << binaryRel << "\n";
+                saveThenLoad(animAstRel, binaryRel);
+            }
+        }
+
+        if (!anyLoaded) {
+            if (!saveThenLoad(newAnimAstRel, newBinaryRel))
+                return false;
+
+            if (!meshJson.contains("animations") || !meshJson["animations"].is_array())
+                meshJson["animations"] = json::array();
+
+            bool alreadyReferenced = false;
+            for (const auto& item : meshJson["animations"]) {
+                if (item.is_string() && stripResPrefix(item.get<std::string>()) == newAnimAstRel) {
+                    alreadyReferenced = true;
+                    break;
+                }
+            }
+            if (!alreadyReferenced)
+                meshJson["animations"].push_back(newAnimAstRel);
+
+            std::ofstream meshOut(meshAstAbs);
+            if (meshOut.is_open()) {
+                meshOut << meshJson.dump(2) << "\n";
+                if (refreshRegistryAfterWrite)
+                    modelRegistry_.refresh();
+            } else {
+                std::cerr << "[AnimationAsset] failed to update mesh ast animations: "
+                          << meshAstAbs.string() << "\n";
+            }
+        }
+    }
+
+    // 全部加载完成后，统一设置到 entity
+    if (anyLoaded && mergedSkeleton && !mergedClips.empty()) {
+        sceneMgr_.setEntityAnimationData(entityId, mergedSkeleton, std::move(mergedClips));
+        if (auto* entity = sceneMgr_.getModelEntity(entityId)) {
+            entity->animationAssetPath = loadedPaths.empty() ? std::string{} : loadedPaths.front();
+            entity->animationAssetPaths = std::move(loadedPaths);
+        }
     }
     return true;
 }
@@ -1079,6 +1180,17 @@ bool Application::loadAndApplyMaterialAsset(const std::string& astRelPath)
                 materialPaths[slot], ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_);
             if (smMid != kInvalidMaterialId)
                 sceneMgr_.setModelSubMeshMaterialId(slot, smMid);
+        }
+
+        // 确保 entity 记录了正确的 mesh .ast 路径，供 ensureAnimationAssetForMeshAst 中的回退逻辑使用
+        {
+            auto& ents = sceneMgr_.getModelEntities();
+            if (!ents.empty() && ents[0].astRelPath.empty()) {
+                const std::string stem = std::filesystem::path(astRelPath).stem().string();
+                if (endsWith(stem, ".mesh")) {
+                    ents[0].astRelPath = stripResPrefix(astRelPath);
+                }
+            }
         }
 
         // 若有骨骼数据，为实体的槽位材质创建蒙皮版本
@@ -1451,7 +1563,8 @@ bool Application::loadScene(const std::string& path)
 // ─── Import Model ─────────────────────────────────────────────────────────────
 
 bool Application::importModel(const std::string& sourcePath,
-                                const std::string& subFolder)
+                                const std::string& subFolder,
+                                std::string* outAnimFbxPath)
 {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -1535,7 +1648,31 @@ bool Application::importModel(const std::string& sourcePath,
     if (lowerExt == ".fbx") {
         FbxImportResult imported;
         std::string fbxError;
-        if (!FbxImporter::load(srcPath.string(), imported, &fbxError)) {
+
+        // 先用 load() 尝试解析（可能包含网格/材质/骨架/动画）
+        const bool meshOk = FbxImporter::load(srcPath.string(), imported, &fbxError);
+
+        // Without-skin 动画 FBX：load() 可能因无网格返回 false，
+        // 但内部已成功解析骨架和动画
+        if (!imported.hasSkin && imported.skeleton && !imported.animationClips.empty()) {
+            if (outAnimFbxPath) {
+                *outAnimFbxPath = srcPath.string();
+            }
+            return false;
+        }
+
+        // 尝试 loadAnimationOnly 兜底（纯动画 FBX，无任何网格数据）
+        if (!meshOk) {
+            FbxAnimationOnlyResult animResult;
+            std::string animError;
+            if (FbxImporter::loadAnimationOnly(srcPath.string(), animResult, &animError)) {
+                if (!animResult.animationClips.empty() && animResult.skeleton) {
+                    if (outAnimFbxPath) {
+                        *outAnimFbxPath = srcPath.string();
+                    }
+                    return false;
+                }
+            }
             std::cerr << "[Import] FBX parse failed: " << fbxError << "\n";
             return false;
         }
@@ -1909,6 +2046,209 @@ bool Application::importModel(const std::string& sourcePath,
 
     std::cout << "[Import] imported " << sourcePath << " as " << modelRelPath
               << " (" << astRelPath << ")\n";
+    return true;
+}
+
+// ─── Import Animation FBX ─────────────────────────────────────────────────────
+
+bool Application::importAnimationFbx(const std::string& fbxPath,
+                                     const std::string& targetMeshAstRelPath)
+{
+    namespace fs = std::filesystem;
+    std::error_code ec;
+
+    if (fbxPath.empty() || targetMeshAstRelPath.empty()) {
+        std::cerr << "[ImportAnim] empty path\n";
+        return false;
+    }
+
+    // 1. Parse without-skin FBX for skeleton + clips
+    FbxAnimationOnlyResult animResult;
+    std::string animErr;
+    if (!FbxImporter::loadAnimationOnly(fbxPath, animResult, &animErr)) {
+        std::cerr << "[ImportAnim] failed to parse animation FBX: " << animErr << "\n";
+        return false;
+    }
+    if (animResult.animationClips.empty()) {
+        std::cerr << "[ImportAnim] animation FBX has no clips\n";
+        return false;
+    }
+
+    const std::string resRoot = std::filesystem::absolute(modelRegistry_.getResRoot()).string();
+    const fs::path resRootPath(resRoot);
+    AnimationAssetLoader::setResRoot(resRoot);
+
+    // 2. Load target mesh's skeleton for retargeting
+    const fs::path meshAstAbs = resRootPath / stripResPrefix(targetMeshAstRelPath);
+    std::ifstream meshIn(meshAstAbs);
+    if (!meshIn.is_open()) {
+        std::cerr << "[ImportAnim] target mesh .ast not found: " << meshAstAbs << "\n";
+        return false;
+    }
+
+    json meshJson;
+    try {
+        meshIn >> meshJson;
+    } catch (const std::exception& e) {
+        std::cerr << "[ImportAnim] mesh ast parse failed: " << e.what() << "\n";
+        return false;
+    }
+
+    std::shared_ptr<Skeleton> dstSkeleton;
+    std::vector<std::string> existingAnimAsts;
+    {
+        if (meshJson.contains("animations") && meshJson["animations"].is_array()) {
+            for (const auto& item : meshJson["animations"]) {
+                if (item.is_string())
+                    existingAnimAsts.push_back(stripResPrefix(item.get<std::string>()));
+            }
+        }
+
+        // Try loading skeleton from existing .anim.ast first
+        for (const auto& animAstRel : existingAnimAsts) {
+            AnimationAsset loaded;
+            if (AnimationAssetLoader::load(animAstRel, loaded, nullptr) && loaded.skeleton) {
+                dstSkeleton = std::move(loaded.skeleton);
+                std::cout << "[ImportAnim] loaded target skeleton from " << animAstRel
+                          << " (" << dstSkeleton->bones.size() << " bones)\n";
+                break;
+            }
+        }
+
+        // Fallback: load from the original mesh FBX
+        if (!dstSkeleton && meshJson.contains("model")) {
+            std::string modelRel;
+            const auto& model = meshJson["model"];
+            if (model.is_string())
+                modelRel = stripResPrefix(model.get<std::string>());
+            else if (model.is_object())
+                modelRel = stripResPrefix(model.value("path", std::string{}));
+
+            if (!modelRel.empty()) {
+                const fs::path modelPath = modelRel.find('/') == std::string::npos
+                    ? resRootPath / modelRel
+                    : fs::path(modelRel);
+                const std::string ext = toLowerCopy(modelPath.extension().string());
+                if (ext == ".fbx") {
+                    FbxImportResult fullResult;
+                    std::string fbxLoadErr;
+                    if (FbxImporter::load(modelPath.string(), fullResult, &fbxLoadErr)) {
+                        dstSkeleton = std::move(fullResult.skeleton);
+                        if (dstSkeleton)
+                            std::cout << "[ImportAnim] loaded target skeleton from original FBX ("
+                                      << dstSkeleton->bones.size() << " bones)\n";
+                    } else {
+                        std::cerr << "[ImportAnim] failed to load original FBX for skeleton: "
+                                  << fbxLoadErr << "\n";
+                    }
+                } else {
+                    std::cerr << "[ImportAnim] cannot extract skeleton from non-FBX model: "
+                              << modelRel << "\n";
+                }
+            }
+        }
+    }
+
+    if (!dstSkeleton) {
+        std::cerr << "[ImportAnim] failed to obtain target skeleton\n";
+        return false;
+    }
+
+    // 3. Retarget: remap bone indices from source skeleton to target skeleton
+    const auto& srcSkeleton = *animResult.skeleton;
+    auto retargetResult = AnimationRetargeter::retargetClips(
+        animResult.animationClips, srcSkeleton, *dstSkeleton);
+
+    if (retargetResult.retargetedClips.empty()) {
+        std::cerr << "[ImportAnim] retargeting failed: no bones matched between skeletons\n";
+        return false;
+    }
+
+    std::cout << "[ImportAnim] retargeting complete: " << retargetResult.matchedCount
+              << " bones matched, " << retargetResult.unmatchedBones.size() << " unmatched\n";
+
+    // 4. Generate paths and save retargeted animation
+    const std::string baseName = stripResPrefix(targetMeshAstRelPath);
+    const std::string animName = fs::path(baseName).stem().string();
+
+    // Determine subfolder within content/ (e.g. "characters" from "content/characters/char1.mesh.ast")
+    std::string animSubFolder;
+    {
+        const fs::path bp(baseName);
+        if (bp.has_parent_path()) {
+            const fs::path parent = bp.parent_path();
+            const std::string parentStr = parent.generic_string();
+            const std::string contentPrefix = "content/";
+            if (parentStr.rfind(contentPrefix, 0) == 0)
+                animSubFolder = parentStr.substr(contentPrefix.size());
+            else if (parentStr != "content" && parentStr != ".")
+                animSubFolder = parentStr;
+        }
+    }
+    const std::string contentPrefix = animSubFolder.empty()
+        ? "content"
+        : (std::string("content/") + animSubFolder);
+
+    // Derive a unique name from the source FBX
+    const std::string clipStem = sanitizeAssetName(fs::path(fbxPath).stem().string());
+
+    // Check for clip name conflicts with existing animation assets
+    std::string animStem = animName + "_" + clipStem;
+    {
+        bool conflict = false;
+        do {
+            conflict = false;
+            for (const auto& astRel : existingAnimAsts) {
+                if (astRel.find(animStem + ".anim.ast") != std::string::npos) {
+                    animStem += "_alt";
+                    conflict = true;
+                    break;
+                }
+            }
+        } while (conflict);
+    }
+
+    const std::string animAstRel = contentPrefix + "/" + animStem + ".anim.ast";
+    const std::string animBinRel = "bin/anim/" + animStem + ".anim.bin";
+    const std::string normalizedMeshAstRel = stripResPrefix(targetMeshAstRelPath);
+
+    std::string saveErr;
+    if (!AnimationAssetLoader::save(animAstRel, animBinRel, normalizedMeshAstRel,
+                                    *dstSkeleton, retargetResult.retargetedClips, &saveErr)) {
+        std::cerr << "[ImportAnim] failed to save animation asset: " << saveErr << "\n";
+        return false;
+    }
+
+    // 5. Update target mesh .ast to reference the new animation
+    if (!meshJson.contains("animations") || !meshJson["animations"].is_array())
+        meshJson["animations"] = json::array();
+
+    meshJson["animations"].push_back(animAstRel);
+
+    std::ofstream meshOut(meshAstAbs);
+    if (meshOut.is_open()) {
+        meshOut << meshJson.dump(2) << "\n";
+    } else {
+        std::cerr << "[ImportAnim] failed to update mesh .ast: " << meshAstAbs << "\n";
+        return false;
+    }
+
+    modelRegistry_.refresh();
+
+    // 6. If target entity is already loaded in the scene, apply the animation
+    const auto& ents = sceneMgr_.getModelEntities();
+    for (const auto& ent : ents) {
+        if (ent.astRelPath == targetMeshAstRelPath) {
+            sceneMgr_.setEntityAnimationData(ent.entityId, dstSkeleton,
+                                             retargetResult.retargetedClips);
+            std::cout << "[ImportAnim] applied animation to entity " << ent.entityId
+                      << " (" << ent.displayName << ")\n";
+            break;
+        }
+    }
+
+    std::cout << "[ImportAnim] imported " << fbxPath << " → " << animAstRel
+              << " (linked to " << normalizedMeshAstRel << ")\n";
     return true;
 }
 
