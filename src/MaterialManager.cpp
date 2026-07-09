@@ -259,7 +259,9 @@ void MaterialManager::onSwapchainRecreate(const VulkanContext& ctx, const Comman
 
     for (auto& [id, e] : materials_) {
         destroyUBOs(e, ctx);
+        destroyPipUBOs(e, ctx);
         e.descSets.clear();
+        e.pipDescSets.clear();
     }
 
     if (pool_ != VK_NULL_HANDLE) {
@@ -273,6 +275,7 @@ void MaterialManager::onSwapchainRecreate(const VulkanContext& ctx, const Comman
         createUBOs(e, ctx, bufMgr);
         allocateDescSets(e, ctx, pipeMgr);
         writeDescSets(e, ctx, pipeMgr);
+        createPipResources(e, ctx, bufMgr, pipeMgr);
     }
 }
 
@@ -451,6 +454,123 @@ void MaterialManager::writeDescSets(MaterialEntry& e, const VulkanContext& ctx,
     }
 }
 
+void MaterialManager::createPipResources(MaterialEntry& e, const VulkanContext& ctx,
+                                          const BufferManager& bufMgr, const PipelineManager& pipeMgr)
+{
+    e.pipUbos.resize(imageCount_);
+    e.pipUboMemory.resize(imageCount_);
+    e.pipUboMapped.resize(imageCount_, nullptr);
+
+    for (uint32_t i = 0; i < imageCount_; ++i) {
+        bufMgr.createBuffer(sizeof(UniformBufferObject), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                            e.pipUbos[i], e.pipUboMemory[i]);
+        vkMapMemory(ctx.getDevice(), e.pipUboMemory[i], 0, sizeof(UniformBufferObject), 0,
+                    &e.pipUboMapped[i]);
+    }
+
+    VkDescriptorSetLayout layout = e.skinned
+        ? pipeMgr.getSkinnedDescSetLayout()
+        : ((e.type == MaterialType::Mesh)
+            ? pipeMgr.getMainDescSetLayout()
+            : pipeMgr.getBoxDescSetLayout());
+
+    std::vector<VkDescriptorSetLayout> layouts(imageCount_, layout);
+    VkDescriptorSetAllocateInfo ai{};
+    ai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    ai.descriptorPool     = pool_;
+    ai.descriptorSetCount = imageCount_;
+    ai.pSetLayouts        = layouts.data();
+
+    e.pipDescSets.resize(imageCount_);
+    if (vkAllocateDescriptorSets(ctx.getDevice(), &ai, e.pipDescSets.data()) != VK_SUCCESS)
+        throw std::runtime_error("Failed to allocate PiP material descriptor sets!");
+
+    writePipDescSets(e, ctx);
+}
+
+void MaterialManager::writePipDescSets(MaterialEntry& e, const VulkanContext& ctx)
+{
+    for (uint32_t i = 0; i < imageCount_; ++i) {
+        VkDescriptorBufferInfo bi{};
+        bi.buffer = e.pipUbos[i]; bi.offset = 0; bi.range = sizeof(UniformBufferObject);
+
+        if (e.type == MaterialType::Mesh) {
+            auto pick = [](const TextureGPU& t, const TextureGPU& fb) -> VkDescriptorImageInfo {
+                VkDescriptorImageInfo di{};
+                di.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                di.imageView   = (t.view    != VK_NULL_HANDLE) ? t.view    : fb.view;
+                di.sampler     = (t.sampler != VK_NULL_HANDLE) ? t.sampler : fb.sampler;
+                return di;
+            };
+            const VkDescriptorImageInfo albedoI = pick(e.albedo,            defaultAlbedo_);
+            const VkDescriptorImageInfo normalI = pick(e.normal,            defaultNormal_);
+            const VkDescriptorImageInfo mrI     = pick(e.metallicRoughness, defaultMR_);
+            const VkDescriptorImageInfo aoI     = pick(e.ao,                defaultAO_);
+            const VkDescriptorImageInfo emI     = pick(e.emissive,          defaultEmissive_);
+
+            std::array<VkWriteDescriptorSet, 7> writes{};
+            writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[0].dstSet          = e.pipDescSets[i];
+            writes[0].dstBinding      = 0;
+            writes[0].descriptorCount = 1;
+            writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            writes[0].pBufferInfo     = &bi;
+
+            auto fillTex = [&](size_t idx, uint32_t binding, const VkDescriptorImageInfo* info) {
+                writes[idx].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[idx].dstSet          = e.pipDescSets[i];
+                writes[idx].dstBinding      = binding;
+                writes[idx].descriptorCount = 1;
+                writes[idx].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                writes[idx].pImageInfo      = info;
+            };
+            fillTex(1, 1, &albedoI);
+            fillTex(2, 2, &normalI);
+            fillTex(3, 3, &mrI);
+            fillTex(4, 4, &aoI);
+            fillTex(5, 5, &emI);
+
+            uint32_t writeCount = 6;
+            VkDescriptorBufferInfo boneBI{};
+            if (e.skinned && i < e.boneUbos.size()) {
+                boneBI.buffer = e.boneUbos[i];
+                boneBI.offset = 0;
+                boneBI.range = sizeof(BoneMatricesUBO);
+                writes[6].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[6].dstSet          = e.pipDescSets[i];
+                writes[6].dstBinding      = 6;
+                writes[6].descriptorCount = 1;
+                writes[6].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                writes[6].pBufferInfo     = &boneBI;
+                writeCount = 7;
+            }
+
+            vkUpdateDescriptorSets(ctx.getDevice(), writeCount, writes.data(), 0, nullptr);
+        } else {
+            VkWriteDescriptorSet w{};
+            w.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.dstSet          = e.pipDescSets[i];
+            w.dstBinding      = 0;
+            w.descriptorCount = 1;
+            w.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            w.pBufferInfo     = &bi;
+            vkUpdateDescriptorSets(ctx.getDevice(), 1, &w, 0, nullptr);
+        }
+    }
+}
+
+void MaterialManager::destroyPipUBOs(MaterialEntry& e, const VulkanContext& ctx)
+{
+    auto dev = ctx.getDevice();
+    for (uint32_t i = 0; i < static_cast<uint32_t>(e.pipUbos.size()); ++i) {
+        if (e.pipUboMapped[i])               { vkUnmapMemory(dev, e.pipUboMemory[i]);        e.pipUboMapped[i] = nullptr; }
+        if (e.pipUbos[i]      != VK_NULL_HANDLE) { vkDestroyBuffer(dev, e.pipUbos[i], nullptr);    e.pipUbos[i]      = VK_NULL_HANDLE; }
+        if (e.pipUboMemory[i] != VK_NULL_HANDLE) { vkFreeMemory(dev, e.pipUboMemory[i], nullptr);  e.pipUboMemory[i] = VK_NULL_HANDLE; }
+    }
+    e.pipUbos.clear(); e.pipUboMemory.clear(); e.pipUboMapped.clear();
+}
+
 void MaterialManager::destroyEntry(MaterialEntry& e, const VulkanContext& ctx)
 {
     destroyUBOs(e, ctx);
@@ -508,6 +628,7 @@ MaterialId MaterialManager::createMeshMaterial(const std::string& name,
     createUBOs(e, ctx, bufMgr);
     allocateDescSets(e, ctx, pipeMgr);
     writeDescSets(e, ctx, pipeMgr);
+    createPipResources(e, ctx, bufMgr, pipeMgr);
     return id;
 }
 
@@ -527,6 +648,7 @@ MaterialId MaterialManager::createBoxMaterial(const std::string& name,
     createUBOs(e, ctx, bufMgr);
     allocateDescSets(e, ctx, pipeMgr);
     writeDescSets(e, ctx, pipeMgr);
+    createPipResources(e, ctx, bufMgr, pipeMgr);
     return id;
 }
 
@@ -606,6 +728,9 @@ MaterialId MaterialManager::createSkinnedMaterialFrom(MaterialId src,
     createUBOs(e, ctx, bufMgr);
     allocateDescSets(e, ctx, pipeMgr);
     writeDescSets(e, ctx, pipeMgr);
+    // 蒙皮材质同样需要 PiP 专用 descriptor set（binding 0 指向 PiP UBO、binding 6 指向 bone UBO），
+    // 否则 getPipDescriptorSet 会回退到主 descriptor set，导致 PiP 中蒙皮模型用主视角渲染。
+    createPipResources(e, ctx, bufMgr, pipeMgr);
 
     skinnedCache_[src] = id;
     return id;
@@ -747,11 +872,52 @@ void MaterialManager::updateAllUBOs(uint32_t imageIndex,
     }
 }
 
+void MaterialManager::updateAllPipUBOs(uint32_t imageIndex,
+                                        const glm::mat4& view, const glm::mat4& proj)
+{
+    const glm::mat4 viewProj = proj * view;
+    const glm::mat4 invView  = glm::inverse(view);
+    const glm::mat4 invProj  = glm::inverse(proj);
+    const glm::vec3 camPos   = glm::vec3(invView[3]);
+
+    const glm::vec3 sunDir   = glm::normalize(glm::vec3(0.4f, 0.8f, 0.5f));
+    const glm::vec3 sunColor = glm::vec3(3.0f, 2.95f, 2.85f);
+    const float     ambient  = 0.18f;
+
+    for (auto& [id, e] : materials_) {
+        if (imageIndex >= e.pipUboMapped.size() || !e.pipUboMapped[imageIndex])
+            continue;
+        UniformBufferObject ubo{};
+        ubo.view            = view;
+        ubo.proj            = proj;
+        ubo.materialTint    = e.params.baseColor;
+        ubo.boxMaterialTint = e.params.baseColor;
+        ubo.emissive        = glm::vec4(glm::vec3(e.params.emissiveColor) * e.params.emissiveIntensity,
+                                        e.params.emissiveIntensity);
+        ubo.cameraPos       = glm::vec4(camPos, 1.0f);
+        ubo.lightDir        = glm::vec4(sunDir, 0.0f);
+        ubo.lightColor      = glm::vec4(sunColor, ambient);
+        ubo.pbrFactors      = glm::vec4(e.params.metallic, e.params.roughness, 1.0f, 1.0f);
+        ubo.viewProj        = viewProj;
+        ubo.invView         = invView;
+        ubo.invProj         = invProj;
+        memcpy(e.pipUboMapped[imageIndex], &ubo, sizeof(ubo));
+    }
+}
+
 // ── Descriptor set access ──────────────────────────────────────────────────────
 
 VkDescriptorSet MaterialManager::getDescriptorSet(MaterialId id, uint32_t imageIndex) const
 {
     return materials_.at(id).descSets[imageIndex];
+}
+
+VkDescriptorSet MaterialManager::getPipDescriptorSet(MaterialId id, uint32_t imageIndex) const
+{
+    const auto& e = materials_.at(id);
+    if (imageIndex < e.pipDescSets.size())
+        return e.pipDescSets[imageIndex];
+    return e.descSets[imageIndex];
 }
 
 // ── Queries ────────────────────────────────────────────────────────────────────

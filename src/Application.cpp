@@ -10,6 +10,7 @@
 #include <backends/imgui_impl_vulkan.h>
 #include <ImGuizmo.h>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include "nlohmann/json.hpp"
 #include <algorithm>
 #include <array>
@@ -153,7 +154,7 @@ void Application::mouseButtonCallback(GLFWwindow* w, int button, int action, int
 void Application::mouseCallback(GLFWwindow* w, double xpos, double ypos)
 {
     auto* app = reinterpret_cast<Application*>(glfwGetWindowUserPointer(w));
-    if (!app || !app->rightMouseDown_) return;
+    if (!app || !app->rightMouseDown_ || app->sequenceCameraActive_) return;
     if (ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse) return;
 
     if (app->firstMouse_) {
@@ -342,6 +343,23 @@ void Application::gameLoop()
             camera_.UpdataCameraPosition(dt > 0.f ? dt : 1.f / 240.f);
         camera_.UpdateSmoothFocus(dt > 0.f ? dt : 1.f / 240.f);
 
+        // ── Camera Path 录制 ──────────────────────────────────────────────────
+        if (recordingCameraPath_) {
+            const double realDt = dt > 0.0 ? static_cast<double>(dt) : (1.0 / 240.0);
+            recordTimer_ += realDt;
+            recordingTime_ += realDt;
+
+            if (recordTimer_ >= recordInterval_) {
+                CameraKeyframe kf;
+                kf.time = recordingTime_;
+                kf.position = camera_.Position;
+                kf.orientation = camera_.GetOrientation();
+                kf.fovDeg = camera_.FovDeg;
+                recordingPath_.keyframes.push_back(std::move(kf));
+                recordTimer_ = 0.0;
+            }
+        }
+
         ui_->prepareFrame();
         drawFrame(dt);
 
@@ -356,6 +374,36 @@ void Application::gameLoop()
 }
 
 // ─── Skinned material conversion ──────────────────────────────────────────────
+
+void Application::beginCameraPathRecording(const std::string& pathName)
+{
+    recordingCameraPath_ = true;
+    recordingPath_ = CameraPath{};
+    recordingPath_.name = pathName;
+    recordingPath_.interpolation = 0; // CatmullRom
+    recordingTime_ = 0.0;
+    recordTimer_ = 0.0;
+}
+
+void Application::endCameraPathRecording()
+{
+    recordingCameraPath_ = false;
+    // 确保最后一个关键帧也记录了
+    CameraKeyframe kf;
+    kf.time = recordingTime_;
+    kf.position = camera_.Position;
+    kf.orientation = camera_.GetOrientation();
+    kf.fovDeg = camera_.FovDeg;
+
+    if (recordingPath_.keyframes.empty() ||
+        recordingPath_.keyframes.back().time < kf.time - 0.001) {
+        recordingPath_.keyframes.push_back(std::move(kf));
+    }
+
+    std::cout << "[CameraPath] Recording finished: " << recordingPath_.name
+              << " (" << recordingPath_.keyframes.size() << " keyframes, "
+              << recordingTime_ << "s)\n";
+}
 
 void Application::convertModelMaterialsToSkinned()
 {
@@ -407,6 +455,93 @@ void Application::drawFrame(float dt)
     const glm::mat4 view = camera_.GetViewMatrix();
     const glm::mat4 proj = camera_.GetProjectionMatrix();
     matMgr_.updateAllUBOs(imageIndex, view, proj);
+
+    // ── Sequencer 驱动 ───────────────────────────────────────────────────────
+    sequenceCameraActive_ = false;
+    bool seqHasAnimTrack = false;
+    {
+        const auto* seq = seqPlayer_.currentSequence();
+        bool hasCameraTrack = false;
+        if (seq) {
+            for (const auto& t : seq->tracks) {
+                if (t.type == TrackType::CameraPath) { hasCameraTrack = true; break; }
+            }
+            for (const auto& t : seq->tracks) {
+                if (t.type == TrackType::AnimationClip && !t.animClips.empty()) {
+                    seqHasAnimTrack = true; break;
+                }
+            }
+        }
+
+        SequencePlayer::FrameCallbacks seqCallbacks;
+        seqCallbacks.onAnimClipEval = [&](double localT, const std::string& clipName,
+                                           double clipOffset, double playSpeed) {
+            for (auto& ent : sceneMgr_.getModelEntities()) {
+                if (!ent.hasSkin_ || !ent.skeleton || ent.skeleton->bones.empty())
+                    continue;
+                for (int ci = 0; ci < static_cast<int>(ent.animationClips.size()); ++ci) {
+                    if (ent.animationClips[ci].name == clipName) {
+                        ent.previewClipIndex = ci;
+                        double t = localT + clipOffset;
+                        if (ent.animationClips[ci].duration > 0.f)
+                            t = std::fmod(t, static_cast<double>(ent.animationClips[ci].duration));
+                        ent.previewTime = static_cast<float>(t);
+                        ent.previewSpeed = static_cast<float>(playSpeed);
+                        break;
+                    }
+                }
+            }
+        };
+
+        seqCallbacks.onCameraPathEval = [&](double localT, const std::string& pathAssetRelPath) {
+            // Cache camera paths to avoid reloading from disk every frame
+            auto it = cameraPathCache_.find(pathAssetRelPath);
+            if (it == cameraPathCache_.end()) {
+                CameraPath path;
+                std::string err;
+                if (!SequenceAssetLoader::loadCameraPath(pathAssetRelPath, path, &err)) {
+                    std::cerr << "[Sequencer] Failed to load camera path: " << err << "\n";
+                    return;
+                }
+                it = cameraPathCache_.emplace(pathAssetRelPath, std::move(path)).first;
+            }
+            auto result = it->second.evaluate(localT);
+            camera_.Position = result.position;
+            camera_.SetOrientation(result.orientation);
+            camera_.FovDeg = result.fovDeg;
+            sequenceCameraActive_ = true;
+        };
+
+        seqCallbacks.onTransformTweenEval = [&](double localT, const TransformTweenClip& clip) {
+            auto result = clip.evaluate(localT);
+            if (sceneMgr_.getModelEntities().empty()) return;
+            auto& ent = sceneMgr_.getModelEntities()[0];
+            ent.transform.position = result.position;
+            ent.transform.rotation = result.rotation;
+            ent.transform.scale = result.scale;
+        };
+
+        seqCallbacks.onEvent = [&](const std::string& eventName) {
+            std::cout << "[Sequencer] Event: " << eventName << "\n";
+            for (auto& ent : sceneMgr_.getModelEntities()) {
+                if (ent.animatorController.hasStates()) {
+                    AnimatorEvent ev;
+                    ev.type = AnimatorEvent::Type::SetTrigger;
+                    ev.paramName = eventName;
+                    ent.animatorController.dispatchEvent(ev);
+                }
+            }
+        };
+
+        seqPlayer_.update(dt, seqCallbacks);
+    }
+
+    // Sequencer 未播放 AnimationClip 轨道时，恢复所有实体到正常模式
+    if (!seqHasAnimTrack || !seqPlayer_.isPlaying()) {
+        for (auto& ent : sceneMgr_.getModelEntities()) {
+            ent.previewClipIndex = -1;
+        }
+    }
 
     // 逐实体动画采样与骨骼矩阵上传：每个实体使用自己的 skeleton/clips，
     // 不再依赖全局单例，支持多骨架动画实体同场景。
@@ -554,6 +689,159 @@ void Application::recordCommandBuffer(VkCommandBuffer cb, uint32_t imageIndex)
     if (vkBeginCommandBuffer(cb, &bi) != VK_SUCCESS)
         throw std::runtime_error("Failed to begin recording command buffer!");
 
+    // ── PiP Render Pass (if Camera Actor selected) ──────────────────────────────
+    bool renderPipForCamera = false;
+    SequencerCamera* pipCameraPtr = nullptr;
+    
+    if (selectedCameraEntityId_ != 0) {
+        auto* camEnt = sceneMgr_.getModelEntity(selectedCameraEntityId_);
+        if (camEnt && camEnt->isCamera() && camEnt->cameraPreviewEnabled) {
+            camEnt->syncCameraFromTransform();
+            pipCameraPtr = &camEnt->cameraData;
+            renderPipForCamera = true;
+        }
+    }
+    
+    // Legacy PiP (via showPipWindow_)
+    if (pipActive_ && !renderPipForCamera) {
+        pipCameraPtr = &pipCamera_;
+        renderPipForCamera = true;
+    }
+    
+    if (renderPipForCamera && pipCameraPtr) {
+        constexpr uint32_t pw = FramebufferManager::kPipWidth;
+        constexpr uint32_t ph = FramebufferManager::kPipHeight;
+
+        VkClearValue pipClears[2]{};
+        pipClears[0].color = { {0.1f, 0.1f, 0.1f, 1.f} };
+        pipClears[1].depthStencil = { 1.f, 0 };
+
+        VkRenderPassBeginInfo pipRpi{};
+        pipRpi.sType             = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        pipRpi.renderPass        = rpMgr_.getPipRenderPass();
+        pipRpi.framebuffer       = fbMgr_.getPipFramebuffer();
+        pipRpi.renderArea.offset = { 0, 0 };
+        pipRpi.renderArea.extent = { pw, ph };
+        pipRpi.clearValueCount   = 2;
+        pipRpi.pClearValues      = pipClears;
+
+        TINYENGINE(cb, "PiP Render Pass");
+        vkCmdBeginRenderPass(cb, &pipRpi, VK_SUBPASS_CONTENTS_INLINE);
+
+        VkViewport pipVp{};
+        pipVp.x = 0.f; pipVp.y = 0.f;
+        pipVp.width  = static_cast<float>(pw);
+        pipVp.height = static_cast<float>(ph);
+        pipVp.minDepth = 0.f; pipVp.maxDepth = 1.f;
+        vkCmdSetViewport(cb, 0, 1, &pipVp);
+
+        VkRect2D pipSc{};
+        pipSc.offset = { 0, 0 };
+        pipSc.extent = { pw, ph };
+        vkCmdSetScissor(cb, 0, 1, &pipSc);
+
+        const glm::mat4 pipView = pipCameraPtr->getViewMatrix();
+        const glm::mat4 pipProj = pipCameraPtr->getProjMatrixVulkan();
+
+        matMgr_.updateAllPipUBOs(imageIndex, pipView, pipProj);
+
+        const auto& allEnts = sceneMgr_.getModelEntities();
+        const MaterialId fallbackMat = matMgr_.isValid(sceneMgr_.getModelMaterialId())
+            ? sceneMgr_.getModelMaterialId()
+            : matMgr_.getDefaultMeshMaterialId();
+
+        for (size_t ei = 0; ei < allEnts.size(); ++ei) {
+            const auto& ent = allEnts[ei];
+            if (!ent.visible || ent.indexCount == 0 || !ent.vertexBuffer || !ent.indexBuffer)
+                continue;
+
+            // 跳过当前预览的 Camera 实体本身：PiP 相机位于该 Actor 原点，
+            // 若绘制 Camera 模型会从内部遮挡整个预览画面。
+            if (renderPipForCamera && ent.entityId == selectedCameraEntityId_)
+                continue;
+
+            VkBuffer vb = ent.vertexBuffer; VkDeviceSize off = 0;
+            vkCmdBindVertexBuffers(cb, 0, 1, &vb, &off);
+            vkCmdBindIndexBuffer(cb, ent.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+
+            // Camera 实体的模型几何体需要叠加 modelRotationOffset（如 Y -90°）使显示朝向与预览一致
+            glm::mat4 entModel = ent.transform.GetModelMatrix();
+            const glm::mat4 offsetRot = glm::mat4_cast(ent.modelRotationOffset);
+            entModel = entModel * offsetRot;
+            PushConstants push = (ei == 0)
+                ? PushConstants{ mainModelTransform.GetModelMatrix(), mainModelTransform.GetNormalMatrix() }
+                : PushConstants{ entModel, glm::mat4(glm::transpose(glm::inverse(glm::mat3(entModel)))) };
+
+            const MaterialId useMat = matMgr_.isValid(ent.materialId) ? ent.materialId : fallbackMat;
+            VkPipeline pipe = matMgr_.getPipeline(useMat, ctx_, pipeMgr_);
+            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+            VkDescriptorSet ds = matMgr_.getPipDescriptorSet(useMat, imageIndex);
+            const bool isSkinned = (pipe == pipeMgr_.getSkinnedPipeline());
+            VkPipelineLayout pipeLayout = isSkinned
+                ? pipeMgr_.getSkinnedPipelineLayout()
+                : pipeMgr_.getMainPipelineLayout();
+            vkCmdPushConstants(cb, pipeLayout,
+                               VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &push);
+            vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    pipeLayout, 0, 1, &ds, 0, nullptr);
+
+            if (ent.subMeshes.empty()) {
+                vkCmdDrawIndexed(cb, ent.indexCount, 1, 0, 0, 0);
+            } else {
+                for (const auto& sm : ent.subMeshes) {
+                    MaterialId smMat = useMat;
+                    if (sm.materialSlot >= 0 && sm.materialSlot < (int)ent.subMeshMaterials.size()
+                        && ent.subMeshMaterials[sm.materialSlot] != 0u) {
+                        const MaterialId slotMat = ent.subMeshMaterials[sm.materialSlot];
+                        if (matMgr_.isValid(slotMat)) smMat = slotMat;
+                    }
+                    if (smMat != useMat) {
+                        pipe = matMgr_.getPipeline(smMat, ctx_, pipeMgr_);
+                        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+                        ds = matMgr_.getPipDescriptorSet(smMat, imageIndex);
+                        const bool smIsSkinned = (pipe == pipeMgr_.getSkinnedPipeline());
+                        VkPipelineLayout smPipeLayout = smIsSkinned
+                            ? pipeMgr_.getSkinnedPipelineLayout()
+                            : pipeMgr_.getMainPipelineLayout();
+                        vkCmdPushConstants(cb, smPipeLayout,
+                                           VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &push);
+                        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                                smPipeLayout, 0, 1, &ds, 0, nullptr);
+                    }
+                    vkCmdDrawIndexed(cb, sm.indexCount, 1, sm.indexOffset, 0, 0);
+                }
+            }
+        }
+
+        if (sceneMgr_.getInstanceCount() > 0 && sceneMgr_.getInstanceBuffer() != VK_NULL_HANDLE) {
+            const MaterialId boxMat = matMgr_.getDefaultBoxMaterialId();
+            VkPipeline boxPipe = matMgr_.getPipeline(boxMat, ctx_, pipeMgr_);
+            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, boxPipe);
+            VkDescriptorSet ds = matMgr_.getDescriptorSet(boxMat, imageIndex);
+            vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    pipeMgr_.getBoxPipelineLayout(), 0, 1, &ds, 0, nullptr);
+            VkBuffer bufs[] = { sceneMgr_.getCubeVertexBuffer(), sceneMgr_.getInstanceBuffer() };
+            VkDeviceSize offs[] = { 0, 0 };
+            vkCmdBindVertexBuffers(cb, 0, 2, bufs, offs);
+            vkCmdBindIndexBuffer(cb, sceneMgr_.getCubeIndexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(cb, sceneMgr_.getCubeIndexCount(), sceneMgr_.getInstanceCount(), 0, 0, 0);
+        }
+
+        vkCmdEndRenderPass(cb);
+
+        // Create PiP texture only once
+        if (!pipTextureCreated_) {
+            pipTextureId_ = (ImTextureID)ImGui_ImplVulkan_AddTexture(
+                fbMgr_.getPipSampler(),
+                fbMgr_.getPipColorImageView(),
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            pipTextureCreated_ = true;
+        }
+
+    } else if (pipTextureCreated_) {
+        // No PiP this frame, but texture exists - keep it valid
+    }
+
     std::array<VkClearValue, 2> clears{};
     if (ui_) {
         const ImVec4 cc = ui_->getClearColor();
@@ -575,6 +863,15 @@ void Application::recordCommandBuffer(VkCommandBuffer cb, uint32_t imageIndex)
     {
     vkCmdBeginRenderPass(cb, &rpi, VK_SUBPASS_CONTENTS_INLINE);
 
+    // 主管线已启用动态 viewport/scissor，每个 renderpass 开始时需显式设置。
+    {
+        const VkExtent2D ext = swapChain_.getExtent();
+        VkViewport vp{ 0.f, 0.f, static_cast<float>(ext.width), static_cast<float>(ext.height), 0.f, 1.f };
+        VkRect2D sc{ {0, 0}, ext };
+        vkCmdSetViewport(cb, 0, 1, &vp);
+        vkCmdSetScissor(cb, 0, 1, &sc);
+    }
+
     // ── All model entities ────────────────────────────────────────────────────
     {
         TINYENGINE(cb, "Scene Geometry");
@@ -594,9 +891,13 @@ void Application::recordCommandBuffer(VkCommandBuffer cb, uint32_t imageIndex)
                 vkCmdBindIndexBuffer(cb, ent.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
                 // Entity 0 使用 mainModelTransform，其他实体使用自身的 transform
+                // Camera 实体的模型几何体需要叠加 modelRotationOffset（如 Y -90°）使显示朝向与预览一致
+                glm::mat4 entModel = ent.transform.GetModelMatrix();
+                const glm::mat4 offsetRot = glm::mat4_cast(ent.modelRotationOffset);
+                entModel = entModel * offsetRot;
                 PushConstants push = (ei == 0)
                     ? PushConstants{ mainModelTransform.GetModelMatrix(), mainModelTransform.GetNormalMatrix() }
-                    : PushConstants{ ent.transform.GetModelMatrix(), ent.transform.GetNormalMatrix() };
+                    : PushConstants{ entModel, glm::mat4(glm::transpose(glm::inverse(glm::mat3(entModel)))) };
 
                 const MaterialId useMat = matMgr_.isValid(ent.materialId) ? ent.materialId : fallbackMat;
                 VkPipeline pipe = matMgr_.getPipeline(useMat, ctx_, pipeMgr_);
@@ -684,6 +985,10 @@ void Application::recreateSwapChain()
         glfwWaitEvents();
     }
     vkDeviceWaitIdle(ctx_.getDevice());
+
+    // recreateSwapChain 会调用 ImGui_ImplVulkan_Shutdown 销毁所有 ImGui texture，
+    // 必须重置 pipTextureCreated_，否则下一帧 PiP 会使用已失效的旧 texture 句柄。
+    pipTextureCreated_ = false;
 
     pickSys_.destroy(ctx_, cmdMgr_);
     cmdMgr_.freeCommandBuffers(ctx_);
@@ -804,9 +1109,14 @@ void Application::tryPickMainModel(float cx, float cy)
     if (auto* ent = sceneMgr_.getModelEntity(static_cast<uint64_t>(id))) {
         mainModelSelected = false;
         pickedBoxEntityId = 0;
+        selectedCameraEntityId_ = 0;
         if (ui_) ui_->selectedEntityId_ = ent->entityId;
         selectedMaterialId = ent->materialId
             ? ent->materialId : firstRenderedModelMaterialId();
+        // 标记是否为 Camera
+        if (ent->isCamera()) {
+            selectedCameraEntityId_ = ent->entityId;
+        }
         // Entity 0 的兼容路径
         const auto& ents = sceneMgr_.getModelEntities();
         if (!ents.empty() && ent->entityId == ents[0].entityId)
@@ -859,6 +1169,14 @@ void Application::setBoxMaterial(RenderEntityId eid, MaterialId id)
     if (!matMgr_.isValid(id)) return;
     sceneMgr_.setBoxMaterialId(eid, id);
     if (pickedBoxEntityId == eid) selectedMaterialId = id;
+}
+
+uint64_t Application::createCameraActor(const glm::vec3& position, const glm::quat& orientation)
+{
+    uint64_t entityId = sceneMgr_.createCameraEntity(position, orientation, ctx_, bufMgr_);
+    selectedCameraEntityId_ = entityId;
+    if (ui_) ui_->selectedEntityId_ = entityId;
+    return entityId;
 }
 
 bool Application::ensureAnimationAssetForMeshAst(const std::string& meshAstRelPath,
@@ -2264,16 +2582,18 @@ void Application::processInput(GLFWwindow* w)
         tryBeginCameraFocusOnPick();
     fKeyWasDown = fKeyDown;
 
-    // 1/2/3 切换 ImGuizmo 操作模式
+    // 1/2/3 切换 ImGuizmo 操作模式，4 切换世界/本地坐标系
     if (!imguiKb) {
-        static bool key1WasDown = false, key2WasDown = false, key3WasDown = false;
+        static bool key1WasDown = false, key2WasDown = false, key3WasDown = false, key4WasDown = false;
         const bool k1 = glfwGetKey(w, GLFW_KEY_1) == GLFW_PRESS;
         const bool k2 = glfwGetKey(w, GLFW_KEY_2) == GLFW_PRESS;
         const bool k3 = glfwGetKey(w, GLFW_KEY_3) == GLFW_PRESS;
+        const bool k4 = glfwGetKey(w, GLFW_KEY_4) == GLFW_PRESS;
         if (k1 && !key1WasDown) ui_->gizmoOperation_ = 7;   // ImGuizmo::TRANSLATE
         if (k2 && !key2WasDown) ui_->gizmoOperation_ = 120; // ImGuizmo::ROTATE
         if (k3 && !key3WasDown) ui_->gizmoOperation_ = 896; // ImGuizmo::SCALE
-        key1WasDown = k1; key2WasDown = k2; key3WasDown = k3;
+        if (k4 && !key4WasDown) ui_->gizmoLocal_ = !ui_->gizmoLocal_; // 切换 WORLD/LOCAL
+        key1WasDown = k1; key2WasDown = k2; key3WasDown = k3; key4WasDown = k4;
     }
 
     camera_.speedZ = (glfwGetKey(w, GLFW_KEY_W) == GLFW_PRESS)  ?  1.f

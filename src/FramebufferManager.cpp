@@ -8,6 +8,7 @@ void FramebufferManager::create(const VulkanContext& ctx, const SwapChain& swapC
     createDepthResources(ctx, swapChain, rpMgr);
     createMainFramebuffers(ctx, swapChain, rpMgr);
     createPickResources(ctx, swapChain, rpMgr);
+    createPipResources(ctx, rpMgr);
 }
 
 void FramebufferManager::recreate(const VulkanContext& ctx, const SwapChain& swapChain,
@@ -19,6 +20,7 @@ void FramebufferManager::recreate(const VulkanContext& ctx, const SwapChain& swa
 
 void FramebufferManager::destroy(const VulkanContext& ctx)
 {
+    destroyPipResources(ctx);
     destroyPickResources(ctx);
 
     for (auto fb : framebuffers_)
@@ -190,5 +192,94 @@ void FramebufferManager::destroyPickResources(const VulkanContext& ctx)
     if (pickDepthMemory_ != VK_NULL_HANDLE) {
         vkFreeMemory(ctx.getDevice(), pickDepthMemory_, nullptr);
         pickDepthMemory_ = VK_NULL_HANDLE;
+    }
+}
+
+void FramebufferManager::createPipResources(const VulkanContext& ctx,
+                                            const RenderPassManager& rpMgr)
+{
+    const uint32_t w = kPipWidth, h = kPipHeight;
+    // 颜色附件格式必须与 PiP renderpass 一致（即 swapchain 格式），
+    // 否则 framebuffer 创建会失败或管线渲染不兼容。
+    const VkFormat colorFmt = rpMgr.getPipColorFormat();
+
+    createImage(ctx, w, h, colorFmt, VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, pipColorImage_, pipColorMemory_);
+    pipColorImageView_ = createImageView(ctx, pipColorImage_, colorFmt,
+                                         VK_IMAGE_ASPECT_COLOR_BIT);
+
+    VkFormat depthFmt = rpMgr.findDepthFormat(ctx);
+    createImage(ctx, w, h, depthFmt, VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, pipDepthImage_, pipDepthMemory_);
+    pipDepthImageView_ = createImageView(ctx, pipDepthImage_, depthFmt, VK_IMAGE_ASPECT_DEPTH_BIT);
+
+    std::array<VkImageView, 2> atts{ pipColorImageView_, pipDepthImageView_ };
+    VkFramebufferCreateInfo fbi{};
+    fbi.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    fbi.renderPass      = rpMgr.getPipRenderPass();
+    fbi.attachmentCount = static_cast<uint32_t>(atts.size());
+    fbi.pAttachments    = atts.data();
+    fbi.width           = w;
+    fbi.height          = h;
+    fbi.layers          = 1;
+
+    if (vkCreateFramebuffer(ctx.getDevice(), &fbi, nullptr, &pipFramebuffer_) != VK_SUCCESS)
+        throw std::runtime_error("Failed to create PiP framebuffer!");
+
+    // Create a sampler for ImGui to sample the PiP color image
+    VkSamplerCreateInfo samplerInfo{};
+    samplerInfo.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerInfo.magFilter    = VK_FILTER_LINEAR;
+    samplerInfo.minFilter    = VK_FILTER_LINEAR;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.anisotropyEnable = VK_FALSE;
+    samplerInfo.maxAnisotropy    = 1.f;
+    samplerInfo.borderColor      = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    samplerInfo.unnormalizedCoordinates = VK_FALSE;
+    samplerInfo.compareEnable    = VK_FALSE;
+    samplerInfo.compareOp        = VK_COMPARE_OP_ALWAYS;
+    samplerInfo.mipmapMode       = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+
+    if (vkCreateSampler(ctx.getDevice(), &samplerInfo, nullptr, &pipSampler_) != VK_SUCCESS)
+        throw std::runtime_error("Failed to create PiP sampler!");
+}
+
+void FramebufferManager::destroyPipResources(const VulkanContext& ctx)
+{
+    if (pipSampler_ != VK_NULL_HANDLE) {
+        vkDestroySampler(ctx.getDevice(), pipSampler_, nullptr);
+        pipSampler_ = VK_NULL_HANDLE;
+    }
+    if (pipFramebuffer_ != VK_NULL_HANDLE) {
+        vkDestroyFramebuffer(ctx.getDevice(), pipFramebuffer_, nullptr);
+        pipFramebuffer_ = VK_NULL_HANDLE;
+    }
+    if (pipColorImageView_ != VK_NULL_HANDLE) {
+        vkDestroyImageView(ctx.getDevice(), pipColorImageView_, nullptr);
+        pipColorImageView_ = VK_NULL_HANDLE;
+    }
+    if (pipColorImage_ != VK_NULL_HANDLE) {
+        vkDestroyImage(ctx.getDevice(), pipColorImage_, nullptr);
+        pipColorImage_ = VK_NULL_HANDLE;
+    }
+    if (pipColorMemory_ != VK_NULL_HANDLE) {
+        vkFreeMemory(ctx.getDevice(), pipColorMemory_, nullptr);
+        pipColorMemory_ = VK_NULL_HANDLE;
+    }
+    if (pipDepthImageView_ != VK_NULL_HANDLE) {
+        vkDestroyImageView(ctx.getDevice(), pipDepthImageView_, nullptr);
+        pipDepthImageView_ = VK_NULL_HANDLE;
+    }
+    if (pipDepthImage_ != VK_NULL_HANDLE) {
+        vkDestroyImage(ctx.getDevice(), pipDepthImage_, nullptr);
+        pipDepthImage_ = VK_NULL_HANDLE;
+    }
+    if (pipDepthMemory_ != VK_NULL_HANDLE) {
+        vkFreeMemory(ctx.getDevice(), pipDepthMemory_, nullptr);
+        pipDepthMemory_ = VK_NULL_HANDLE;
     }
 }

@@ -122,8 +122,14 @@ public:
     // 将 view/proj 和材质颜色写入所有材质的 imageIndex 号 UBO
     void updateAllUBOs(uint32_t imageIndex, const glm::mat4& view, const glm::mat4& proj);
 
+    /** @brief 仅更新所有材质的 PiP UBO（独立于主场景 UBO） */
+    void updateAllPipUBOs(uint32_t imageIndex, const glm::mat4& view, const glm::mat4& proj);
+
     // ── Descriptor Set 访问 ──────────────────────────────────────────
     VkDescriptorSet getDescriptorSet(MaterialId id, uint32_t imageIndex) const;
+
+    /** @brief 返回材质的 PiP 专用 descriptor set（binding 0 指向 PiP UBO） */
+    VkDescriptorSet getPipDescriptorSet(MaterialId id, uint32_t imageIndex) const;
 
     // ── 查询 ─────────────────────────────────────────────────────────
     MaterialType        getMaterialType(MaterialId id) const;
@@ -168,6 +174,13 @@ private:
         std::vector<VkDescriptorSet> descSets;
         bool                         skinned = false;
 
+        // PiP 预览专用 UBO + descriptor set：view/proj 独立于主相机，
+        // 避免与主场景共享同一块 mapped UBO 导致的 GPU 读取时序冲突。
+        std::vector<VkBuffer>        pipUbos;
+        std::vector<VkDeviceMemory>  pipUboMemory;
+        std::vector<void*>           pipUboMapped;
+        std::vector<VkDescriptorSet> pipDescSets;
+
         TextureGPU albedo, normal; // Mesh material textures (legacy)
         TextureGPU metallicRoughness, ao, emissive; // PBR additions
 
@@ -206,6 +219,11 @@ private:
                           const PipelineManager& pipeMgr);
     void writeDescSets(MaterialEntry& e, const VulkanContext& ctx,
                        const PipelineManager& pipeMgr);
+    /** @brief 为材质创建 PiP 专用 UBO + descriptor set（纹理/bone UBO 复用主资源） */
+    void createPipResources(MaterialEntry& e, const VulkanContext& ctx,
+                            const BufferManager& bufMgr, const PipelineManager& pipeMgr);
+    void writePipDescSets(MaterialEntry& e, const VulkanContext& ctx);
+    void destroyPipUBOs(MaterialEntry& e, const VulkanContext& ctx);
     void destroyEntry(MaterialEntry& e, const VulkanContext& ctx);
 
     static void loadTexture(TextureGPU& tex, const std::string& path,

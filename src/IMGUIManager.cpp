@@ -16,6 +16,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -354,6 +355,18 @@ void UIManager::prepareFrame()
 
     ImGui::Checkbox("Content Browser", &showContentBrowser_);
     ImGui::Checkbox("Animator", &showAnimatorPanel_);
+    ImGui::Checkbox("Sequencer", &showSequencerPanel_);
+
+    if (ImGui::Button("New Camera")) {
+        if (vulkanRender) {
+            Camera& cam = vulkanRender->getCamera();
+            glm::vec3 forward = cam.Forward;
+            glm::vec3 spawnPos = cam.Position + forward * 5.0f;
+            vulkanRender->createCameraActor(spawnPos, cam.GetOrientation());
+        }
+    }
+
+    ImGui::Checkbox("PiP Camera", &showPipWindow_);
 
     ImGui::ColorEdit3("clear color", (float*)&clear_color); 
 
@@ -576,7 +589,18 @@ void UIManager::prepareFrame()
 		drawPropertiesPanel();
 
 	if (showAnimatorPanel_)
-		drawAnimatorPanel();
+        drawAnimatorPanel();
+
+    bool shouldShowPip = showPipWindow_;
+    if (vulkanRender && vulkanRender->selectedCameraEntityId_ != 0) {
+        shouldShowPip = true;
+    }
+    
+    if (shouldShowPip && vulkanRender)
+        drawPipWindow();
+
+    if (showSequencerPanel_ && vulkanRender)
+        drawSequencerPanel();
 
 	if (vulkanRender != nullptr) {
 		ImGuiIO& io = ImGui::GetIO();
@@ -587,13 +611,14 @@ void UIManager::prepareFrame()
 		glm::mat4 proj = vulkanRender->getSceneProjMatrixForImGuizmo();
 
 		ImGuizmo::OPERATION op = static_cast<ImGuizmo::OPERATION>(gizmoOperation_);
+		const ImGuizmo::MODE gizmoMode = gizmoLocal_ ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
 
 		// 优先对选中的非 Box 实体操作 ImGuizmo
 		if (selectedEntityId_ != 0) {
 			auto* ent = vulkanRender->getSceneManager().getModelEntity(selectedEntityId_);
 			if (ent) {
 				glm::mat4 model = ent->transform.GetModelMatrix();
-				ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), op, ImGuizmo::WORLD,
+				ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), op, gizmoMode,
 					glm::value_ptr(model), nullptr, nullptr);
 				// 从修改后的矩阵分解 TRS
 				ent->transform.position = glm::vec3(model[3]);
@@ -611,7 +636,7 @@ void UIManager::prepareFrame()
 		}
 		else if (vulkanRender->mainModelSelected) {
 			glm::mat4 model = vulkanRender->mainModelTransform.GetModelMatrix();
-			ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), op, ImGuizmo::WORLD,
+			ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), op, gizmoMode,
 				glm::value_ptr(model), nullptr, nullptr);
 			vulkanRender->mainModelTransform.position = glm::vec3(model[3]);
 			vulkanRender->mainModelTransform.scale = glm::vec3(
@@ -627,11 +652,41 @@ void UIManager::prepareFrame()
 		else if (vulkanRender->pickedBoxEntityId != 0) {
 			glm::vec3 boxPos = vulkanRender->getBoxPosition(vulkanRender->pickedBoxEntityId);
 			glm::mat4 model = glm::translate(glm::mat4(1.0f), boxPos);
-			ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), op, ImGuizmo::WORLD,
+			ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), op, gizmoMode,
 				glm::value_ptr(model), nullptr, nullptr);
 			vulkanRender->setBoxPosition(vulkanRender->pickedBoxEntityId, glm::vec3(model[3]));
 		}
 	}
+
+    // ── PiP Overlay on main viewport (right-bottom corner) ───────────────────
+    if (vulkanRender && vulkanRender->selectedCameraEntityId_ != 0) {
+        ImTextureID pipTex = vulkanRender->getPipTextureId();
+        if (pipTex != (ImTextureID)0) {
+            ImGuiIO& io = ImGui::GetIO();
+            const float pipW = io.DisplaySize.x * 0.25f;
+            const float pipH = io.DisplaySize.y * 0.25f;
+            const float offsetX = io.DisplaySize.x - pipW - 10;
+            const float offsetY = io.DisplaySize.y - pipH - 10;
+
+            ImDrawList* drawList = ImGui::GetForegroundDrawList();
+            drawList->AddImage(
+                pipTex,
+                ImVec2(offsetX, offsetY),
+                ImVec2(offsetX + pipW, offsetY + pipH),
+                ImVec2(0, 0),
+                ImVec2(1, 1),
+                IM_COL32(255, 255, 255, 255)
+            );
+            drawList->AddRect(
+                ImVec2(offsetX, offsetY),
+                ImVec2(offsetX + pipW, offsetY + pipH),
+                IM_COL32(100, 200, 255, 200),
+                0.0f,
+                0,
+                2.0f
+            );
+        }
+    }
 
     ImGui::Render();
 }
@@ -1033,16 +1088,25 @@ void UIManager::drawSceneOutliner()
     const auto& ents = scene.getModelEntities();
     for (size_t i = 0; i < ents.size(); ++i) {
         const auto& ent = ents[i];
-        char label[256];
+        
+        if (ent.isCamera()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
+        }
+        
         const char* name = ent.displayName.empty() ? "(unnamed)" : ent.displayName.c_str();
+        char label[256];
         snprintf(label, sizeof(label), "%s##ent%llu", name,
                  static_cast<unsigned long long>(ent.entityId));
 
         if (ImGui::Selectable(label, selectedEntityId_ == ent.entityId)) {
             selectedEntityId_ = ent.entityId;
-            // 同步到 Application 的选中状态
             vulkanRender->mainModelSelected = (i == 0);
             vulkanRender->pickedBoxEntityId = 0;
+            vulkanRender->selectedCameraEntityId_ = ent.isCamera() ? ent.entityId : 0;
+        }
+        
+        if (ent.isCamera()) {
+            ImGui::PopStyleColor();
         }
     }
 
@@ -1086,7 +1150,148 @@ void UIManager::drawSceneOutliner()
     ImGui::End();
 }
 
-// ── Animator Panel ──────────────────────────────────────────────────────────
+// ─── PiP (Picture-in-Picture) Window ────────────────────────────────────────
+
+void UIManager::drawPipWindow()
+{
+    ImGui::SetNextWindowSize(ImVec2(360, 300), ImGuiCond_FirstUseEver);
+    bool windowOpen = true;
+    if (!ImGui::Begin("PiP Camera", &windowOpen)) {
+        if (vulkanRender) vulkanRender->setPipActive(false);
+        ImGui::End();
+        return;
+    }
+    
+    if (!windowOpen) {
+        showPipWindow_ = false;
+    }
+
+    if (!vulkanRender) {
+        ImGui::TextDisabled("(unavailable)");
+        ImGui::End();
+        return;
+    }
+
+    vulkanRender->setPipActive(true);
+
+    auto& pipCam = vulkanRender->getPipCamera();
+    
+    if (vulkanRender->selectedCameraEntityId_ != 0) {
+        auto* camEnt = vulkanRender->getSceneManager().getModelEntity(vulkanRender->selectedCameraEntityId_);
+        if (camEnt && camEnt->isCamera()) {
+            ImGui::Text("Camera Actor: %s", camEnt->displayName.c_str());
+            ImGui::Separator();
+            
+            ImGui::DragFloat("FOV", &camEnt->cameraData.fovDeg, 1.0f, 10.0f, 120.0f);
+            ImGui::DragFloat("Near Plane", &camEnt->cameraData.nearPlane, 0.01f, 0.01f, 10.0f);
+            ImGui::DragFloat("Far Plane", &camEnt->cameraData.farPlane, 1.0f, 10.0f, 1000.0f);
+            ImGui::Checkbox("Preview Enabled", &camEnt->cameraPreviewEnabled);
+            
+            ImGui::Separator();
+            ImGui::Text("Use Gizmo to move/rotate");
+        } else {
+            ImGui::TextDisabled("Camera entity not found");
+        }
+    } else {
+        ImGui::Text("PiP Camera Properties");
+        ImGui::Separator();
+
+        if (ImGui::Button("Sync from Main Camera")) {
+            pipCam.syncFromMainCamera(vulkanRender->getCamera());
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reset to Default")) {
+            pipCam.position    = glm::vec3(0.f, 0.f, 5.f);
+            pipCam.orientation = glm::quat(1.f, 0.f, 0.f, 0.f);
+            pipCam.fovDeg      = 45.f;
+            pipCam.aspectRatio = static_cast<float>(pipWindowWidth_) / static_cast<float>(pipWindowHeight_);
+        }
+
+        float pos[3] = { pipCam.position.x, pipCam.position.y, pipCam.position.z };
+        if (ImGui::DragFloat3("Position", pos, 0.1f))
+            pipCam.position = glm::vec3(pos[0], pos[1], pos[2]);
+
+        glm::vec3 eulerAngles = glm::degrees(glm::eulerAngles(pipCam.orientation));
+        float eulerArr[3] = { eulerAngles.x, eulerAngles.y, eulerAngles.z };
+        if (ImGui::DragFloat3("Rotation (deg)", eulerArr, 1.0f)) {
+            glm::vec3 rad = glm::radians(glm::vec3(eulerArr[0], eulerArr[1], eulerArr[2]));
+            pipCam.orientation = glm::quat(rad);
+        }
+
+        ImGui::DragFloat("FOV", &pipCam.fovDeg, 1.0f, 10.0f, 120.0f);
+
+        const float fixedAspect = static_cast<float>(pipWindowWidth_) / static_cast<float>(pipWindowHeight_);
+        pipCam.aspectRatio = fixedAspect;
+        ImGui::Text("Aspect (locked to framebuffer): %.3f", fixedAspect);
+    }
+
+    ImGui::Separator();
+    ImGui::Text("Resolution: %dx%d", pipWindowWidth_, pipWindowHeight_);
+
+    ImTextureID texId = vulkanRender->getPipTextureId();
+    if (texId != (ImTextureID)0) {
+        const float aspect = pipCam.aspectRatio;
+        const float availW = ImGui::GetContentRegionAvail().x;
+        const float availH = ImGui::GetContentRegionAvail().y;
+        float imgW = availW;
+        float imgH = imgW / aspect;
+        if (imgH > availH) {
+            imgH = availH;
+            imgW = imgH * aspect;
+        }
+
+        const ImVec2 imgSize(imgW, imgH);
+        ImGui::Image(texId, imgSize,
+                     ImVec2(0, 0), ImVec2(1, 1),
+                     ImVec4(1, 1, 1, 1),
+                     ImVec4(0.5f, 0.5f, 0.5f, 1.f));
+    } else {
+        ImGui::TextDisabled("(PiP texture not ready yet)");
+    }
+
+    ImGui::End();
+}
+
+// ─── Sequencer Panel ─────────────────────────────────────────────────────────
+
+void UIManager::drawSequencerPanel()
+{
+    ImGui::SetNextWindowSize(ImVec2(800, 400), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Sequencer", &showSequencerPanel_)) {
+        ImGui::End();
+        return;
+    }
+
+    if (!vulkanRender) {
+        ImGui::TextDisabled("(unavailable)");
+        ImGui::End();
+        return;
+    }
+
+    auto& seqPlayer = vulkanRender->getSequencePlayer();
+    auto& sequence = vulkanRender->getCurrentSequence();
+
+    ImGui::Text("Sequencer Panel (WIP)");
+    ImGui::Separator();
+
+    if (seqPlayer.isPlaying()) {
+        if (ImGui::Button("Pause"))
+            seqPlayer.pause();
+    } else {
+        if (ImGui::Button("Play"))
+            seqPlayer.play();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Stop"))
+        seqPlayer.stop();
+
+    ImGui::Text("Duration: %.2fs", sequence.computeTotalDuration());
+    ImGui::Text("Tracks: %zu", sequence.tracks.size());
+
+    ImGui::End();
+}
+
+// ─── Animator Panel ─────────────────────────────────────────────────────────
 
 void UIManager::drawAnimatorPanel()
 {

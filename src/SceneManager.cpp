@@ -1,5 +1,6 @@
 #include "SceneManager.hpp"
 #include "FbxImporter.hpp"
+#include "MaterialAssetLoader.hpp"
 // Workaround: tinyobjloader's embedded fast_float library marks SIMD-using
 // helpers as `FASTFLOAT_CONSTEXPR20 = constexpr` whenever the host stdlib
 // reports __cpp_lib_constexpr_algorithms >= 201806L. MSVC 19.43+ in C++20
@@ -1007,6 +1008,9 @@ void SceneManager::destroy(const VulkanContext& ctx)
     destroyBuf(ctx, instanceBuffer_,   instanceMemory_);
     destroyBuf(ctx, cubeIndexBuffer_,  cubeIndexMemory_);
     destroyBuf(ctx, cubeVertexBuffer_, cubeVertexMemory_);
+    destroyBuf(ctx, cameraModelIndexBuffer_,  cameraModelIndexMemory_);
+    destroyBuf(ctx, cameraModelVertexBuffer_, cameraModelVertexMemory_);
+    cameraModelLoaded_ = false;
     destroyCachedModelResources(ctx);
     for (auto& ent : modelEntities_) {
         releaseEntityMeshBuffers(ctx, ent);
@@ -1050,6 +1054,113 @@ uint32_t SceneManager::getBoxMaterialId(RenderEntityId eid) const
 {
     auto it = boxMaterialIds_.find(eid);
     return (it != boxMaterialIds_.end()) ? it->second : 0u;
+}
+
+// ─── Camera Entity Management ────────────────────────────────────────────────
+
+bool SceneManager::isCameraEntity(uint64_t entityId) const
+{
+    const auto* ent = const_cast<SceneManager*>(this)->getModelEntity(entityId);
+    return ent && ent->isCamera();
+}
+
+void SceneManager::loadCameraModelOnce(const VulkanContext& ctx, const BufferManager& bufMgr)
+{
+    if (cameraModelLoaded_) return;
+
+    const std::string cameraModelKey = "content/Camera/Camera.mesh.ast";
+    auto it = modelResourceCache_.find(cameraModelKey);
+    if (it != modelResourceCache_.end()) {
+        cameraModelVertexBuffer_ = it->second.vertexBuffer;
+        cameraModelVertexMemory_ = it->second.vertexMemory;
+        cameraModelIndexBuffer_ = it->second.indexBuffer;
+        cameraModelIndexMemory_ = it->second.indexMemory;
+        cameraModelIndexCount_ = it->second.indexCount;
+        cameraModelSubMeshes_ = it->second.subMeshes;
+        cameraModelLoaded_ = true;
+        return;
+    }
+
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+
+    const std::string resRoot = MaterialAssetLoader::getResRoot();
+    const std::string fbxPath = resRoot + "/bin/mesh/Camera.fbx";
+
+    FbxImportResult fbx;
+    std::string fbxError;
+    if (FbxImporter::load(fbxPath, fbx, &fbxError) && !fbx.vertices.empty() && !fbx.indices.empty()) {
+        vertices = std::move(fbx.vertices);
+        indices = std::move(fbx.indices);
+        cameraModelSubMeshes_.clear();
+        cameraModelSubMeshes_.reserve(fbx.subMeshes.size());
+        for (const auto& s : fbx.subMeshes)
+            cameraModelSubMeshes_.push_back({ s.indexOffset, s.indexCount, s.skinIndex, s.materialSlot });
+    } else {
+        std::cerr << "[SceneManager] Camera.fbx load failed (" << fbxPath
+                  << "): " << fbxError << " — falling back to placeholder cube\n";
+        constexpr float s = 0.3f;
+        vertices = {
+            {{-s, -s, -s}, {0,0,0}, {0,0}}, {{s, -s, -s}, {0,0,0}, {1,0}},
+            {{s, s, -s}, {0,0,0}, {1,1}}, {{-s, s, -s}, {0,0,0}, {0,1}},
+            {{-s, -s, s}, {0,0,0}, {0,0}}, {{s, -s, s}, {0,0,0}, {1,0}},
+            {{s, s, s}, {0,0,0}, {1,1}}, {{-s, s, s}, {0,0,0}, {0,1}},
+        };
+        indices = {0,1,2,2,3,0, 1,5,6,6,2,1, 5,4,7,7,6,5, 4,0,3,3,7,4, 3,2,6,6,7,3, 4,5,1,1,0,4};
+        SubMesh sm{};
+        sm.indexOffset = 0;
+        sm.indexCount = static_cast<uint32_t>(indices.size());
+        sm.materialSlot = -1;
+        cameraModelSubMeshes_ = { sm };
+    }
+
+    cameraModelIndexCount_ = static_cast<uint32_t>(indices.size());
+
+    bufMgr.createVertexBuffer(vertices, cameraModelVertexBuffer_, cameraModelVertexMemory_);
+    bufMgr.createIndexBuffer(indices, cameraModelIndexBuffer_, cameraModelIndexMemory_);
+
+    cameraModelLoaded_ = true;
+}
+
+uint64_t SceneManager::createCameraEntity(const glm::vec3& position,
+                                            const glm::quat& orientation,
+                                            const VulkanContext& ctx,
+                                            const BufferManager& bufMgr)
+{
+    loadCameraModelOnce(ctx, bufMgr);
+
+    ModelEntity entity;
+    entity.entityId = nextEntityId_++;
+    entity.type = ModelEntity::Type::Camera;
+    entity.displayName = "Camera_" + std::to_string(entity.entityId);
+
+    entity.vertexBuffer = cameraModelVertexBuffer_;
+    entity.vertexMemory = cameraModelVertexMemory_;
+    entity.indexBuffer = cameraModelIndexBuffer_;
+    entity.indexMemory = cameraModelIndexMemory_;
+    entity.ownsMeshBuffers = false;
+    entity.indexCount = cameraModelIndexCount_;
+    entity.subMeshes = cameraModelSubMeshes_;
+    entity.visible = true;
+
+    entity.transform.position = position;
+    entity.transform.rotation = orientation;
+    entity.transform.scale = glm::vec3(1.0f);
+
+    // Camera 模型 mesh 的默认朝向与预览的 -Z 前向相差 Y -90°，
+    // 这里额外给模型几何体施加一个 Y -90° 偏移，使显示朝向与预览朝向一致。
+    // 注意：此偏移只作用于渲染矩阵，cameraData.orientation 仍使用 Actor 原始朝向。
+    entity.modelRotationOffset = glm::angleAxis(glm::radians(-90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+
+    entity.cameraData.position = position;
+    entity.cameraData.orientation = orientation;
+    entity.cameraData.fovDeg = 45.0f;
+    entity.cameraData.aspectRatio = 4.0f / 3.0f;
+    entity.cameraData.nearPlane = 0.1f;
+    entity.cameraData.farPlane = 100.0f;
+
+    modelEntities_.push_back(std::move(entity));
+    return modelEntities_.back().entityId;
 }
 
 void SceneManager::rebuildInstanceBuffer(const VulkanContext& ctx, const BufferManager& bufMgr)

@@ -346,6 +346,8 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     <ClCompile Include="E:\Projects\tinyEngine\src\Animation\AnimatorController.cpp" />
     <ClCompile Include="E:\Projects\tinyEngine\src\Animation\Sequence.cpp" />
     <ClCompile Include="E:\Projects\tinyEngine\src\Animation\SequenceAssetLoader.cpp" />
+    <ClCompile Include="E:\Projects\tinyEngine\src\Animation\SequencePlayer.cpp" />
+    <ClCompile Include="E:\Projects\tinyEngine\src\Animation\SequencerCamera.cpp" />
     <ClCompile Include="E:\Projects\tinyEngine\src\Animation\Skeleton.cpp" />
     <ClCompile Include="E:\Projects\tinyEngine\src\Application.cpp" />
     <ClCompile Include="E:\Projects\tinyEngine\src\BufferManager.cpp" />

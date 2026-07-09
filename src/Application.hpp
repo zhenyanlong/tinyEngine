@@ -16,7 +16,12 @@
 #include "camera.hpp"
 #include "VulkanTypes.hpp"
 #include "Transform.hpp"
+#include "Animation/Sequence.hpp"
+#include "Animation/SequencePlayer.hpp"
+#include "Animation/SequenceAssetLoader.hpp"
+#include "Animation/SequencerCamera.hpp"
 #include <glm/glm.hpp>
+#include <unordered_map>
 
 class Application {
 public:
@@ -81,6 +86,33 @@ public:
     /** @brief 返回资源根目录 */
     std::string getResRoot() const { return modelRegistry_.getResRoot(); }
 
+    // ── Sequencer API ─────────────────────────────────────────────────────────
+    SequencePlayer& getSequencePlayer() { return seqPlayer_; }
+    Sequence&       getCurrentSequence() { return currentSequence_; }
+    bool            isSequencerPlaying() const { return seqPlayer_.isPlaying(); }
+
+    // ── Camera Path recording API ────────────────────────────────────────────
+    void beginCameraPathRecording(const std::string& pathName);
+    void endCameraPathRecording();
+    bool isRecordingCameraPath() const { return recordingCameraPath_; }
+    const CameraPath& getRecordingPath() const { return recordingPath_; }
+    double getRecordingTime() const { return recordingTime_; }
+    void setRecordInterval(double sec) { recordInterval_ = std::max(0.05, sec); }
+
+    // ── PiP (Picture-in-Picture) API ─────────────────────────────────────────
+    ImTextureID getPipTextureId() const { return pipTextureId_; }
+    bool        isPipActive()      const { return pipActive_; }
+    void        setPipActive(bool active) { pipActive_ = active; }
+    SequencerCamera& getPipCamera() { return pipCamera_; }
+    Camera&     getCamera()              { return camera_; }
+    const Camera& getCamera() const      { return camera_; }
+
+    /** @brief 创建 Camera Actor 实体 */
+    uint64_t createCameraActor(const glm::vec3& position, const glm::quat& orientation);
+
+    /** @brief 当前选中的 Camera entityId（0 表示无） */
+    uint64_t selectedCameraEntityId_ = 0;
+
     /** @brief 将 RGBA 像素数据上传为 ImTextureID（调用方负责加载 PNG） */
     ImTextureID createUITexture(const void* rgbaPixels, int w, int h, VkSampler& outSampler);
 
@@ -141,6 +173,27 @@ private:
     PickSystem         pickSys_;
     UIManager*         ui_  = nullptr;
     Camera             camera_;
+
+    // ── Sequencer state ───────────────────────────────────────────────────────
+    SequencePlayer     seqPlayer_;
+    Sequence           currentSequence_;
+    bool               sequenceCameraActive_ = false;
+
+    // ── Camera Path cache ──────────────────────────────────────────────────
+    std::unordered_map<std::string, CameraPath> cameraPathCache_;
+
+    // ── Camera Path recording ────────────────────────────────────────────────
+    bool               recordingCameraPath_ = false;
+    CameraPath         recordingPath_;
+    double             recordingTime_  = 0.0;
+    double             recordInterval_ = 0.1;
+    double             recordTimer_    = 0.0;
+
+    // ── PiP state ─────────────────────────────────────────────────────────────
+    SequencerCamera    pipCamera_;
+    bool               pipActive_     = false;
+    ImTextureID        pipTextureId_  = (ImTextureID)0;
+    bool               pipTextureCreated_ = false;  // 标记纹理是否已创建
 
     bool  firstMouse_       = true;
     bool  rightMouseDown_   = false;

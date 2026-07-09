@@ -8,8 +8,10 @@
 #include "Animation/Skeleton.hpp"
 #include "Animation/AnimationClip.hpp"
 #include "Animation/AnimatorController.hpp"
+#include "Animation/SequencerCamera.hpp"
 
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -29,6 +31,9 @@ public:
     };
 
     struct ModelEntity {
+        enum class Type { Mesh, Camera };
+        Type type = Type::Mesh;
+        
         uint64_t entityId = 0;
         uint64_t modelAssetId = 0;
         ObjectTransform transform;
@@ -61,6 +66,21 @@ public:
         int previewClipIndex = -1;   // >=0 时覆盖状态机，直接播放 animationClips[previewClipIndex]
         float previewTime = 0.f;     // 预览 clip 的当前时间
         float previewSpeed = 1.f;    // 预览播放速度
+
+        // ── Camera 专属字段（仅 type == Camera 时有效） ─────────────────────
+        SequencerCamera cameraData;
+        bool cameraPreviewEnabled = true;
+        float cameraPreviewScale = 0.25f;
+        // 模型几何体相对于 Actor 朝向的额外旋转偏移（仅影响渲染，不影响 cameraData 预览方向）。
+        // Camera 模型 mesh 的默认朝向与预览 -Z 前向相差 Y -90°，需用此偏移补偿。
+        glm::quat modelRotationOffset = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+
+        bool isCamera() const { return type == Type::Camera; }
+        void syncCameraFromTransform() {
+            if (!isCamera()) return;
+            cameraData.position = transform.position;
+            cameraData.orientation = transform.rotation;
+        }
     };
 
     void loadModel(const std::string& path, const glm::vec3& position, const BufferManager& bufMgr);
@@ -71,6 +91,15 @@ public:
     bool removeModelEntity(uint64_t entityId, const VulkanContext& ctx);
     void destroyModelBuffers(const VulkanContext& ctx);
     void destroy(const VulkanContext& ctx);
+
+    /** @brief 创建 Camera 实体，使用共享的 Camera 模型资源 */
+    uint64_t createCameraEntity(const glm::vec3& position,
+                                 const glm::quat& orientation,
+                                 const VulkanContext& ctx,
+                                 const BufferManager& bufMgr);
+    
+    /** @brief 判断 entityId 是否为 Camera 类型 */
+    bool isCameraEntity(uint64_t entityId) const;
 
     const std::vector<ModelEntity>& getModelEntities() const { return modelEntities_; }
     std::vector<ModelEntity>& getModelEntities() { return modelEntities_; }
@@ -175,4 +204,16 @@ private:
     void loadModelFromObj(const std::string& path, const glm::vec3& position, const BufferManager& bufMgr);
     void loadModelFromGltf(const std::string& path, const glm::vec3& position, const BufferManager& bufMgr);
     void loadModelFromFbx(const std::string& path, const glm::vec3& position, const BufferManager& bufMgr);
+
+    // ── Camera Actor 模型缓存 ─────────────────────────────────────────────
+    VkBuffer cameraModelVertexBuffer_{};
+    VkDeviceMemory cameraModelVertexMemory_{};
+    VkBuffer cameraModelIndexBuffer_{};
+    VkDeviceMemory cameraModelIndexMemory_{};
+    uint32_t cameraModelIndexCount_ = 0;
+    std::vector<SubMesh> cameraModelSubMeshes_;
+    bool cameraModelLoaded_ = false;
+    uint64_t nextEntityId_ = 1;
+    
+    void loadCameraModelOnce(const VulkanContext& ctx, const BufferManager& bufMgr);
 };

@@ -11,6 +11,8 @@ set(OLD_GLOB
   "E:/Projects/tinyEngine/src/Animation/AnimatorController.cpp"
   "E:/Projects/tinyEngine/src/Animation/Sequence.cpp"
   "E:/Projects/tinyEngine/src/Animation/SequenceAssetLoader.cpp"
+  "E:/Projects/tinyEngine/src/Animation/SequencePlayer.cpp"
+  "E:/Projects/tinyEngine/src/Animation/SequencerCamera.cpp"
   "E:/Projects/tinyEngine/src/Animation/Skeleton.cpp"
   "E:/Projects/tinyEngine/src/Application.cpp"
   "E:/Projects/tinyEngine/src/BufferManager.cpp"

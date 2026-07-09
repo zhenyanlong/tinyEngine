@@ -5,6 +5,9 @@
 
 class FramebufferManager {
 public:
+    static constexpr uint32_t kPipWidth  = 320;
+    static constexpr uint32_t kPipHeight = 240;
+
     void create(const VulkanContext& ctx, const SwapChain& swapChain, const RenderPassManager& rpMgr);
     void recreate(const VulkanContext& ctx, const SwapChain& swapChain, const RenderPassManager& rpMgr);
     void destroy(const VulkanContext& ctx);
@@ -14,6 +17,12 @@ public:
     VkImage       getPickColorImage()            const { return pickColorImage_; }
     VkImageView   getPickColorImageView()        const { return pickColorImageView_; }
     VkImageView   getDepthImageView()            const { return depthImageView_; }
+
+    // ── PiP resources ────────────────────────────────────────────────────────
+    VkFramebuffer getPipFramebuffer()      const { return pipFramebuffer_; }
+    VkImage       getPipColorImage()       const { return pipColorImage_; }
+    VkImageView   getPipColorImageView()   const { return pipColorImageView_; }
+    VkSampler     getPipSampler()          const { return pipSampler_; }
 
     VkImageView createImageView(const VulkanContext& ctx, VkImage image, VkFormat format,
                                 VkImageAspectFlags aspect) const;
@@ -36,6 +45,16 @@ private:
     VkImageView    pickDepthImageView_{};
     VkFramebuffer  pickFramebuffer_{};
 
+    // ── PiP ──────────────────────────────────────────────────────────────────
+    VkImage        pipColorImage_{};
+    VkDeviceMemory pipColorMemory_{};
+    VkImageView    pipColorImageView_{};
+    VkImage        pipDepthImage_{};
+    VkDeviceMemory pipDepthMemory_{};
+    VkImageView    pipDepthImageView_{};
+    VkFramebuffer  pipFramebuffer_{};
+    VkSampler      pipSampler_{};
+
     void createDepthResources(const VulkanContext& ctx, const SwapChain& swapChain,
                               const RenderPassManager& rpMgr);
     void createMainFramebuffers(const VulkanContext& ctx, const SwapChain& swapChain,
@@ -43,4 +62,6 @@ private:
     void createPickResources(const VulkanContext& ctx, const SwapChain& swapChain,
                              const RenderPassManager& rpMgr);
     void destroyPickResources(const VulkanContext& ctx);
+    void createPipResources(const VulkanContext& ctx, const RenderPassManager& rpMgr);
+    void destroyPipResources(const VulkanContext& ctx);
 };

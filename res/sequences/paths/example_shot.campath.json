@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "name": "example_shot",
+  "interpolation": 0,
+  "keyframes": [
+    { "time": 0.0, "position": [0, -4, 4],  "orientation": [1, 0, 0, 0], "fovDeg": 45.0 },
+    { "time": 2.0, "position": [3, -2, 3],  "orientation": [0.707, 0, 0, -0.707], "fovDeg": 40.0 },
+    { "time": 4.0, "position": [5, -1, 1],  "orientation": [0.924, 0, 0, -0.383], "fovDeg": 35.0 },
+    { "time": 6.0, "position": [2, -3, -2], "orientation": [0.383, 0, 0, 0.924], "fovDeg": 45.0 },
+    { "time": 8.0, "position": [0, -4, 4],  "orientation": [1, 0, 0, 0], "fovDeg": 45.0 }
+  ]
+}

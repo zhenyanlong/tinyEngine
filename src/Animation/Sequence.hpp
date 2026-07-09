@@ -55,6 +55,15 @@ struct TransformTweenClip : SequenceClipBase {
     glm::vec3 endScale{1.f};
 
     TweenEase ease = TweenEase::SmoothStep;
+
+    struct EvalResult {
+        glm::vec3 position{0.f};
+        glm::quat rotation{1.f, 0.f, 0.f, 0.f};
+        glm::vec3 scale{1.f};
+    };
+
+    /** @brief 在 localT（从 startTime 起的绝对秒数）处求值 */
+    EvalResult evaluate(double localT) const;
 };
 
 /** @brief 事件片段，到达时间点时触发一个 AnimatorEvent */

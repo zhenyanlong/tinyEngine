@@ -32,15 +32,15 @@
 
 ### 第 1 天（2026-07-03）— Sequencer 数据结构 + Content Browser 缩略图修复
 
-- [ ] TODO-018 【Sequencer】实现 C1：SequenceTrack / SequenceClip 数据结构
+- [x] TODO-018 【Sequencer】实现 C1：SequenceTrack / SequenceClip 数据结构
   - 上下文：Phase C1 基础。新建 `src/Animation/Sequence.hpp`，定义 SequenceClipBase、TrackType、AnimTrackClip、CameraPathClip、TransformTweenClip、EventClip、SequenceTrack、Sequence 等结构体
   - 日期：2026-07-03
-  - **未完成**：实际工作为 ThumbnailRenderer bug 修复
+  - **完成**：Sequence.hpp 已定义所有结构体（TrackType/TweenEase/SequenceClipBase/各Clip类型/SequenceTrack/Sequence），Sequence.cpp 已实现 totalDuration() 和 computeTotalDuration()，x64-debug 构建通过
 
-- [ ] TODO-019 【Sequencer】实现 C5 序列化：SequenceAssetLoader
+- [x] TODO-019 【Sequencer】实现 C5 序列化：SequenceAssetLoader
   - 上下文：Phase C5 的序列化部分。新建 `src/Animation/SequenceAssetLoader.hpp/.cpp`，实现 Sequence 的 `saveSequence/loadSequence`（.seq.json）和 CameraPath 的 `saveCameraPath/loadCameraPath`（.campath.json）
   - 日期：2026-07-03
-  - **未完成**：实际工作为 ThumbnailRenderer bug 修复
+  - **完成**：SequenceAssetLoader.hpp/.cpp 已完整实现 saveSequence/loadSequence/saveCameraPath/loadCameraPath 以及 CameraPath::evaluate（支持 CatmullRom/Linear 插值），x64-debug 构建通过
 
 - [ ] TODO-020 【Content Browser】修复离屏渲染缩略图 icon
   - 上下文：当前 Content Browser 中资产使用共享的 `res/icons/model.png` 占位符，而非实际模型的离屏渲染缩略图。`ThumbnailRenderer` 已能生成 `.png` 到 `res/thumbnails/`，但 Content Browser 的 `drawContentBrowser` 在缩略图不存在时回退到占位图标，且 `ThumbnailRenderer::generateAll` 只在 `res/bin/mesh/` 和 `res/models/` 下扫描，未覆盖新 `res/content/` 下的模型。修复：(1) 在 `Application::initVulkan` 末尾或模型导入后自动调用 `ThumbnailRenderer::generateAll`；(2) `generateAll` 扫描路径扩展至 `res/content/**/*.mesh.ast` 中引用的模型；(3) Content Browser 中缺失缩略图时显示"生成中"状态而非空白方块
@@ -49,31 +49,36 @@
 
 ### 第 2 天（2026-07-04）— Sequencer 播放控制器 + 基础轨道
 
-- [ ] TODO-021 【Sequencer】实现 C2：SequencePlayer 播放控制器
+- [x] TODO-021 【Sequencer】实现 C2：SequencePlayer 播放控制器
   - 上下文：Phase C2。新建 `src/Animation/SequencePlayer.hpp/.cpp`，实现 play/pause/stop/seek 和 `update(dt, FrameCallbacks)`，按时间轴驱动各轨道片段，支持 loop、event clip 防重复触发
   - 依赖：TODO-018（C1 数据结构）
   - 日期：2026-07-04
+  - **完成**：SequencePlayer.hpp/.cpp 已完整实现，支持 play/pause/stop/seek/update，通过 FrameCallbacks 驱动 AnimationClip/CameraPath/TransformTween/Event 四种轨道，event clip 使用 hash 去重，支持 loop。x64-debug 构建通过
 
-- [ ] TODO-022 【Sequencer】实现 C4：TransformTween 轨道
-  - 上下文：Phase C4。实现 TransformTweenClip 的 evaluate 和 ease 函数（Linear/SmoothStep/EaseIn/EaseOut），在 `SequencePlayer::update` 的 `onTransformEval` callback 中更新场景对象的 position/rotation/scale
+- [x] TODO-022 【Sequencer】实现 C4：TransformTween 轨道
+  - 上下文：Phase C4。实现 TransformTweenClip 的 evaluate 和 ease 函数（Linear/SmoothStep/EaseIn/EaseOut），在 `SequencePlayer::update` 的 `onTransformTweenEval` callback 中更新场景对象的 position/rotation/scale
   - 依赖：TODO-021
   - 日期：2026-07-04
+  - **完成**：TransformTweenClip::evaluate(localT) 已在 Sequence.cpp 中实现，支持 Linear/SmoothStep/EaseIn/EaseOut 四种 ease 模式，返回 EvalResult（position/rotation/scale）。x64-debug 构建通过
 
-- [ ] TODO-023 【Sequencer】将 SequencePlayer 接入 Application 主循环
+- [x] TODO-023 【Sequencer】将 SequencePlayer 接入 Application 主循环
   - 上下文：Phase C2-3/4。在 Application 中增加 `seqPlayer_` 和 `currentSequence_`，在 `drawFrame` 中调用 `seqPlayer_->update(dt, callbacks)`，Sequencer 播放期间屏蔽右键拖拽相机
   - 依赖：TODO-021
   - 日期：2026-07-04
+  - **完成**：Application 已集成 seqPlayer_/currentSequence_/sequenceCameraActive_；drawFrame 中 Sequencer 驱动动画（设置 previewClipIndex/previewTime）、相机路径（加载 .campath.json 后写入 camera_ 状态并设置 sequenceCameraActive_ 屏蔽鼠标）、TransformTween（写入 entity.transform）、事件（触发 AnimatorEvent SetTrigger）；Sequencer 停止播放时自动恢复实体到正常模式。x64-debug 构建通过
 
 ### 第 3 天（2026-07-05）— Sequencer 相机路径 + 摄像机类
 
-- [ ] TODO-024 【Sequencer】实现 C3：CameraPath 轨道
+- [x] TODO-024 【Sequencer】实现 C3：CameraPath 轨道
   - 上下文：Phase C3。新建 `src/Animation/CameraPath.hpp/.cpp`，实现 CameraKeyframe、CameraPath 结构和 CatmullRom/Linear 插值 evaluate(t)，接入 Application 的录制功能（recordingCameraPath_ / recordingPath_）
   - 依赖：TODO-021
   - 日期：2026-07-05
+  - **完成**：CameraKeyframe/CameraPath 数据结构、CatmullRom/Linear 插值 evaluate(t) 以及 saveCameraPath/loadCameraPath 已在 SequenceAssetLoader.hpp/.cpp 中实现；Application 新增录制 API（`beginCameraPathRecording`/`endCameraPathRecording`/`isRecordingCameraPath`/`getRecordingPath`/`setRecordInterval`）和 gameLoop 中的逐帧采样逻辑（每 `recordInterval_` 秒插入一个关键帧）；Sequencer 回放通过 SequencePlayer 的 `onCameraPathEval` callback 已在 TODO-023 中接入。创建示例文件 `res/sequences/paths/example_shot.campath.json`。x64-debug 构建通过
 
-- [ ] TODO-025 【Sequencer】实现 Sequencer 摄像机类与 PiP 小窗
+- [x] TODO-025 【Sequencer】实现 Sequencer 摄像机类与 PiP 小窗
   - 上下文：新增一个 SequencerCamera 类，封装独立的相机状态（Position、orientation、Fov）。在场景中添加一个可视化的摄像机模型（如三角锥 + 镜头框），选中后可在右下角打开一个小窗口（Picture-in-Picture），显示该摄像机视角的渲染画面。类似 UE 的"在视口中查看所选摄像机"功能。需要：(1) 新建 `SequencerCamera` 数据结构（独立的 Position/orientation/Fov/AspectRatio）; (2) 创建摄像机模型的 .mesh.ast 资产（可用简单的三角锥网格）; (3) 在 Content Browser 中可拖入场景; (4) 选中摄像机实体后，右下角出现 PiP 子窗口，通过第二个 Camera/Viewport 渲染场景（离屏 framebuffer → ImGui Image）
   - 日期：2026-07-05
+  - **完成**：(1) `src/Animation/SequencerCamera.hpp/.cpp` 已实现 `SequencerCamera` 数据结构（position/orientation/fovDeg/aspectRatio/nearPlane/farPlane）和 `getViewMatrix()/getProjMatrix()/forward()/right()/up()` 方法；(2) RenderPassManager 新增 PiP RenderPass（VK_FORMAT_R8G8B8A8_UNORM + finalLayout=SHADER_READ_ONLY_OPTIMAL）；(3) FramebufferManager 新增 PiP 离屏资源（320x240 Color+Depth Image + VkSampler）；(4) Application 在 `recordCommandBuffer` 中使用 PiP RenderPass + Framebuffer 离屏渲染所有 modelEntities，并通过 `ImGui_ImplVulkan_AddTexture` 转换为 ImTextureID；(5) UIManager 新增 `showPipWindow_` Checkbox 和 `drawPipWindow()` 方法，使用 `ImGui::Image` 显示 PiP 纹理并提供相机参数编辑控件。**摄像机模型资产、Content Browser 拖入、G 键切换主视角**等扩展功能尚未实现（属后续优化）。x64-debug 构建通过
 
 ### 第 4 天（2026-07-06）— Sequencer ImGui 编辑器面板（上）
 
@@ -146,6 +151,13 @@
 ---
 
 ## 已完成
+
+- [x] TODO-034 【PiP 渲染】修复 PiP RenderPass color/depth attachment 输出为空的 Bug
+  - 上下文：选中 Camera Actor 后 PiP 小窗应显示该摄像机视角，但画面始终与主视口一致。RenderDoc 抓帧确认 draw call 正常执行（input texture 可见），但 color attachment 和 depth attachment 输出为空（无片元写入）。
+  - 日期：2026-07-09
+  - 来源：PiP bug 调查会话
+  - 完成日期：2026-07-09
+  - 完成依据：根因是两个叠加问题——(1) 所有管线用静态 viewport（未声明 VK_DYNAMIC_STATE_VIEWPORT/SCISSOR），PiP 的 vkCmdSetViewport(320×240) 被静默忽略，几何落在 framebuffer 外；(2) PiP renderpass 用 R8G8B8A8_UNORM 而主管线在 B8G8R8A8_SRGB 的 main renderpass 上创建，格式不兼容。修复：给 4 个管线 builder 启用动态 viewport/scissor；主/pick pass begin 后补 vkCmdSetViewport；PiP renderpass 与 color image 改用 swapchain 格式。另修复蒙皮材质漏调 createPipResources 导致 PiP 用主视角的问题。详见 TDD.md §16.6。
 
 - [x] TODO-017 【动画/加载】修复多个 .anim.ast 文件中的 clips 无法正确合并加载的问题
   - 上下文：Remy 模型有 3 个 .anim.ast 文件（通过 mesh.ast 的 animations 数组引用），每个包含 1 个 clip。当前加载后只显示 1 个 clip。

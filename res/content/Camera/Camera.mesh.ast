@@ -1,0 +1,5 @@
+{
+  "name": "Camera",
+  "type": "Mesh",
+  "model": "bin/mesh/Camera.fbx"
+}

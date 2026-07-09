@@ -604,9 +604,9 @@ struct Sequence {
 
 **具体任务：**
 
-- [ ] **C1-1** 新建 `src/Animation/Sequence.hpp`，定义上述所有结构体
-- [ ] **C1-2** 实现 `Sequence::recalcDuration()`：遍历所有 track 所有 clip 取最大 endTime
-- [ ] **C1-3** 实现各 clip 类型的 `evaluate(localT)` 方法（localT ∈ [0,1]）：返回该片段在时间 t 处的值，供 Sequencer 播放控制器调用
+- [x] **C1-1** 新建 `src/Animation/Sequence.hpp`，定义上述所有结构体
+- [x] **C1-2** 实现 `Sequence::recalcDuration()`：遍历所有 track 所有 clip 取最大 endTime
+- [ ] **C1-3** 实现各 clip 类型的 `evaluate(localT)` 方法（localT ∈ [0,1]）：返回该片段在时间 t 处的值，供 Sequencer 播放控制器调用（属于 C2 SequencePlayer 范畴，见 TODO-021）
 
 ---
 
@@ -651,16 +651,16 @@ private:
 
 **具体任务：**
 
-- [ ] **C2-1** 新建 `SequencePlayer.hpp` / `SequencePlayer.cpp`，实现上述接口
-- [ ] **C2-2** 实现 `SequencePlayer::update`：
+- [x] **C2-1** 新建 `SequencePlayer.hpp` / `SequencePlayer.cpp`，实现上述接口
+- [x] **C2-2** 实现 `SequencePlayer::update`：
   1. `currentTime_ += dt`；若超出 `totalDuration` 则 loop 或 stop
   2. 对每条 track（若 enabled && !muted）：
      - 遍历该 track 的所有 clip，判断 `currentTime_` 是否在 `[startTime, endTime)` 内
      - 在区间内：计算 `localT = (currentTime_ - startTime) / duration`，调用对应 callback
-     - Event clip 特殊处理：只在 `localT > 0` 第一次进入时触发，用 `firedEvents_` 去重
-- [ ] **C2-3** 在 `Application` 中增加 `std::unique_ptr<SequencePlayer> seqPlayer_` 成员和 `Sequence currentSequence_`
-- [ ] **C2-4** 在 `Application::gameLoop` 中调用 `seqPlayer_->update(dt, callbacks)`，并在 callbacks 中连接相机路径、动画、变换的实际执行逻辑
-- [ ] **C2-5** Sequencer 播放期间，屏蔽右键拖拽相机（`rightMouseDown_` 的处理中检测 `seqPlayer_->isPlaying()` 且 camera track 存在时跳过）
+     - Event clip 特殊处理：只在 `localT > 0` 第一次进入时触发，用 `firedEventClipHashes_` 去重
+- [x] **C2-3** 在 `Application` 中增加 `std::unique_ptr<SequencePlayer> seqPlayer_` 成员和 `Sequence currentSequence_`
+- [x] **C2-4** 在 `Application::gameLoop` 中调用 `seqPlayer_->update(dt, callbacks)`，并在 callbacks 中连接相机路径、动画、变换的实际执行逻辑
+- [x] **C2-5** Sequencer 播放期间，屏蔽右键拖拽相机（`mouseCallback` 中检测 `sequenceCameraActive_` 时跳过）
 
 ---
 
@@ -698,22 +698,22 @@ struct CameraPath {
 
 **具体任务：**
 
-- [ ] **C3-1** 新建 `src/Animation/CameraPath.hpp` / `.cpp`，实现上述结构
-- [ ] **C3-2** 实现 `CameraPath::evaluate(t)`：
+- [x] **C3-1** 新建 `src/Animation/CameraPath.hpp` / `.cpp`，实现上述结构（已在 SequenceAssetLoader 中实现）
+- [x] **C3-2** 实现 `CameraPath::evaluate(t)`：
   - 二分查找 `t` 所在的 `[k0, k1]` 区间
   - **Catmull-Rom 插值**（推荐默认值）：对 position 使用四点 Catmull-Rom 曲线（`k_{i-1}, k_i, k_{i+1}, k_{i+2}`），对 orientation 使用 `glm::slerp`，对 fovDeg 使用线性插值
   - `Linear`：position 和 fovDeg 线性插值，orientation `slerp`
-- [ ] **C3-3** 在 `Application` 中新增相机录制功能：
+- [x] **C3-3** 在 `Application` 中新增相机录制功能：
   ```cpp
   bool         recordingCameraPath_ = false;
   CameraPath   recordingPath_;
-  float        recordingTime_  = 0.f;
-  float        recordInterval_ = 0.1f;   // 每 0.1 秒自动插入一帧
-  float        recordTimer_    = 0.f;
+  double       recordingTime_  = 0.0;
+  double       recordInterval_ = 0.1;
+  double       recordTimer_    = 0.0;
   ```
-- [ ] **C3-4** 在 `Application::gameLoop` 录制模式下：每帧 `recordTimer_ += dt`，若 `>= recordInterval_` 则自动抓取当前相机状态插入 `recordingPath_.keyframes`，重置 `recordTimer_`
-- [ ] **C3-5** 在 `SequencePlayer::update` 的 `onCameraPathEval` callback 中，调用 `path.evaluate(t)` → `camera_.Position = result.pos; camera_.orientation_ = result.orient; camera_.UpdataCameraVectors(); camera_.FovDeg = result.fovDeg`
-- [ ] **C3-6** 实现 `CameraPath::saveToFile(path)` / `loadFromFile(path)`（格式见 C5）
+- [x] **C3-4** 在 `Application::gameLoop` 录制模式下：每帧 `recordTimer_ += dt`，若 `>= recordInterval_` 则自动抓取当前相机状态插入 `recordingPath_.keyframes`，重置 `recordTimer_`
+- [x] **C3-5** 在 `SequencePlayer::update` 的 `onCameraPathEval` callback 中，调用 `path.evaluate(t)` → `camera_.Position = result.pos; camera_.SetOrientation(result.orient); camera_.FovDeg = result.fovDeg`（已在 TODO-023 中实现）
+- [x] **C3-6** 实现 `CameraPath::saveToFile(path)` / `loadFromFile(path)`（已在 SequenceAssetLoader 中实现）
 
 ---
 
@@ -723,12 +723,12 @@ struct CameraPath {
 
 **具体任务：**
 
-- [ ] **C4-1** 在 `Sequence.hpp` 中确认 `TransformTweenClip` 结构已包含 start/end TRS 和 ease 模式
-- [ ] **C4-2** 实现三种 ease 函数（可复用 `smoothstep01` 或扩展到 `easeIn/easeOut`）：
+- [x] **C4-1** 在 `Sequence.hpp` 中确认 `TransformTweenClip` 结构已包含 start/end TRS 和 ease 模式
+- [x] **C4-2** 实现三种 ease 函数（可复用 `smoothstep01` 或扩展到 `easeIn/easeOut`）：
   ```cpp
   float applyEase(float t, TransformTweenClip::Ease ease);
   ```
-- [ ] **C4-3** 在 `SequencePlayer::update` 的 `onTransformEval` callback 中，根据 `entity` 名称找到对应对象并更新其 `ObjectTransform`：
+- [x] **C4-3** 在 `SequencePlayer::update` 的 `onTransformTweenEval` callback 中，根据 `entity` 名称找到对应对象并更新其 `ObjectTransform`：
   - `"main"` → 更新 `Application::mainModelTransform`
   - `"box:<id>"` → 调用 `sceneMgr_.setBoxPosition(id, pos)`（当前 box 只支持位移，旋转和缩放为后续扩展）
 - [ ] **C4-4** 在 Sequencer ImGui 面板中，对 TransformTween clip 提供 "Record Start" 和 "Record End" 按钮（从当前对象的实际 Transform 抓取值）
@@ -802,11 +802,11 @@ struct CameraPath {
 
 **具体任务：**
 
-- [ ] **C5-1** 新建 `src/Animation/SequenceAssetLoader.hpp` / `.cpp`
-- [ ] **C5-2** 实现 `SequenceAssetLoader::saveSequence(path, seq)` 和 `loadSequence(path)` — nlohmann/json 实现
-- [ ] **C5-3** 实现 `SequenceAssetLoader::saveCameraPath(path, camPath)` 和 `loadCameraPath(path)`
-- [ ] **C5-4** 在 `Application` 中增加 `void loadSequenceFromFile(const std::string& path)` 和 `void saveCurrentSequence(const std::string& path)`
-- [ ] **C5-5** 在 `res/sequences/` 目录下提供一个示例 `.seq.json` 文件
+- [x] **C5-1** 新建 `src/Animation/SequenceAssetLoader.hpp` / `.cpp`
+- [x] **C5-2** 实现 `SequenceAssetLoader::saveSequence(path, seq)` 和 `loadSequence(path)` — nlohmann/json 实现
+- [x] **C5-3** 实现 `SequenceAssetLoader::saveCameraPath(path, camPath)` 和 `loadCameraPath(path)`
+- [x] **C5-4** 在 `Application` 中增加 `void loadSequenceFromFile(const std::string& path)` 和 `void saveCurrentSequence(const std::string& path)`（已通过 SequencePlayer::loadSequence 和 SequenceAssetLoader 访问器实现）
+- [x] **C5-5** 在 `res/sequences/` 目录下提供一个示例 `.seq.json` 文件
 
 ---
 

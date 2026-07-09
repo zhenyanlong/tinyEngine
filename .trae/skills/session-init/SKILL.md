@@ -22,6 +22,16 @@ description: "初始化 tinyEngine 项目会话。读取 TDD.md 技术设计文�
 - 优先使用 SearchReplace 工具精确编辑，避免整文件重写
 - 不要创建无关文件（如 *.md 临时笔记），除非用户明确要求
 
+### 编译验证
+
+- **编译命令**：每次代码修改后，必须执行编译验证
+  ```powershell
+  & "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" --build build --config Debug 2>&1
+  ```
+- 编译成功标志：输出包含 `tinyEngine.vcxproj -> E:\Projects\tinyEngine\build\Debug\tinyEngine.exe`
+- 编译失败时：分析错误信息，修复后重新编译，直到成功
+- 只有编译通过后才可标记任务完成
+
 ---
 
 ## 代码规范

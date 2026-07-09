@@ -215,6 +215,7 @@ GPU 缓冲创建/销毁/拷贝的统一入口。提供：
 
 - **动态管线缓存**（`dynamicPipelines_`）：`acquirePipeline()` 按 `"variant|vert|frag"` 键缓存，支持运行时切换材质 Shader 而不重编译默认管线
 - **图形管线状态：** Cull back face、Counter-clockwise front face、Depth test/stencil、无 blend（Mesh）/ 无 blend（Box）
+- **动态 viewport/scissor：** 所有管线（main/box/skinned/pick 及动态管线）均启用 `VK_DYNAMIC_STATE_VIEWPORT | VK_DYNAMIC_STATE_SCISSOR`，每个 renderpass begin 后必须由调用方 `vkCmdSetViewport`/`vkCmdSetScissor` 显式设置。这是为了让主 renderpass（swapchain 分辨率）与 PiP/Thumbnail 等离屏目标（320×240 / 128×128）复用同一管线，避免静态 viewport 导致离屏渲染无片元输出
 
 ### 4.8 DescriptorManager（DescriptorManager.hpp）
 
@@ -906,8 +907,106 @@ TINYOBJLOADER_IMPLEMENTATION # tinyobjloader 实现编译
 | 多 .anim.ast 合并加载 | **已修复** | 2026-07-02：根因是 `loadAndApplyMaterialAsset` 传入的 `astRelPath` 可能是 `.material.ast` 路径，不含 `animations` 数组。修复：(1) `ensureAnimationAssetForMeshAst` 增加回退逻辑，当打开的文件无 `animations` 数组时，检查实体 `astRelPath` 并以 `.mesh.ast` 路径重新读取；(2) `loadAndApplyMaterialAsset` 中记录实体 `astRelPath` 供回退使用。|
 | Sequencer | 待实现（Phase C1-C6） | 2026-07-03 ~ 2026-07-09 计划实现：C1 数据结构、C2 播放控制器、C3 相机路径、C4 TransformTween、C5 序列化、C6 ImGui 时间轴编辑器 |
 | Content Browser 离屏缩略图 | **修复中** | 使用离屏渲染（128×128）生成 mesh 缩略图，当前三个待修复问题：<br>1. **材质未显示**：glTF 材质已加载但渲染结果仍偏灰；OBJ/FBX 无 .ast 路径全用默认材质 — 需排查 UBO 更新或 descriptor set 绑定时机<br>2. **相机角度错误**：当前从 (1,1,1) 方向观察，用户反馈方向是反的，需调整摄像机朝向<br>3. **Remy skinned 模型全灰**：FBX 带动画蒙皮模型渲染结果为纯色，非蒙皮 pipeline 未正确处理其顶点数据 |
-| Sequencer Camera + PiP | 待实现 | 新增 SequencerCamera 类（独立 position/orientation/fov），场景中可添加可视化摄像机模型，选中后右下角显示 PiP 小窗渲染该摄像机视角 |
+| Sequencer Camera + PiP | 已完成 | 新增 SequencerCamera 类（独立 position/orientation/fov），场景中可添加可视化摄像机模型，选中后右下角显示 PiP 小窗渲染该摄像机视角<br>**已修复（2026-07-09）**：(1) createCameraEntity 四元数存储 bug；(2) SequencerCamera 坐标系 -Z 约定；(3) PiP UBO 时序冲突（新增 PiP 专用 UBO + descriptor set）；(4) Camera 模型加载（改用 FbxImporter）；(5) recreateSwapChain 重置 pipTextureCreated_；(6) PiP color/depth 输出为空（管线静态 viewport + renderpass 格式不兼容，见 §16）；(7) 蒙皮模型 PiP 用主视角（createSkinnedMaterialFrom 漏调 createPipResources）；(8) Camera 模型朝向与预览差 Y -90°（新增 modelRotationOffset 渲染偏移，主/PiP/pick 三路统一）；(9) Gizmo 世界/本地坐标系切换（4 键） |
 | 资产系统扩充 | 待实现 | Phase D1-D3：AnimationAssetRegistry 资产注册、.ast 文件扩展（animationAssetPath/animControllerPath）、ImGui Assets 浏览器面板（TabBar 重构） |
 | PBR 管线 | 基础支持（metallic/roughness/ao） | 已有 |
 | 阴影 | 不支持 | 未规划 |
 | 后处理 | 不支持 | 未规划 |
+
+---
+
+## 16. PiP Bug 调查记录（2026-07-09，已解决）
+
+### 16.1 Bug 表现
+
+选中场景中的 Camera Actor 后，右下角 PiP 小窗应显示该摄像机视角的预览画面。实际表现：
+
+- **PiP 画面与主视口完全一致**（始终显示主相机视角，不随 Camera Actor 移动/旋转而变化）
+- RenderDoc 抓帧显示：PiP RenderPass 中的 `vkCmdDrawIndexed` draw call **正常执行**，input texture（顶点/纹理数据）在 RenderDoc 中可见且正确
+- 但 PiP RenderPass 的 **color attachment（R8G8B8A8_UNORM）和 depth attachment 输出均为空**（全黑/全clear值），没有任何片元被写入
+
+### 16.2 已修复的问题（本次会话）
+
+| 编号 | 问题 | 修复方式 | 文件 |
+|---|---|---|---|
+| Fix-1 | `createCameraEntity` 把四元数当欧拉角存储（`glm::degrees(glm::eulerAngles(orientation))` 产生度单位的 vec3 赋给 quat 字段） | 直接赋值 `entity.transform.rotation = orientation` | SceneManager.cpp:1147 |
+| Fix-2 | SequencerCamera 坐标系约定为 -X 前向，与主 Camera 的 -Z 约定不一致 | 改回 `orientation * (0,0,-1)` 前向、`(1,0,0)` 右向、`(0,1,0)` 上向 | SequencerCamera.cpp:7-20 |
+| Fix-3 | PiP 渲染复用主场景材质的 mapped UBO，"改 UBO→绘制→改回"模式在 Vulkan host-coherent 内存下无效（CPU 所有写入在 submit 前完成，GPU 执行 PiP 绘制时读到的是最后恢复的主 UBO） | 为每个材质新增独立的 PiP UBO（`pipUbos`/`pipUboMemory`/`pipUboMapped`）+ PiP descriptor set（`pipDescSets`），PiP 渲染用 `updateAllPipUBOs` + `getPipDescriptorSet` | MaterialManager.hpp/.cpp, Application.cpp |
+| Fix-4 | `loadCameraModelOnce` 把 `Camera.mesh.ast`（JSON 描述文件）当原始二进制读取，导致加载失败回退到黑色立方体 | 改用 `FbxImporter::load()` 加载 `res/bin/mesh/Camera.fbx` | SceneManager.cpp:1066-1122 |
+| Fix-5 | PiP 渲染绘制 Camera 模型本身，PiP 相机位于模型原点被自身几何体包围 | PiP 遍历时跳过 `selectedCameraEntityId_` 对应的实体 | Application.cpp:759 |
+| Fix-6 | `recreateSwapChain` 调用 `ImGui_ImplVulkan_Shutdown` 销毁所有 ImGui texture，但未重置 `pipTextureCreated_` | 在 `recreateSwapChain` 开头重置 `pipTextureCreated_ = false` | Application.cpp:977 |
+
+### 16.3 CPU 侧已验证项（排除嫌疑）
+
+以下项目已通过诊断输出（`std::cout`）+ RenderDoc 抓帧确认**不是问题根因**：
+
+| 验证项 | 结果 | 验证方式 |
+|---|---|---|
+| PiP view matrix 与主 view matrix 不同 | ✅ `pipView[3] != mainView[3]`，`equal=0` | `std::cout` 诊断输出 |
+| PiP descriptor set 与主 descriptor set 不同 | ✅ `pipDs != mainDs`，`same=0` | `std::cout` 诊断输出 |
+| PiP UBO 写入逻辑正确 | ✅ `updateAllPipUBOs` 写入 `pipUboMapped[imageIndex]`，binding 0 指向 `pipUbos[i]` | 代码审查 |
+| `recreateSwapChain` 未被触发 | ✅ 无 `[recreateSwapChain]` 输出 | `std::cout` 诊断输出 |
+| Pipeline colorWriteMask 正确 | ✅ main/box/skinned pipeline 均为 RGBA 全开 | PipelineManager.cpp 代码审查 |
+| Viewport/Scissor 在 beginRenderPass 之后设置 | ✅ line 728 beginRenderPass → line 735 setViewport → line 740 setScissor | Application.cpp 代码审查 |
+| PiP renderpass finalLayout 正确 | ✅ `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL` | RenderPassManager.cpp:170 |
+| PiP framebuffer 尺寸与 renderArea 一致 | ✅ 均为 320×240 | FramebufferManager.cpp + Application.cpp |
+| PiP renderpass attachment 配置正确 | ✅ 2 attachments（color R8G8B8A8_UNORM + depth），loadOp=CLEAR，storeOp=STORE | RenderPassManager.cpp:162-180 |
+
+### 16.4 当前怀疑方向（待新会话排查）
+
+#### 怀疑 1（最高优先级）：Pipeline renderpass format 不匹配
+
+- **现象**：所有 pipeline（main/box/skinned）都在**主 renderpass**上创建（`rpMgr.getMainRenderPass()`，color format = swapchain 格式，通常 `VK_FORMAT_B8G8R8A8_SRGB`）
+- 但 PiP 渲染使用的是 **PiP renderpass**（`rpMgr.getPipRenderPass()`，color format = `VK_FORMAT_R8G8B8A8_UNORM`）
+- Vulkan 规范允许 pipeline 在"兼容"的 renderpass 上复用，但 **color attachment format 不同**时不算兼容（Vulkan spec: "render passes are compatible if they have identical attachment descriptions except for initial/final layout"）
+- 这可能导致 GPU 静默丢弃片元输出——draw call 执行了但结果不写入 attachment
+
+- **验证方式**：RenderDoc 中查看 PiP draw call 的 Pipeline State → 确认 pipeline 是否报告 renderpass 不兼容；或检查 validation layer 是否输出 warning
+- **修复方向**：为 PiP 创建专用的 pipeline（用 PiP renderpass 创建），或在 PiP renderpass 中使用与 swapchain 相同的 color format
+
+#### 怀疑 2：Subpass dependency 缺少 srcAccessMask
+
+- PiP renderpass 的 `VkSubpassDependency` 只设置了 `dstAccessMask`，没有 `srcAccessMask`（RenderPassManager.cpp:191-196）
+- 虽然这通常不会导致完全空输出，但可能影响写入可见性
+
+#### 怀疑 3：Dynamic viewport state 未正确应用
+
+- Pipeline 创建时是否启用了 `VK_DYNAMIC_STATE_VIEWPORT` / `VK_DYNAMIC_STATE_SCISSOR`？
+- 如果 pipeline 没有声明 dynamic viewport 但 PiP 渲染调用了 `vkCmdSetViewport`，viewport 可能不生效
+- **验证方式**：检查 `buildMainPipeline` 中的 `VkPipelineDynamicStateCreateInfo` 配置
+
+### 16.5 相关文件索引
+
+| 文件 | 关键位置 | 说明 |
+|---|---|---|
+| Application.cpp | `recordCommandBuffer` L691-849 | PiP RenderPass 渲染逻辑 |
+| MaterialManager.hpp | `MaterialEntry` L156-178 | PiP UBO + descriptor set 字段 |
+| MaterialManager.cpp | `createPipResources` L457, `updateAllPipUBOs` L875, `getPipDescriptorSet` L912 | PiP 资源创建/更新/访问 |
+| RenderPassManager.cpp | `createPipRenderPass` L157-209 | PiP renderpass 配置 |
+| FramebufferManager.cpp | `createPipResources` L198-246 | PiP framebuffer/image/sampler |
+| PipelineManager.cpp | `buildMainPipeline` L358, `buildBoxPipeline` L434 | Pipeline 创建（用主 renderpass） |
+| SequencerCamera.cpp | L7-39 | PiP 相机 view/proj 矩阵计算 |
+| SceneManager.cpp | `createCameraEntity` L1125, `loadCameraModelOnce` L1066 | Camera Actor 创建与模型加载 |
+
+### 16.6 最终根因与修复（2026-07-09 解决）
+
+经排查，Bug 由**两个叠加问题**共同导致，分两步修复：
+
+**问题 A（color/depth 输出为空 —— 怀疑 3 确认）**：所有管线（main/box/skinned/pick）创建时使用**静态** viewport/scissor（swapchain 尺寸，如 1920×1080），且**未声明 `VK_DYNAMIC_STATE_VIEWPORT/SCISSOR`**。PiP 代码调用的 `vkCmdSetViewport(320×240)` 被静默忽略，几何被映射到 1920×1080 视口中心——完全落在 320×240 framebuffer 之外，故无片元写入。ThumbnailRenderer 能正常工作正因为它建了自带匹配 extent 的专用管线。
+
+修复：
+1. 给 PipelineManager 四个管线 builder（`buildMainPipeline`/`buildBoxPipeline`/`buildSkinnedPipeline`/`createPickPipeline`）全部加 `VK_DYNAMIC_STATE_VIEWPORT | VK_DYNAMIC_STATE_SCISSOR`（动态材质管线因复用 builder 自动覆盖）。
+2. 主 renderpass（Application.cpp）和 pick renderpass（PickSystem.cpp）begin 后补 `vkCmdSetViewport`/`vkCmdSetScissor`；PiP pass 本就已有，现在才真正生效。
+
+**问题 B（renderpass 不兼容 —— 怀疑 1 确认）**：主管线在主 renderpass（swapchain 格式 `B8G8R8A8_SRGB`）上创建，PiP renderpass 用 `R8G8B8A8_UNORM`，attachment 格式不同导致管线不兼容。
+
+修复：PiP renderpass（`createPipRenderPass`）改为接收并使用 swapchain 格式，新增 `getPipColorFormat()`；FramebufferManager `createPipResources` 的 color image/view 改用该格式。PiP color attachment 格式现与 main 一致，管线兼容。
+
+**问题 C（蒙皮模型仍用主视角）**：`createSkinnedMaterialFrom`（MaterialManager.cpp）漏调 `createPipResources`，蒙皮材质 `pipDescSets` 为空，`getPipDescriptorSet` 回退到主 descriptor set（绑定主 UBO/主视角），导致 PiP 中蒙皮模型显示主视角。
+
+修复：`createSkinnedMaterialFrom` 在 `writeDescSets` 后补 `createPipResources`，使蒙皮材质也拥有 PiP 专用 descriptor set（binding 0 指向 PiP UBO、binding 6 指向 bone UBO）。
+
+**教训**：
+1. `vkCmdSetViewport` 仅在管线声明 `VK_DYNAMIC_STATE_VIEWPORT` 时生效，否则被静默忽略——离屏渲染复用主管线时务必启用动态 viewport。
+2. Vulkan 管线 renderpass 兼容性要求 attachment 格式一致，跨 renderpass 复用管线须保证格式匹配。
+3. `getPipDescriptorSet` 类回退逻辑在资源缺失时不报错而静默用主资源，会让症状表现为"用主视角"而非崩溃——资源创建函数（含蒙皮变体）必须一致地调用 `createPipResources`。

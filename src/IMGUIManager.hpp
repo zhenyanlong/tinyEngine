@@ -112,18 +112,34 @@ public:
 	uint64_t selectedEntityId_    = 0;
 
 	// ── Animator Panel ──────────────────────────────────────────────────────
-	bool     showAnimatorPanel_ = false;
-	int      animatorSelectedStateIdx_ = -1;   ///< 右侧上半选中的 state 索引
-	int      animatorSelectedTransitionIdx_ = -1;  ///< 底部选中的 transition 索引
-	bool     animatorEditingTransition_ = false;  ///< 底部是否正在编辑某条 transition
-	char     animatorStatusMsg_[256]{};
-	std::vector<std::string> animatorControllerAssets_; ///< 与当前模型动画片段兼容的控制器资产绝对路径。
-	uint64_t animatorControllerAssetsEntityId_ = 0;
-	bool     animatorControllerAssetsDirty_ = true;
-	int      animatorRenamingClipIdx_ = -1;
-	char     animatorClipRenameBuffer_[128]{};
+    bool     showAnimatorPanel_ = false;
+    int      animatorSelectedStateIdx_ = -1;   ///< 右侧上半选中的 state 索引
+    int      animatorSelectedTransitionIdx_ = -1;  ///< 底部选中的 transition 索引
+    bool     animatorEditingTransition_ = false;  ///< 底部是否正在编辑某条 transition
+    char     animatorStatusMsg_[256]{};
+    std::vector<std::string> animatorControllerAssets_; ///< 与当前模型动画片段兼容的控制器资产绝对路径。
+    uint64_t animatorControllerAssetsEntityId_ = 0;
+    bool     animatorControllerAssetsDirty_ = true;
+    int      animatorRenamingClipIdx_ = -1;
+    char     animatorClipRenameBuffer_[128]{};
+
+    // ── PiP (Picture-in-Picture) ──────────────────────────────────────────
+    bool showPipWindow_ = false;
+    int  pipWindowWidth_  = 320;
+    int  pipWindowHeight_ = 240;
+
+    // ── Sequencer Panel ─────────────────────────────────────────────────────
+    bool showSequencerPanel_ = false;
+
+    // Track mute/solo state (indexed by track index in current sequence)
+    std::vector<bool> trackMuted_;
+    std::vector<bool> trackSoloed_;
+
+    // Last seek time set by timeline drag (seconds)
+    double seekTime_ = -1.0;
 
 	int gizmoOperation_ = 7;  // ImGuizmo::TRANSLATE (bitmask: 7=TRANSLATE, 120=ROTATE, 896=SCALE)
+	bool gizmoLocal_ = false; // false=世界坐标(ImGuizmo::WORLD), true=本地坐标(ImGuizmo::LOCAL)，按 4 键切换
 
 	/** @brief 共享缩略图占位符纹理（ImTextureID） */
 	ImTextureID thumbnailIcon_ = (ImTextureID)0;
@@ -231,7 +247,13 @@ private:
 	void drawSceneOutliner();
 
 	/** @brief 绘制选中实体属性面板 */
-	void drawPropertiesPanel();
+    void drawPropertiesPanel();
+
+    /** @brief 绘制 PiP 摄像机预览小窗 */
+    void drawPipWindow();
+
+    /** @brief 绘制 Sequencer 编辑面板（时间线 + 轨道列表 + 片段） */
+    void drawSequencerPanel();
 
 	/** @brief 加载 res/icons/model.png 作为共享缩略图图标 */
 	void loadThumbnailIcon();

@@ -306,6 +306,12 @@ void PipelineManager::createPickPipeline(const VulkanContext& ctx, VkRenderPass 
         throw std::runtime_error("Failed to create pick pipeline layout!");
     }
 
+    VkDynamicState dynStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dynState{};
+    dynState.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynState.dynamicStateCount = 2;
+    dynState.pDynamicStates    = dynStates;
+
     VkGraphicsPipelineCreateInfo gp{};
     gp.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     gp.stageCount          = 2; gp.pStages = stages;
@@ -313,6 +319,7 @@ void PipelineManager::createPickPipeline(const VulkanContext& ctx, VkRenderPass 
     gp.pViewportState      = &vpState; gp.pRasterizationState = &rs;
     gp.pMultisampleState   = &ms; gp.pDepthStencilState = &ds;
     gp.pColorBlendState    = &cb;
+    gp.pDynamicState       = &dynState;
     gp.layout              = pickPipelineLayout_;
     gp.renderPass          = pickRenderPass;
     if (vkCreateGraphicsPipelines(ctx.getDevice(), VK_NULL_HANDLE, 1, &gp, nullptr, &pickPipeline_) != VK_SUCCESS) {
@@ -413,6 +420,14 @@ VkPipeline PipelineManager::buildMainPipeline(const VulkanContext& ctx, VkRender
     cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     cb.attachmentCount = 1; cb.pAttachments = &cba;
 
+    // 启用动态 viewport/scissor：主视口与 PiP/Thumbnail 等离屏目标分辨率不同，
+    // 必须在 beginRenderPass 后通过 vkCmdSetViewport/vkCmdSetScissor 设置。
+    VkDynamicState dynStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dynState{};
+    dynState.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynState.dynamicStateCount = 2;
+    dynState.pDynamicStates    = dynStates;
+
     VkGraphicsPipelineCreateInfo gp{};
     gp.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     gp.stageCount          = 2; gp.pStages = stages;
@@ -420,6 +435,7 @@ VkPipeline PipelineManager::buildMainPipeline(const VulkanContext& ctx, VkRender
     gp.pViewportState      = &vpState; gp.pRasterizationState = &rs;
     gp.pMultisampleState   = &ms; gp.pDepthStencilState = &ds;
     gp.pColorBlendState    = &cb;
+    gp.pDynamicState       = &dynState;
     gp.layout              = mainPipelineLayout_;
     gp.renderPass          = renderPass;
 
@@ -497,6 +513,12 @@ VkPipeline PipelineManager::buildBoxPipeline(const VulkanContext& ctx, VkRenderP
     cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     cb.attachmentCount = 1; cb.pAttachments = &cba;
 
+    VkDynamicState dynStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dynState{};
+    dynState.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynState.dynamicStateCount = 2;
+    dynState.pDynamicStates    = dynStates;
+
     VkGraphicsPipelineCreateInfo gp{};
     gp.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     gp.stageCount          = 2; gp.pStages = stages;
@@ -504,6 +526,7 @@ VkPipeline PipelineManager::buildBoxPipeline(const VulkanContext& ctx, VkRenderP
     gp.pViewportState      = &vpState; gp.pRasterizationState = &rs;
     gp.pMultisampleState   = &ms; gp.pDepthStencilState = &ds;
     gp.pColorBlendState    = &cb;
+    gp.pDynamicState       = &dynState;
     gp.layout              = boxPipelineLayout_;
     gp.renderPass          = renderPass;
 
@@ -594,6 +617,12 @@ VkPipeline PipelineManager::buildSkinnedPipeline(const VulkanContext& ctx, VkRen
     cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     cb.attachmentCount = 1; cb.pAttachments = &cba;
 
+    VkDynamicState dynStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dynState{};
+    dynState.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynState.dynamicStateCount = 2;
+    dynState.pDynamicStates    = dynStates;
+
     VkGraphicsPipelineCreateInfo gp{};
     gp.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     gp.stageCount          = 2; gp.pStages = stages;
@@ -601,6 +630,7 @@ VkPipeline PipelineManager::buildSkinnedPipeline(const VulkanContext& ctx, VkRen
     gp.pViewportState      = &vpState; gp.pRasterizationState = &rs;
     gp.pMultisampleState   = &ms; gp.pDepthStencilState = &ds;
     gp.pColorBlendState    = &cb;
+    gp.pDynamicState       = &dynState;
     gp.layout              = skinnedPipelineLayout_;
     gp.renderPass          = renderPass;
 

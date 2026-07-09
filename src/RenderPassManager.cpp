@@ -6,10 +6,15 @@ void RenderPassManager::create(const VulkanContext& ctx, const SwapChain& swapCh
 {
     createMainRenderPass(ctx, swapChain.getImageFormat());
     createPickRenderPass(ctx);
+    createPipRenderPass(ctx, swapChain.getImageFormat());
 }
 
 void RenderPassManager::destroy(const VulkanContext& ctx)
 {
+    if (pipRenderPass_ != VK_NULL_HANDLE) {
+        vkDestroyRenderPass(ctx.getDevice(), pipRenderPass_, nullptr);
+        pipRenderPass_ = VK_NULL_HANDLE;
+    }
     if (pickRenderPass_ != VK_NULL_HANDLE) {
         vkDestroyRenderPass(ctx.getDevice(), pickRenderPass_, nullptr);
         pickRenderPass_ = VK_NULL_HANDLE;
@@ -147,4 +152,62 @@ void RenderPassManager::createPickRenderPass(const VulkanContext& ctx)
 
     if (vkCreateRenderPass(ctx.getDevice(), &rpi, nullptr, &pickRenderPass_) != VK_SUCCESS)
         throw std::runtime_error("Failed to create pick render pass!");
+}
+
+void RenderPassManager::createPipRenderPass(const VulkanContext& ctx, VkFormat colorFormat)
+{
+    // PiP color attachment 使用与 swapchain 相同的格式，使主管线（在 main renderpass
+    // 上创建）与 PiP renderpass 满足 attachment 兼容性，避免 Vulkan 静默丢弃片元输出。
+    const VkFormat colorFmt = colorFormat;
+    const VkFormat depthFmt = findDepthFormat(ctx);
+    pipColorFormat_ = colorFmt;
+
+    VkAttachmentDescription colorAtt{};
+    colorAtt.format         = colorFmt;
+    colorAtt.samples        = VK_SAMPLE_COUNT_1_BIT;
+    colorAtt.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAtt.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAtt.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    colorAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    colorAtt.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+    colorAtt.finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkAttachmentDescription depthAtt{};
+    depthAtt.format         = depthFmt;
+    depthAtt.samples        = VK_SAMPLE_COUNT_1_BIT;
+    depthAtt.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAtt.storeOp        = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAtt.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depthAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAtt.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+    depthAtt.finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentReference colorRef{ 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+    VkAttachmentReference depthRef{ 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount    = 1;
+    subpass.pColorAttachments       = &colorRef;
+    subpass.pDepthStencilAttachment = &depthRef;
+
+    VkSubpassDependency dep{};
+    dep.srcSubpass    = VK_SUBPASS_EXTERNAL;
+    dep.dstSubpass    = 0;
+    dep.srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dep.dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+    std::array<VkAttachmentDescription, 2> atts{ colorAtt, depthAtt };
+    VkRenderPassCreateInfo rpi{};
+    rpi.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    rpi.attachmentCount = static_cast<uint32_t>(atts.size());
+    rpi.pAttachments    = atts.data();
+    rpi.subpassCount    = 1;
+    rpi.pSubpasses      = &subpass;
+    rpi.dependencyCount = 1;
+    rpi.pDependencies   = &dep;
+
+    if (vkCreateRenderPass(ctx.getDevice(), &rpi, nullptr, &pipRenderPass_) != VK_SUCCESS)
+        throw std::runtime_error("Failed to create PiP render pass!");
 }

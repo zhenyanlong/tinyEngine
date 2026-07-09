@@ -1,6 +1,7 @@
 #include "PickSystem.hpp"
 #include "TinyEngineDebug.hpp"
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <array>
 #include <cstring>
 #include <stdexcept>
@@ -90,6 +91,14 @@ uint32_t PickSystem::runPick(const VulkanContext& ctx,
     rpBegin.pClearValues      = clears;
     vkCmdBeginRenderPass(pickCmdBuf_, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
 
+    // pick 管线已启用动态 viewport/scissor，需显式设置与 framebuffer 一致的范围。
+    {
+        VkViewport vp{ 0.f, 0.f, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.f, 1.f };
+        VkRect2D sc{ {0, 0}, extent };
+        vkCmdSetViewport(pickCmdBuf_, 0, 1, &vp);
+        vkCmdSetScissor(pickCmdBuf_, 0, 1, &sc);
+    }
+
     // 绘制每个模型实体（各自独立 vertex/index buffer，PickId = entityId）
     for (const auto& ent : entities) {
         if (!ent.visible || ent.indexCount == 0 || !ent.vertexBuffer || !ent.indexBuffer)
@@ -99,7 +108,9 @@ uint32_t PickSystem::runPick(const VulkanContext& ctx,
         vkCmdBindVertexBuffers(pickCmdBuf_, 0, 1, &ent.vertexBuffer, &off);
         vkCmdBindIndexBuffer(pickCmdBuf_, ent.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
-        glm::mat4 m = ent.transform.GetModelMatrix();
+        // 与主/PiP 渲染路径一致：Camera 实体叠加 modelRotationOffset（如 Y -90°），
+        // 使 pick 命中测试与实际显示的模型几何体对齐。
+        glm::mat4 m = ent.transform.GetModelMatrix() * glm::mat4_cast(ent.modelRotationOffset);
         std::array<uint8_t, kPickPushConstantSize> bytes{};
         std::memcpy(bytes.data(), &m, sizeof(glm::mat4));
         const uint32_t oid = static_cast<uint32_t>(ent.entityId);
