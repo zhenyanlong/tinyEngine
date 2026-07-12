@@ -454,23 +454,25 @@ struct BoneMapping {
 - `FbxImporter::loadAnimationOnly()` 收集 without-skin FBX 的 scene 节点为骨骼树，供后续重定向使用
 - `Application::importAnimationFbx()` 是重定向的完整工作流：加载目标骨架 → 解析源动画 → retarget → 持久化 → 更新 Mesh .ast
 
-### 4.12.5 Sequencer 时序动画系统（Phase C，待实现）
+### 4.12.5 Sequencer 时序动画系统（Phase C，已完成）
 
-Phase C 提供时间轴驱动的多轨道动画系统，支持骨骼动画片段、相机路径、Transform 补间和事件触发。
+Phase C 提供时间轴驱动的多轨道动画系统，支持骨骼动画片段、相机路径、Transform 补间、关键帧动画和事件触发。
 
 **C1 — SequenceTrack / SequenceClip 数据结构（`src/Animation/Sequence.hpp`）**
 - `SequenceClipBase`：所有片段基类（startTime / duration）
-- `TrackType` 枚举：AnimationClip / CameraPath / TransformTween / Event
+- `TrackType` 枚举：AnimationClip / CameraPath / TransformTween / TransformKeyframe / Event
 - 各 Clip 派生类型：`AnimTrackClip`（clipName / clipOffset / playSpeed）、`CameraPathClip`（pathAssetPath）、`TransformTweenClip`（start/end TRS + ease）、`EventClip`（eventName）
-- `SequenceTrack`：name、type、每条轨道存同类型片段的 vector
+- `SequenceTrack`：name、type、每条轨道存同类型片段的 vector + `keyframeTrack`（新版关键帧轨道）
 - `Sequence`：name、tracks、totalDuration
 
 **C2 — SequencePlayer 播放控制器（`src/Animation/SequencePlayer.hpp/.cpp`）**
 - play / pause / stop / seek 接口
+- `setSequenceRef(Sequence& seq)`：引用外部 Sequence（不拷贝），使 UI 修改实时生效
 - `update(dt, FrameCallbacks)`：按 ticks 逐帧推进，遍历各 track 的 clip 判断当前时间是否在区间内
-- `FrameCallbacks` 通过 lambda 连接相机路径求值、动画 clip 求值、变换更新、事件触发
+- `FrameCallbacks` 通过 lambda 连接相机路径求值、动画 clip 求值、变换更新、关键帧求值、事件触发
 - Event clip 首次进入时通过 `firedEvents_` 去重
 - Sequencer 播放期间屏蔽右键拖拽（camera track 存在时）
+- `totalDur <= 0` 但有关键帧轨道时，仍执行关键帧求值（支持空序列预览）
 
 **C3 — CameraPath 相机路径轨道（`src/Animation/CameraPath.hpp/.cpp`）**
 - `CameraKeyframe`：time / position / orientation / fovDeg
@@ -478,23 +480,42 @@ Phase C 提供时间轴驱动的多轨道动画系统，支持骨骼动画片段
 - `evaluate(t)` 返回位置、朝向、FOV 的 EvalResult
 - 录制功能：每 0.1s 自动抓取当前相机状态插入关键帧
 
-**C4 — TransformTween 轨道**
-- 对场景对象（主模型/box）做 start→end TRS 关键帧补间
-- ease 模式：Linear / SmoothStep / EaseIn / EaseOut
+**C4 — TransformTween 轨道 + TransformKeyframe 关键帧轨道**
+- TransformTween（旧版）：对场景对象做 start→end TRS 关键帧补间
+- TransformKeyframe（新版）：
+  - `TransformKeyframe`：time / position / rotation / scale / easeToNext
+  - `TransformKeyframeTrack`：name / targetEntityId / keyframes[] + `evaluate(t)` 求值
+  - `evaluate(t)` 自动查找前后关键帧，按 `easeToNext` 插值混合
+  - 支持 7 种混合模式：Linear / SmoothStep / EaseIn / EaseOut / EaseInOut / Cubic / Exponential
+  - `applyEaseCurve(t, ease)` 通用曲线求值函数
 
 **C5 — 序列化（`src/Animation/SequenceAssetLoader.hpp/.cpp`）**
-- `.seq.json`：Sequence 完整保存（tracks / clips / 所有参数）
+- `.seq.json`：Sequence 完整保存（tracks / clips / keyframeTrack / 所有参数）
 - `.campath.json`：CameraPath 单独保存（keyframes / interpolation）
+- TransformKeyframeTrack 完整 JSON 读写，加载后按 time 排序
 - nlohmann/json 实现
 
-**C6 — ImGui Sequencer 编辑器面板**
-- 顶部工具栏：Play / Pause / Stop、时间显示、Loop 勾选
-- 手动绘制的时间线刻度尺（每 0.5s 一小格，每 1s 一大格 + 数字）
-- 可拖动的红色当前时间指示线
-- 左列轨道列表（名称 + Mute/Solo）+ 右列 clip 彩色矩形
-- 底部选中 clip 的属性编辑器（clipName 下拉 / path 路径 / TRS 输入）
+**C6 — ImGui Sequencer 编辑器面板（`src/IMGUIManager.cpp::drawSequencerPanel`）**
+- 顶部工具栏：Play / Pause / Stop、Loop 勾选、Zoom 缩放、序列时长编辑（Dur）、Load/Save .seq.json
+- 时间线刻度尺：基于 duration 自适应显示秒数刻度 + 数字标签
+- 红色播放指示线（当前时间）+ 黄色编辑指示线（sequencerEditTime_）
+- 点击时间轴设置编辑位置并触发实时预览
+- 左列轨道列表（名称 + Mute/Solo）+ 右列 clip 彩色矩形 / 关键帧菱形节点
+- 关键帧轨道：黄色菱形节点，选中高亮为白色，帧间连线
+- 底部编辑器：
+  - 关键帧编辑：time / position / rotation / scale / easeToNext（7种混合模式下拉）
+  - **Add Selected to Track**：将选中实体创建为关键帧轨道（绑定 targetEntityId）
+  - **Add Keyframe**：在编辑时间点添加关键帧，自动记录当前实体 Transform
+  - **Update from Entity**：将当前实体 Transform 写回选中的关键帧
+  - **Preview** / **Preview Here**：触发单次预览求值（不持续覆盖）
 - 录制控制（Record Camera Path 开始/结束、自动保存 .campath.json）
-- Add/Delete Track、Load/Save .seq.json
+- Add/Delete Track、Add/Delete Clip、序列时长可编辑
+
+**实时预览机制**：
+- Application 维护 `sequencerPreviewPending_` 标志
+- `requestSequencerPreview()` 设置标志，下一帧 `onTransformKeyframeEval` 执行一次后清除
+- 非播放状态下不持续覆盖实体 Transform，允许用户通过 Gizmo 自由调整
+- 播放状态下持续驱动 Transform 更新
 
 ### 4.12.6 AnimationAssetRegistry（Phase D1，待实现）
 
@@ -905,7 +926,7 @@ TINYOBJLOADER_IMPLEMENTATION # tinyobjloader 实现编译
 | 蒙皮模型 GPU 拾取 | 已完成 | skinned pick pipeline 复用材质 bone UBO，按 submesh/当前动画姿势写入 Entity ID |
 | 重复蒙皮模型独立动画状态 | 受限 | Controller 已逐实体独立，但共享同一 skinned MaterialId 的实例仍共用 BoneMatricesUBO；后续需每实体描述符或 dynamic UBO |
 | 多 .anim.ast 合并加载 | **已修复** | 2026-07-02：根因是 `loadAndApplyMaterialAsset` 传入的 `astRelPath` 可能是 `.material.ast` 路径，不含 `animations` 数组。修复：(1) `ensureAnimationAssetForMeshAst` 增加回退逻辑，当打开的文件无 `animations` 数组时，检查实体 `astRelPath` 并以 `.mesh.ast` 路径重新读取；(2) `loadAndApplyMaterialAsset` 中记录实体 `astRelPath` 供回退使用。|
-| Sequencer | 待实现（Phase C1-C6） | 2026-07-03 ~ 2026-07-09 计划实现：C1 数据结构、C2 播放控制器、C3 相机路径、C4 TransformTween、C5 序列化、C6 ImGui 时间轴编辑器 |
+| Sequencer | 已完成（Phase C1-C6） | C1 数据结构 + C2 播放控制器 + C3 相机路径 + C4 TransformTween/Keyframe + C5 序列化 + C6 ImGui 时间轴编辑器。新增关键帧轨道（targetEntityId 绑定实体），7种混合模式，实时预览机制（sequencerPreviewPending_），Add/Update/Preview 按钮工作流 |
 | Content Browser 离屏缩略图 | **修复中** | 使用离屏渲染（128×128）生成 mesh 缩略图，当前三个待修复问题：<br>1. **材质未显示**：glTF 材质已加载但渲染结果仍偏灰；OBJ/FBX 无 .ast 路径全用默认材质 — 需排查 UBO 更新或 descriptor set 绑定时机<br>2. **相机角度错误**：当前从 (1,1,1) 方向观察，用户反馈方向是反的，需调整摄像机朝向<br>3. **Remy skinned 模型全灰**：FBX 带动画蒙皮模型渲染结果为纯色，非蒙皮 pipeline 未正确处理其顶点数据 |
 | Sequencer Camera + PiP | 已完成 | 新增 SequencerCamera 类（独立 position/orientation/fov），场景中可添加可视化摄像机模型，选中后右下角显示 PiP 小窗渲染该摄像机视角<br>**已修复（2026-07-09）**：(1) createCameraEntity 四元数存储 bug；(2) SequencerCamera 坐标系 -Z 约定；(3) PiP UBO 时序冲突（新增 PiP 专用 UBO + descriptor set）；(4) Camera 模型加载（改用 FbxImporter）；(5) recreateSwapChain 重置 pipTextureCreated_；(6) PiP color/depth 输出为空（管线静态 viewport + renderpass 格式不兼容，见 §16）；(7) 蒙皮模型 PiP 用主视角（createSkinnedMaterialFrom 漏调 createPipResources）；(8) Camera 模型朝向与预览差 Y -90°（新增 modelRotationOffset 渲染偏移，主/PiP/pick 三路统一）；(9) Gizmo 世界/本地坐标系切换（4 键） |
 | 资产系统扩充 | 待实现 | Phase D1-D3：AnimationAssetRegistry 资产注册、.ast 文件扩展（animationAssetPath/animControllerPath）、ImGui Assets 浏览器面板（TabBar 重构） |

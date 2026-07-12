@@ -82,22 +82,25 @@
 
 ### 第 4 天（2026-07-06）— Sequencer ImGui 编辑器面板（上）
 
-- [ ] TODO-026 【Sequencer】实现 C6 ImGui 面板：时间线 + 轨道列表
+- [x] TODO-026 【Sequencer】实现 C6 ImGui 面板：时间线 + 轨道列表
   - 上下文：Phase C6-1/2。在 `IMGUIManager` 中增加 `showSequencerPanel_` 开关，实现 `drawSequencerPanel()` 的顶部工具栏（Play/Pause/Stop、时间显示、Loop 勾选）、时间线刻度尺（手绘刻度 + 数字标签）、当前时间指示线（可拖动红色竖线触发 seek）、轨道列表（左列：名称 + Mute/Solo 图标）、片段区域（右列：各 track 的 clip 彩色矩形）
   - 依赖：TODO-018（C1 数据结构）
   - 日期：2026-07-06
+  - **完成**：2026-07-12。drawSequencerPanel 实现完整时间线（自适应秒刻度 + 红色播放指示线 + 黄色编辑指示线）、轨道列表（Mute/Solo 按钮）、clip 彩色矩形 + 关键帧菱形节点、序列时长编辑。x64-debug 构建通过
 
-- [ ] TODO-027 【Sequencer】实现 C6 ImGui 面板：片段属性编辑器 + 录制控制
+- [x] TODO-027 【Sequencer】实现 C6 ImGui 面板：片段属性编辑器 + 录制控制
   - 上下文：Phase C6-3/4。选中 clip 后底部显示属性编辑（AnimTrackClip：clipName 下拉、offset、speed；CameraPathClip：path 路径；TransformTweenClip：start/end TRS InputFloat3 + ease 下拉）。录制控制区域（Record Camera Path 开始/结束按钮、录制中红点指示、结束后自动保存 .campath.json）
   - 依赖：TODO-026
   - 日期：2026-07-06
+  - **完成**：2026-07-12。实现 clip 属性编辑器（4种 clip 类型）、关键帧属性编辑器（time/position/rotation/scale/easeToNext）、录制控制（Start/Stop Recording + 时间显示）。新增 Add Selected to Track、Add Keyframe、Update from Entity、Preview 按钮。x64-debug 构建通过
 
 ### 第 5 天（2026-07-07）— Sequencer ImGui 面板（下）+ 资产系统 D1
 
-- [ ] TODO-028 【Sequencer】实现 C6 ImGui 面板：轨道管理 + 加载/保存
+- [x] TODO-028 【Sequencer】实现 C6 ImGui 面板：轨道管理 + 加载/保存
   - 上下文：Phase C6-5/6。"Add Track"按钮 → Combo 选轨道类型 → 插入新 track；右键 track → 上下文菜单"Delete Track"。面板顶部右侧 InputText + Load/Save 按钮，实现 .seq.json 的加载与保存
   - 依赖：TODO-027
   - 日期：2026-07-07
+  - **完成**：2026-07-12。实现 Add Track / Delete Track 按钮、Track Type 下拉切换、序列名 InputText + Load/Save 按钮（.seq.json）。新增 TransformKeyframe 轨道类型 + 关键帧序列化支持。x64-debug 构建通过
 
 - [ ] TODO-029 【资产系统】实现 D1：AnimationAssetRegistry
   - 上下文：Phase D1。新建 `src/Animation/AnimationAssetRegistry.hpp/.cpp`，实现 `scan(resRoot)` 扫描 res/ 下所有 .anim.ast / .animctrl.json / .seq.json / .campath.json 并分类注册。在 `Application::initVulkan` 末尾调用 `assetRegistry_.scan()`
@@ -110,7 +113,7 @@
   - 依赖：TODO-029
   - 日期：2026-07-08
 
-- [ ] TODO-031 【摄像机】完善摄像机模型与 PiP 渲染管线
+- [x] TODO-031 【摄像机】完善摄像机模型与 PiP 渲染管线 ✅ 2026-07-12
   - 上下文：在 TODO-025 的基础上完善：(1) 摄像机模型在场景中显示为三角锥 + 视锥线框（用简单的顶点/索引数据或 box 组合）；(2) PiP 小窗口的离屏渲染使用独立的 RenderPass + Framebuffer，分辨率可调（默认 320x240），每帧渲染后通过 ImGui Image 显示；(3) PiP 窗口支持拖拽调整大小、右键关闭；(4) 选中摄像机实体时，主视口可切换为该摄像机视角（按 G 键切换）
   - 依赖：TODO-025
   - 日期：2026-07-08

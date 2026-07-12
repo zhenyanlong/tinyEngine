@@ -19,6 +19,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <functional>
@@ -1256,7 +1257,7 @@ void UIManager::drawPipWindow()
 
 void UIManager::drawSequencerPanel()
 {
-    ImGui::SetNextWindowSize(ImVec2(800, 400), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(900, 500), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Sequencer", &showSequencerPanel_)) {
         ImGui::End();
         return;
@@ -1269,9 +1270,30 @@ void UIManager::drawSequencerPanel()
     }
 
     auto& seqPlayer = vulkanRender->getSequencePlayer();
-    auto& sequence = vulkanRender->getCurrentSequence();
+    Sequence& sequence = vulkanRender->getCurrentSequence();
 
-    ImGui::Text("Sequencer Panel (WIP)");
+    const double totalDuration = sequence.computeTotalDuration();
+    const double currentTime = seqPlayer.currentTime();
+
+    static int selectedTrackIdx = -1;
+    static int selectedClipType = -1;
+    static int selectedClipIdx = -1;
+    static char seqNameBuf[256] = "NewSequence";
+    static bool loopPlayback = false;
+    static float zoomLevel = 1.0f;
+
+    const float timelineHeight = 30.0f;
+    const float trackLabelWidth = 180.0f;
+    const float trackHeight = 50.0f;
+    const float pixelsPerSecond = 100.0f * zoomLevel;
+
+    trackMuted_.resize(sequence.tracks.size(), false);
+    trackSoloed_.resize(sequence.tracks.size(), false);
+
+    ImGui::Text("Sequencer");
+    ImGui::SameLine(ImGui::GetWindowWidth() - 200);
+    ImGui::SetNextItemWidth(150);
+    ImGui::InputText("##seqName", seqNameBuf, sizeof(seqNameBuf));
     ImGui::Separator();
 
     if (seqPlayer.isPlaying()) {
@@ -1279,15 +1301,606 @@ void UIManager::drawSequencerPanel()
             seqPlayer.pause();
     } else {
         if (ImGui::Button("Play"))
-            seqPlayer.play();
+            seqPlayer.play(loopPlayback);
     }
     ImGui::SameLine();
     if (ImGui::Button("Stop"))
         seqPlayer.stop();
+    ImGui::SameLine();
+    ImGui::Checkbox("Loop", &loopPlayback);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(60);
+    ImGui::DragFloat("Zoom", &zoomLevel, 0.1f, 0.1f, 5.0f, "%.1fx");
+    ImGui::SameLine();
+    ImGui::Text("Time: %.2f / %.2f s", currentTime, totalDuration);
+    ImGui::SameLine();
 
-    ImGui::Text("Duration: %.2fs", sequence.computeTotalDuration());
-    ImGui::Text("Tracks: %zu", sequence.tracks.size());
+    static char seqDurationBuf[16];
+    snprintf(seqDurationBuf, sizeof(seqDurationBuf), "%.1f", sequence.totalDuration > 0.0 ? sequence.totalDuration : totalDuration);
+    ImGui::SetNextItemWidth(60);
+    if (ImGui::InputText("Dur##seqDur", seqDurationBuf, sizeof(seqDurationBuf))) {
+        double newDur = atof(seqDurationBuf);
+        if (newDur > 0.0) sequence.totalDuration = newDur;
+    }
+    ImGui::SameLine();
 
+    if (ImGui::Button("Load##seq")) {
+        std::string path = vulkanRender->getResRoot() + "/sequences/" + std::string(seqNameBuf) + ".seq.json";
+        if (SequenceAssetLoader::loadSequence(path, sequence)) {
+            seqPlayer.load(sequence);
+            snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_), "Loaded sequence: %s", seqNameBuf);
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Save##seq")) {
+        sequence.name = seqNameBuf;
+        std::string path = vulkanRender->getResRoot() + "/sequences/" + std::string(seqNameBuf) + ".seq.json";
+        std::filesystem::create_directories(std::filesystem::path(path).parent_path());
+        if (SequenceAssetLoader::saveSequence(path, sequence)) {
+            snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_), "Saved sequence: %s", seqNameBuf);
+        }
+    }
+
+    ImGui::Separator();
+
+    ImGui::BeginChild("##timelineArea", ImVec2(0, -120), false, ImGuiWindowFlags_HorizontalScrollbar);
+
+    ImGui::BeginChild("##trackLabels", ImVec2(trackLabelWidth, 0), true);
+    ImGui::Text("Tracks");
+    ImGui::Separator();
+    for (int ti = 0; ti < static_cast<int>(sequence.tracks.size()); ++ti) {
+        const auto& track = sequence.tracks[ti];
+        const bool selected = (ti == selectedTrackIdx);
+        ImVec4 trackColor = (track.type == TrackType::AnimationClip) ? ImVec4(0.3f, 0.6f, 0.9f, 1.0f) :
+                            (track.type == TrackType::CameraPath) ? ImVec4(0.9f, 0.6f, 0.3f, 1.0f) :
+                            (track.type == TrackType::TransformTween) ? ImVec4(0.6f, 0.9f, 0.3f, 1.0f) :
+                            (track.type == TrackType::TransformKeyframe) ? ImVec4(0.9f, 0.9f, 0.3f, 1.0f) :
+                            ImVec4(0.9f, 0.3f, 0.3f, 1.0f);
+
+        ImGui::PushStyleColor(ImGuiCol_Text, trackColor);
+        char label[256];
+        snprintf(label, sizeof(label), "%s##track%d", track.name.c_str(), ti);
+        if (ImGui::Selectable(label, selected, ImGuiSelectableFlags_AllowDoubleClick)) {
+            selectedTrackIdx = ti;
+            selectedClipType = -1;
+            selectedClipIdx = -1;
+        }
+        ImGui::PopStyleColor();
+
+        ImGui::SameLine();
+        ImGui::PushID(ti);
+        bool muted = trackMuted_[ti];
+        if (ImGui::SmallButton(muted ? "M" : "M")) trackMuted_[ti] = !muted;
+        ImGui::SameLine();
+        bool solo = trackSoloed_[ti];
+        if (ImGui::SmallButton(solo ? "S" : "S")) {
+            for (int j = 0; j < static_cast<int>(trackSoloed_.size()); ++j)
+                trackSoloed_[j] = (j == ti) ? !solo : false;
+        }
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+
+    ImGui::BeginChild("##timelineContent", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
+
+    const float contentOriginX = ImGui::GetCursorScreenPos().x;
+    const float timelineWidth = std::max(static_cast<float>(totalDuration * pixelsPerSecond + 200.0), ImGui::GetContentRegionAvail().x);
+    ImGui::BeginChild("##timelineScroll", ImVec2(timelineWidth, timelineHeight), false);
+
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    ImVec2 canvasPos = ImGui::GetCursorScreenPos();
+    float scaleX = contentOriginX;
+
+    const int maxSec = std::max(static_cast<int>(totalDuration) + 2, 10);
+    for (int sec = 0; sec <= maxSec; ++sec) {
+        float x = scaleX + sec * pixelsPerSecond;
+        drawList->AddLine(ImVec2(x, canvasPos.y), ImVec2(x, canvasPos.y + timelineHeight), IM_COL32(100, 100, 100, 255));
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%d", sec);
+        drawList->AddText(ImVec2(x + 2, canvasPos.y + 2), IM_COL32(200, 200, 200, 255), buf);
+    }
+
+    if (totalDuration > 0.0) {
+        float playheadX = scaleX + static_cast<float>(currentTime * pixelsPerSecond);
+        drawList->AddLine(ImVec2(playheadX, canvasPos.y), ImVec2(playheadX, canvasPos.y + 500), IM_COL32(255, 50, 50, 255), 2.0f);
+    }
+
+    if (sequencerEditTimeSet_) {
+        float editX = scaleX + static_cast<float>(sequencerEditTime_ * pixelsPerSecond);
+        drawList->AddLine(ImVec2(editX, canvasPos.y), ImVec2(editX, canvasPos.y + 500), IM_COL32(255, 255, 0, 200), 1.0f);
+    }
+
+    ImGui::Dummy(ImVec2(timelineWidth, timelineHeight));
+
+    if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(0)) {
+        float mouseX = ImGui::GetMousePos().x - scaleX;
+        double clickedTime = mouseX / pixelsPerSecond;
+        if (clickedTime >= 0.0) {
+            sequencerEditTime_ = clickedTime;
+            sequencerEditTimeSet_ = true;
+            if (!seqPlayer.isPlaying()) {
+                seqPlayer.seek(sequencerEditTime_);
+                vulkanRender->requestSequencerPreview();
+            }
+        }
+    }
+
+    if (sequencerEditTimeSet_ && !seqPlayer.isPlaying() &&
+        std::abs(seqPlayer.currentTime() - sequencerEditTime_) > 0.001) {
+        seqPlayer.seek(sequencerEditTime_);
+        vulkanRender->requestSequencerPreview();
+    }
+
+    ImGui::EndChild();
+
+    ImGui::BeginChild("##trackClips", ImVec2(timelineWidth, 0), false);
+
+    for (int ti = 0; ti < static_cast<int>(sequence.tracks.size()); ++ti) {
+        const auto& track = sequence.tracks[ti];
+        ImGui::PushID(ti);
+
+        ImGui::BeginChild(("##trackRow" + std::to_string(ti)).c_str(), ImVec2(0, trackHeight), false);
+
+        ImVec4 clipColor = (track.type == TrackType::AnimationClip) ? ImVec4(0.3f, 0.6f, 0.9f, 0.8f) :
+                           (track.type == TrackType::CameraPath) ? ImVec4(0.9f, 0.6f, 0.3f, 0.8f) :
+                           (track.type == TrackType::TransformTween) ? ImVec4(0.6f, 0.9f, 0.3f, 0.8f) :
+                           (track.type == TrackType::TransformKeyframe) ? ImVec4(0.9f, 0.9f, 0.3f, 0.8f) :
+                           ImVec4(0.9f, 0.3f, 0.3f, 0.8f);
+
+        ImVec2 rowPos = ImGui::GetCursorScreenPos();
+        float rowScaleX = contentOriginX;
+
+        auto drawClip = [&](const SequenceClipBase& clip, int clipIdx, int clipType) {
+            float startX = static_cast<float>(clip.startTime * pixelsPerSecond);
+            float width = static_cast<float>(clip.duration * pixelsPerSecond);
+            ImVec2 clipMin(rowScaleX + startX, rowPos.y + 5);
+            ImVec2 clipMax(rowScaleX + startX + width, rowPos.y + trackHeight - 5);
+
+            ImGui::SetCursorScreenPos(clipMin);
+            char clipLabel[256];
+            snprintf(clipLabel, sizeof(clipLabel), "%s##clip%d_%d", clip.name.c_str(), ti, clipIdx);
+
+            ImGui::PushStyleColor(ImGuiCol_Button, clipColor);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(clipColor.x + 0.1f, clipColor.y + 0.1f, clipColor.z + 0.1f, clipColor.w));
+            bool clicked = ImGui::Button(clipLabel, ImVec2(width, trackHeight - 10));
+            ImGui::PopStyleColor(2);
+
+            if (clicked) {
+                selectedTrackIdx = ti;
+                selectedClipType = clipType;
+                selectedClipIdx = clipIdx;
+            }
+
+            if (selectedTrackIdx == ti && selectedClipType == clipType && selectedClipIdx == clipIdx) {
+                drawList->AddRect(clipMin, clipMax, IM_COL32(255, 255, 255, 255), 0.0f, 0, 2.0f);
+            }
+        };
+
+        if (track.type == TrackType::AnimationClip) {
+            for (int ci = 0; ci < static_cast<int>(track.animClips.size()); ++ci)
+                drawClip(track.animClips[ci], ci, 0);
+        } else if (track.type == TrackType::CameraPath) {
+            for (int ci = 0; ci < static_cast<int>(track.cameraPathClips.size()); ++ci)
+                drawClip(track.cameraPathClips[ci], ci, 1);
+        } else if (track.type == TrackType::TransformTween) {
+            for (int ci = 0; ci < static_cast<int>(track.tweenClips.size()); ++ci)
+                drawClip(track.tweenClips[ci], ci, 2);
+        } else if (track.type == TrackType::TransformKeyframe) {
+            for (int ci = 0; ci < static_cast<int>(track.keyframeTrack.keyframes.size()); ++ci) {
+                const auto& kf = track.keyframeTrack.keyframes[ci];
+                float kfX = rowScaleX + static_cast<float>(kf.time * pixelsPerSecond);
+                float kfSize = 8.0f;
+                ImVec2 kfMin(kfX - kfSize, rowPos.y + trackHeight * 0.5f - kfSize);
+                ImVec2 kfMax(kfX + kfSize, rowPos.y + trackHeight * 0.5f + kfSize);
+
+                bool isSelected = (selectedKeyframeTrackIdx_ == ti && selectedKeyframeIdx_ == ci);
+                ImU32 kfColor = isSelected ? IM_COL32(255, 255, 255, 255) : IM_COL32(255, 220, 80, 220);
+
+                drawList->AddRectFilled(kfMin, kfMax, kfColor, 2.0f);
+                drawList->AddRect(kfMin, kfMax, IM_COL32(100, 100, 50, 200), 2.0f);
+
+                if (ci > 0) {
+                    float prevKfX = rowScaleX + static_cast<float>(track.keyframeTrack.keyframes[ci - 1].time * pixelsPerSecond);
+                    drawList->AddLine(ImVec2(prevKfX + kfSize, rowPos.y + trackHeight * 0.5f),
+                                      ImVec2(kfX - kfSize, rowPos.y + trackHeight * 0.5f),
+                                      IM_COL32(180, 180, 80, 100), 1.0f);
+                }
+
+                ImGui::SetCursorScreenPos(kfMin);
+                ImGui::InvisibleButton(("##kf" + std::to_string(ci)).c_str(), ImVec2(kfSize * 2, kfSize * 2));
+                if (ImGui::IsItemClicked()) {
+                    selectedKeyframeTrackIdx_ = ti;
+                    selectedKeyframeIdx_ = ci;
+                    selectedTrackIdx = ti;
+                    selectedClipType = -1;
+                    selectedClipIdx = -1;
+                    sequencerEditTime_ = kf.time;
+                    sequencerEditTimeSet_ = true;
+                    seqPlayer.seek(kf.time);
+                    vulkanRender->requestSequencerPreview();
+                }
+            }
+        } else if (track.type == TrackType::Event) {
+            for (int ci = 0; ci < static_cast<int>(track.eventClips.size()); ++ci)
+                drawClip(track.eventClips[ci], ci, 3);
+        }
+
+        ImGui::EndChild();
+        ImGui::PopID();
+    }
+
+    ImGui::EndChild();
+    ImGui::EndChild();
+
+    ImGui::EndChild();
+
+    ImGui::Separator();
+
+    ImGui::BeginChild("##clipEditor", ImVec2(0, 0), true);
+
+    // ── Add Selected to Keyframe Track ────────────────────────────────
+    if (vulkanRender->selectedCameraEntityId_ != 0 || selectedEntityId_ != 0) {
+        uint64_t targetId = vulkanRender->selectedCameraEntityId_ != 0
+            ? vulkanRender->selectedCameraEntityId_ : selectedEntityId_;
+        if (ImGui::Button("Add Selected to Track")) {
+            SequenceTrack newTrack;
+            newTrack.name = "KeyframeTrack" + std::to_string(sequence.tracks.size() + 1);
+            newTrack.type = TrackType::TransformKeyframe;
+            newTrack.keyframeTrack.name = newTrack.name;
+            newTrack.keyframeTrack.targetEntityId = targetId;
+            sequence.tracks.push_back(std::move(newTrack));
+            trackMuted_.push_back(false);
+            trackSoloed_.push_back(false);
+        }
+    }
+    ImGui::SameLine();
+    if (sequencerEditTimeSet_) {
+        if (ImGui::Button("Add Keyframe")) {
+            int targetTi = selectedTrackIdx;
+            if (targetTi < 0 || targetTi >= static_cast<int>(sequence.tracks.size()) ||
+                sequence.tracks[targetTi].type != TrackType::TransformKeyframe) {
+                for (int ti = 0; ti < static_cast<int>(sequence.tracks.size()); ++ti) {
+                    if (sequence.tracks[ti].type == TrackType::TransformKeyframe) {
+                        targetTi = ti;
+                        break;
+                    }
+                }
+            }
+
+            if (targetTi >= 0 && targetTi < static_cast<int>(sequence.tracks.size()) &&
+                sequence.tracks[targetTi].type == TrackType::TransformKeyframe) {
+                auto& track = sequence.tracks[targetTi];
+                auto* ent = vulkanRender->getSceneManager().getModelEntity(track.keyframeTrack.targetEntityId);
+                if (ent) {
+                    TransformKeyframe kf;
+                    kf.time = sequencerEditTime_;
+                    kf.position = ent->transform.position;
+                    kf.rotation = ent->transform.rotation;
+                    kf.scale = ent->transform.scale;
+
+                    auto& kfs = track.keyframeTrack.keyframes;
+                    kfs.push_back(std::move(kf));
+                    std::sort(kfs.begin(), kfs.end(),
+                              [](const TransformKeyframe& a, const TransformKeyframe& b) {
+                                  return a.time < b.time;
+                              });
+
+                    for (int ri = 0; ri < static_cast<int>(kfs.size()); ++ri) {
+                        if (std::abs(kfs[ri].time - sequencerEditTime_) < 0.001) {
+                            selectedKeyframeTrackIdx_ = targetTi;
+                            selectedKeyframeIdx_ = ri;
+                            break;
+                        }
+                    }
+
+                    if (sequence.totalDuration <= 0.0) {
+                        sequence.totalDuration = track.keyframeTrack.totalDuration() + 5.0;
+                    }
+
+                    snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                             "Added keyframe at %.2fs for entity %llu", sequencerEditTime_,
+                             static_cast<unsigned long long>(track.keyframeTrack.targetEntityId));
+                }
+            }
+        }
+    }
+
+    if (selectedTrackIdx >= 0 && selectedTrackIdx < static_cast<int>(sequence.tracks.size())) {
+        auto& track = sequence.tracks[selectedTrackIdx];
+        ImGui::Text("Track: %s", track.name.c_str());
+        ImGui::SameLine();
+        static char trackNameBuf[256];
+        snprintf(trackNameBuf, sizeof(trackNameBuf), "%s", track.name.c_str());
+        ImGui::SetNextItemWidth(150);
+        if (ImGui::InputText("##trackNameEdit", trackNameBuf, sizeof(trackNameBuf)))
+            track.name = trackNameBuf;
+
+        const char* typeNames[] = { "AnimationClip", "CameraPath", "TransformTween", "TransformKeyframe", "Event" };
+        int typeIdx = static_cast<int>(track.type);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(120);
+        if (ImGui::Combo("Type", &typeIdx, typeNames, IM_ARRAYSIZE(typeNames))) {
+            SequenceTrack newTrack;
+            newTrack.name = track.name;
+            newTrack.type = static_cast<TrackType>(typeIdx);
+            sequence.tracks[selectedTrackIdx] = std::move(newTrack);
+            selectedClipIdx = -1;
+            selectedClipType = -1;
+        }
+
+        ImGui::Separator();
+
+        // ── Keyframe Track Editor ────────────────────────────────────
+        if (track.type == TrackType::TransformKeyframe) {
+            auto& kft = track.keyframeTrack;
+            ImGui::Text("Target Entity ID: %llu",
+                        static_cast<unsigned long long>(kft.targetEntityId));
+            ImGui::Text("Keyframes: %zu", kft.keyframes.size());
+
+            if (selectedKeyframeTrackIdx_ == selectedTrackIdx && selectedKeyframeIdx_ >= 0
+                && selectedKeyframeIdx_ < static_cast<int>(kft.keyframes.size()))
+            {
+                auto& kf = kft.keyframes[selectedKeyframeIdx_];
+                ImGui::Separator();
+                ImGui::Text("Keyframe [%d]", selectedKeyframeIdx_);
+
+                double kfTime = kf.time;
+                if (ImGui::DragScalar("Time", ImGuiDataType_Double, &kfTime, 0.1f)) {
+                    kf.time = kfTime;
+                    std::sort(kft.keyframes.begin(), kft.keyframes.end(),
+                              [](const TransformKeyframe& a, const TransformKeyframe& b) {
+                                  return a.time < b.time;
+                              });
+                    for (int ri = 0; ri < static_cast<int>(kft.keyframes.size()); ++ri) {
+                        if (kft.keyframes[ri].time == kf.time) {
+                            selectedKeyframeIdx_ = ri;
+                            break;
+                        }
+                    }
+                }
+
+                float pos[3] = { kf.position.x, kf.position.y, kf.position.z };
+                if (ImGui::DragFloat3("Position", pos, 0.1f))
+                    kf.position = glm::vec3(pos[0], pos[1], pos[2]);
+
+                glm::vec3 euler = glm::degrees(glm::eulerAngles(kf.rotation));
+                float rot[3] = { euler.x, euler.y, euler.z };
+                if (ImGui::DragFloat3("Rotation", rot, 1.0f))
+                    kf.rotation = glm::quat(glm::radians(glm::vec3(rot[0], rot[1], rot[2])));
+
+                float scale[3] = { kf.scale.x, kf.scale.y, kf.scale.z };
+                if (ImGui::DragFloat3("Scale", scale, 0.05f, 0.01f, 100.0f))
+                    kf.scale = glm::vec3(scale[0], scale[1], scale[2]);
+
+                const char* easeNames[] = { "Linear", "SmoothStep", "EaseIn", "EaseOut", "EaseInOut", "Cubic", "Exponential" };
+                int easeIdx = static_cast<int>(kf.easeToNext);
+                if (ImGui::Combo("Ease to Next", &easeIdx, easeNames, IM_ARRAYSIZE(easeNames)))
+                    kf.easeToNext = static_cast<TweenEase>(easeIdx);
+
+                ImGui::Separator();
+                if (ImGui::Button("Delete Keyframe")) {
+                    kft.keyframes.erase(kft.keyframes.begin() + selectedKeyframeIdx_);
+                    selectedKeyframeIdx_ = -1;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Update from Entity")) {
+                    auto* ent = vulkanRender->getSceneManager().getModelEntity(kft.targetEntityId);
+                    if (ent) {
+                        kf.position = ent->transform.position;
+                        kf.rotation = ent->transform.rotation;
+                        kf.scale = ent->transform.scale;
+                        snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                                 "Updated keyframe [%d] from entity transform", selectedKeyframeIdx_);
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Preview")) {
+                    sequencerEditTime_ = kf.time;
+                    sequencerEditTimeSet_ = true;
+                    seqPlayer.seek(kf.time);
+                    vulkanRender->requestSequencerPreview();
+                }
+            }
+
+            ImGui::Separator();
+            if (ImGui::Button("Delete All Keyframes")) {
+                kft.keyframes.clear();
+                selectedKeyframeIdx_ = -1;
+            }
+            ImGui::SameLine();
+            if (sequencerEditTimeSet_ && ImGui::Button("Preview Here")) {
+                vulkanRender->requestSequencerPreview();
+            }
+        }
+        // ── Old clip-based editor for non-keyframe tracks ────────────
+        else if (selectedClipType >= 0 && selectedClipIdx >= 0) {
+            ImGui::Text("Clip Properties");
+
+            auto drawClipEditor = [&](SequenceClipBase& clip) {
+                ImGui::SetNextItemWidth(200);
+                static char clipNameBuf[256];
+                snprintf(clipNameBuf, sizeof(clipNameBuf), "%s", clip.name.c_str());
+                if (ImGui::InputText("Name##clip", clipNameBuf, sizeof(clipNameBuf)))
+                    clip.name = clipNameBuf;
+                double startTime = clip.startTime;
+                if (ImGui::DragScalar("Start Time", ImGuiDataType_Double, &startTime, 0.1f))
+                    clip.startTime = startTime;
+                double duration = clip.duration;
+                if (ImGui::DragScalar("Duration", ImGuiDataType_Double, &duration, 0.1f))
+                    clip.duration = duration;
+            };
+
+            if (selectedClipType == 0 && selectedClipIdx < static_cast<int>(track.animClips.size())) {
+                auto& clip = track.animClips[selectedClipIdx];
+                drawClipEditor(clip);
+                static char clipNameBuf[256];
+                snprintf(clipNameBuf, sizeof(clipNameBuf), "%s", clip.clipName.c_str());
+                ImGui::SetNextItemWidth(200);
+                if (ImGui::InputText("Clip Name", clipNameBuf, sizeof(clipNameBuf)))
+                    clip.clipName = clipNameBuf;
+                double clipOffset = clip.clipOffset;
+                if (ImGui::DragScalar("Clip Offset", ImGuiDataType_Double, &clipOffset, 0.1f))
+                    clip.clipOffset = clipOffset;
+                double playSpeed = clip.playSpeed;
+                if (ImGui::DragScalar("Play Speed", ImGuiDataType_Double, &playSpeed, 0.1f))
+                    clip.playSpeed = playSpeed;
+            } else if (selectedClipType == 1 && selectedClipIdx < static_cast<int>(track.cameraPathClips.size())) {
+                auto& clip = track.cameraPathClips[selectedClipIdx];
+                drawClipEditor(clip);
+                static char pathBuf[512];
+                snprintf(pathBuf, sizeof(pathBuf), "%s", clip.pathAssetRelPath.c_str());
+                ImGui::SetNextItemWidth(300);
+                if (ImGui::InputText("Path Asset", pathBuf, sizeof(pathBuf)))
+                    clip.pathAssetRelPath = pathBuf;
+            } else if (selectedClipType == 2 && selectedClipIdx < static_cast<int>(track.tweenClips.size())) {
+                auto& clip = track.tweenClips[selectedClipIdx];
+                drawClipEditor(clip);
+                float startPos[3] = { clip.startPosition.x, clip.startPosition.y, clip.startPosition.z };
+                if (ImGui::DragFloat3("Start Position", startPos, 0.1f))
+                    clip.startPosition = glm::vec3(startPos[0], startPos[1], startPos[2]);
+                float endPos[3] = { clip.endPosition.x, clip.endPosition.y, clip.endPosition.z };
+                if (ImGui::DragFloat3("End Position", endPos, 0.1f))
+                    clip.endPosition = glm::vec3(endPos[0], endPos[1], endPos[2]);
+                glm::vec3 startEuler = glm::degrees(glm::eulerAngles(clip.startRotation));
+                float startRot[3] = { startEuler.x, startEuler.y, startEuler.z };
+                if (ImGui::DragFloat3("Start Rotation", startRot, 1.0f))
+                    clip.startRotation = glm::quat(glm::radians(glm::vec3(startRot[0], startRot[1], startRot[2])));
+                glm::vec3 endEuler = glm::degrees(glm::eulerAngles(clip.endRotation));
+                float endRot[3] = { endEuler.x, endEuler.y, endEuler.z };
+                if (ImGui::DragFloat3("End Rotation", endRot, 1.0f))
+                    clip.endRotation = glm::quat(glm::radians(glm::vec3(endRot[0], endRot[1], endRot[2])));
+                float startScale[3] = { clip.startScale.x, clip.startScale.y, clip.startScale.z };
+                if (ImGui::DragFloat3("Start Scale", startScale, 0.05f, 0.01f, 100.0f))
+                    clip.startScale = glm::vec3(startScale[0], startScale[1], startScale[2]);
+                float endScaleArr[3] = { clip.endScale.x, clip.endScale.y, clip.endScale.z };
+                if (ImGui::DragFloat3("End Scale", endScaleArr, 0.05f, 0.01f, 100.0f))
+                    clip.endScale = glm::vec3(endScaleArr[0], endScaleArr[1], endScaleArr[2]);
+                const char* easeNames[] = { "Linear", "SmoothStep", "EaseIn", "EaseOut", "EaseInOut", "Cubic", "Exponential" };
+                int easeIdx = static_cast<int>(clip.ease);
+                if (ImGui::Combo("Ease", &easeIdx, easeNames, IM_ARRAYSIZE(easeNames)))
+                    clip.ease = static_cast<TweenEase>(easeIdx);
+            } else if (selectedClipType == 3 && selectedClipIdx < static_cast<int>(track.eventClips.size())) {
+                auto& clip = track.eventClips[selectedClipIdx];
+                drawClipEditor(clip);
+                static char eventBuf[256];
+                snprintf(eventBuf, sizeof(eventBuf), "%s", clip.eventName.c_str());
+                ImGui::SetNextItemWidth(200);
+                if (ImGui::InputText("Event Name", eventBuf, sizeof(eventBuf)))
+                    clip.eventName = eventBuf;
+            }
+
+            ImGui::Separator();
+            if (ImGui::Button("Delete Clip")) {
+                if (selectedClipType == 0 && selectedClipIdx < static_cast<int>(track.animClips.size()))
+                    track.animClips.erase(track.animClips.begin() + selectedClipIdx);
+                else if (selectedClipType == 1 && selectedClipIdx < static_cast<int>(track.cameraPathClips.size()))
+                    track.cameraPathClips.erase(track.cameraPathClips.begin() + selectedClipIdx);
+                else if (selectedClipType == 2 && selectedClipIdx < static_cast<int>(track.tweenClips.size()))
+                    track.tweenClips.erase(track.tweenClips.begin() + selectedClipIdx);
+                else if (selectedClipType == 3 && selectedClipIdx < static_cast<int>(track.eventClips.size()))
+                    track.eventClips.erase(track.eventClips.begin() + selectedClipIdx);
+                selectedClipIdx = -1;
+                selectedClipType = -1;
+            }
+        } else if (track.type != TrackType::TransformKeyframe) {
+            ImGui::TextDisabled("Select a clip to edit properties");
+        }
+
+        if (track.type != TrackType::TransformKeyframe) {
+            ImGui::Separator();
+            ImGui::Text("Add Clip");
+
+            static double newClipStart = 0.0;
+            static double newClipDuration = 1.0;
+            static char newClipName[128] = "NewClip";
+
+            ImGui::SetNextItemWidth(100);
+            ImGui::DragScalar("Start##newClip", ImGuiDataType_Double, &newClipStart, 0.1f);
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(100);
+            ImGui::DragScalar("Duration##newClip", ImGuiDataType_Double, &newClipDuration, 0.1f);
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(100);
+            ImGui::InputText("Name##newClip", newClipName, sizeof(newClipName));
+
+            if (ImGui::Button("Add Clip##addClip")) {
+                SequenceClipBase base;
+                base.name = newClipName;
+                base.startTime = newClipStart;
+                base.duration = newClipDuration;
+
+                if (track.type == TrackType::AnimationClip) {
+                    AnimTrackClip ac;
+                    static_cast<SequenceClipBase&>(ac) = base;
+                    track.animClips.push_back(std::move(ac));
+                } else if (track.type == TrackType::CameraPath) {
+                    CameraPathClip cc;
+                    static_cast<SequenceClipBase&>(cc) = base;
+                    track.cameraPathClips.push_back(std::move(cc));
+                } else if (track.type == TrackType::TransformTween) {
+                    TransformTweenClip tc;
+                    static_cast<SequenceClipBase&>(tc) = base;
+                    track.tweenClips.push_back(std::move(tc));
+                } else if (track.type == TrackType::Event) {
+                    EventClip ec;
+                    static_cast<SequenceClipBase&>(ec) = base;
+                    track.eventClips.push_back(std::move(ec));
+                }
+            }
+        }
+    } else {
+        ImGui::TextDisabled("Select a track to edit");
+    }
+
+    ImGui::Separator();
+    ImGui::Text("Track Management");
+    if (ImGui::Button("Add Track##addTrack")) {
+        SequenceTrack newTrack;
+        newTrack.name = "Track" + std::to_string(sequence.tracks.size() + 1);
+        newTrack.type = TrackType::AnimationClip;
+        sequence.tracks.push_back(std::move(newTrack));
+        trackMuted_.push_back(false);
+        trackSoloed_.push_back(false);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Delete Track##delTrack") && selectedTrackIdx >= 0 && selectedTrackIdx < static_cast<int>(sequence.tracks.size())) {
+        sequence.tracks.erase(sequence.tracks.begin() + selectedTrackIdx);
+        trackMuted_.erase(trackMuted_.begin() + selectedTrackIdx);
+        trackSoloed_.erase(trackSoloed_.begin() + selectedTrackIdx);
+        selectedTrackIdx = -1;
+        selectedClipIdx = -1;
+        selectedClipType = -1;
+        selectedKeyframeIdx_ = -1;
+        selectedKeyframeTrackIdx_ = -1;
+    }
+
+    ImGui::Separator();
+    ImGui::Text("Camera Path Recording");
+    if (vulkanRender->isRecordingCameraPath()) {
+        ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "Recording...");
+        ImGui::SameLine();
+        ImGui::Text("Time: %.2f s", vulkanRender->getRecordingTime());
+        if (ImGui::Button("Stop Recording")) {
+            vulkanRender->endCameraPathRecording();
+        }
+    } else {
+        static char recordPathName[128] = "example_shot";
+        ImGui::SetNextItemWidth(150);
+        ImGui::InputText("Path Name", recordPathName, sizeof(recordPathName));
+        ImGui::SameLine();
+        if (ImGui::Button("Start Recording")) {
+            vulkanRender->beginCameraPathRecording(recordPathName);
+        }
+    }
+
+    if (animatorStatusMsg_[0]) {
+        ImGui::Separator();
+        ImGui::TextWrapped("%s", animatorStatusMsg_);
+    }
+
+    ImGui::EndChild();
     ImGui::End();
 }
 

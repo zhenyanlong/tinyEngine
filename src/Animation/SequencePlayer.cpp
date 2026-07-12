@@ -14,6 +14,12 @@ void SequencePlayer::load(const Sequence& seq)
     firedEventClipHashes_.clear();
 }
 
+void SequencePlayer::setSequenceRef(Sequence& seq)
+{
+    seq_ = &seq;
+    firedEventClipHashes_.clear();
+}
+
 void SequencePlayer::loadSequence(const std::string& seqJsonRelPath)
 {
     Sequence seq;
@@ -49,30 +55,46 @@ void SequencePlayer::stop()
 void SequencePlayer::seek(double t)
 {
     if (!seq_) return;
-    currentTime_ = std::clamp(t, 0.0, seq_->totalDuration > 0.0 ? seq_->totalDuration : 0.0);
+    const double maxDur = seq_->totalDuration > 0.0
+        ? seq_->totalDuration
+        : seq_->computeTotalDuration();
+    currentTime_ = std::clamp(t, 0.0, maxDur > 0.0 ? maxDur : 0.0);
     firedEventClipHashes_.clear();
 }
 
 void SequencePlayer::update(double dt, const FrameCallbacks& cb)
 {
-    if (!seq_ || !playing_) return;
+    if (!seq_) return;
 
     const double totalDur = seq_->totalDuration > 0.0
         ? seq_->totalDuration
         : seq_->computeTotalDuration();
 
+    if (totalDur <= 0.0 && !seq_->tracks.empty()) {
+        for (const auto& track : seq_->tracks) {
+            if (track.type == TrackType::TransformKeyframe && !track.keyframeTrack.keyframes.empty()) {
+                auto result = track.keyframeTrack.evaluate(currentTime_);
+                if (result.valid && cb.onTransformKeyframeEval) {
+                    cb.onTransformKeyframeEval(currentTime_, track.keyframeTrack.targetEntityId, result);
+                }
+            }
+        }
+        return;
+    }
+
     if (totalDur <= 0.0) return;
 
-    currentTime_ += dt;
+    if (playing_) {
+        currentTime_ += dt;
 
-    if (currentTime_ >= totalDur) {
-        if (loop_) {
-            currentTime_ = std::fmod(currentTime_, totalDur);
-            firedEventClipHashes_.clear();
-        } else {
-            currentTime_ = totalDur;
-            playing_ = false;
-            return;
+        if (currentTime_ >= totalDur) {
+            if (loop_) {
+                currentTime_ = std::fmod(currentTime_, totalDur);
+                firedEventClipHashes_.clear();
+            } else {
+                currentTime_ = totalDur;
+                playing_ = false;
+            }
         }
     }
 
@@ -106,6 +128,15 @@ void SequencePlayer::update(double dt, const FrameCallbacks& cb)
                 if (currentTime_ >= clip.startTime && currentTime_ < end) {
                     if (cb.onTransformTweenEval)
                         cb.onTransformTweenEval(currentTime_ - clip.startTime, clip);
+                }
+            }
+            break;
+
+        case TrackType::TransformKeyframe:
+            if (!track.keyframeTrack.keyframes.empty()) {
+                auto result = track.keyframeTrack.evaluate(currentTime_);
+                if (result.valid && cb.onTransformKeyframeEval) {
+                    cb.onTransformKeyframeEval(currentTime_, track.keyframeTrack.targetEntityId, result);
                 }
             }
             break;

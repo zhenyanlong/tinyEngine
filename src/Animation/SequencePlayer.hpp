@@ -12,6 +12,7 @@ class SequencePlayer {
 public:
     void load(const Sequence& seq);
     void loadSequence(const std::string& seqJsonRelPath);
+    void setSequenceRef(Sequence& seq);
 
     void play(bool loop = false);
     void pause();
@@ -22,6 +23,7 @@ public:
         std::function<void(double t, const std::string& clipName, double clipOffset, double playSpeed)> onAnimClipEval;
         std::function<void(double t, const std::string& pathAssetRelPath)> onCameraPathEval;
         std::function<void(double t, const TransformTweenClip& clip)> onTransformTweenEval;
+        std::function<void(double t, uint64_t entityId, const TransformKeyframeTrack::EvalResult& result)> onTransformKeyframeEval;
         std::function<void(const std::string& eventName)> onEvent;
     };
 

@@ -25,19 +25,21 @@ std::string resolveResPath(const std::string& rel)
 const char* trackTypeName(TrackType t)
 {
     switch (t) {
-    case TrackType::AnimationClip:  return "AnimationClip";
-    case TrackType::CameraPath:     return "CameraPath";
-    case TrackType::TransformTween: return "TransformTween";
-    case TrackType::Event:          return "Event";
+    case TrackType::AnimationClip:      return "AnimationClip";
+    case TrackType::CameraPath:         return "CameraPath";
+    case TrackType::TransformTween:     return "TransformTween";
+    case TrackType::TransformKeyframe:  return "TransformKeyframe";
+    case TrackType::Event:              return "Event";
     }
     return "AnimationClip";
 }
 
 TrackType trackTypeFromName(const std::string& s)
 {
-    if (s == "CameraPath")     return TrackType::CameraPath;
-    if (s == "TransformTween") return TrackType::TransformTween;
-    if (s == "Event")          return TrackType::Event;
+    if (s == "CameraPath")         return TrackType::CameraPath;
+    if (s == "TransformTween")     return TrackType::TransformTween;
+    if (s == "TransformKeyframe")  return TrackType::TransformKeyframe;
+    if (s == "Event")              return TrackType::Event;
     return TrackType::AnimationClip;
 }
 
@@ -215,6 +217,23 @@ bool SequenceAssetLoader::saveSequence(const std::string& jsonRelPath,
             jEventClips.push_back(std::move(jc));
         }
 
+        if (track.type == TrackType::TransformKeyframe) {
+            auto& jkf = jt["keyframeTrack"];
+            jkf["name"] = track.keyframeTrack.name;
+            jkf["targetEntityId"] = track.keyframeTrack.targetEntityId;
+
+            auto& jKeys = jkf["keyframes"];
+            for (const auto& kf : track.keyframeTrack.keyframes) {
+                json jk;
+                jk["time"] = kf.time;
+                jk["position"] = vec3ToJson(kf.position);
+                jk["rotation"] = quatToJson(kf.rotation);
+                jk["scale"] = vec3ToJson(kf.scale);
+                jk["easeToNext"] = easeToStr(kf.easeToNext);
+                jKeys.push_back(std::move(jk));
+            }
+        }
+
         jTracks.push_back(std::move(jt));
     }
 
@@ -321,6 +340,29 @@ bool SequenceAssetLoader::loadSequence(const std::string& jsonRelPath,
                 }
             }
 
+            if (track.type == TrackType::TransformKeyframe && jt.contains("keyframeTrack")) {
+                const auto& jkf = jt["keyframeTrack"];
+                track.keyframeTrack.name = jkf.value("name", std::string{});
+                track.keyframeTrack.targetEntityId = jkf.value("targetEntityId", uint64_t(0));
+
+                if (jkf.contains("keyframes") && jkf["keyframes"].is_array()) {
+                    for (const auto& jk : jkf["keyframes"]) {
+                        TransformKeyframe kf;
+                        kf.time = jk.value("time", 0.0);
+                        if (jk.contains("position"))    kf.position = vec3FromJson(jk["position"]);
+                        if (jk.contains("rotation"))    kf.rotation = quatFromJson(jk["rotation"]);
+                        if (jk.contains("scale"))       kf.scale = vec3FromJson(jk["scale"]);
+                        kf.easeToNext = strToEase(jk.value("easeToNext", std::string{"Linear"}));
+                        track.keyframeTrack.keyframes.push_back(std::move(kf));
+                    }
+                }
+
+                std::sort(track.keyframeTrack.keyframes.begin(), track.keyframeTrack.keyframes.end(),
+                          [](const TransformKeyframe& a, const TransformKeyframe& b) {
+                              return a.time < b.time;
+                          });
+            }
+
             out.tracks.push_back(std::move(track));
         }
     }
@@ -417,18 +459,24 @@ bool SequenceAssetLoader::loadCameraPath(const std::string& jsonRelPath,
 std::string SequenceAssetLoader::easeToStr(TweenEase e)
 {
     switch (e) {
-    case TweenEase::Linear:     return "Linear";
-    case TweenEase::SmoothStep: return "SmoothStep";
-    case TweenEase::EaseIn:     return "EaseIn";
-    case TweenEase::EaseOut:    return "EaseOut";
+    case TweenEase::Linear:      return "Linear";
+    case TweenEase::SmoothStep:  return "SmoothStep";
+    case TweenEase::EaseIn:      return "EaseIn";
+    case TweenEase::EaseOut:     return "EaseOut";
+    case TweenEase::EaseInOut:   return "EaseInOut";
+    case TweenEase::Cubic:       return "Cubic";
+    case TweenEase::Exponential: return "Exponential";
     }
-    return "SmoothStep";
+    return "Linear";
 }
 
 TweenEase SequenceAssetLoader::strToEase(const std::string& s)
 {
-    if (s == "Linear")     return TweenEase::Linear;
-    if (s == "EaseIn")     return TweenEase::EaseIn;
-    if (s == "EaseOut")    return TweenEase::EaseOut;
+    if (s == "Linear")      return TweenEase::Linear;
+    if (s == "EaseIn")      return TweenEase::EaseIn;
+    if (s == "EaseOut")     return TweenEase::EaseOut;
+    if (s == "EaseInOut")   return TweenEase::EaseInOut;
+    if (s == "Cubic")       return TweenEase::Cubic;
+    if (s == "Exponential") return TweenEase::Exponential;
     return TweenEase::SmoothStep;
 }

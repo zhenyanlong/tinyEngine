@@ -460,7 +460,8 @@ void Application::drawFrame(float dt)
     sequenceCameraActive_ = false;
     bool seqHasAnimTrack = false;
     {
-        const auto* seq = seqPlayer_.currentSequence();
+        seqPlayer_.setSequenceRef(currentSequence_);
+        const auto* seq = &currentSequence_;
         bool hasCameraTrack = false;
         if (seq) {
             for (const auto& t : seq->tracks) {
@@ -519,6 +520,18 @@ void Application::drawFrame(float dt)
             ent.transform.position = result.position;
             ent.transform.rotation = result.rotation;
             ent.transform.scale = result.scale;
+        };
+
+        seqCallbacks.onTransformKeyframeEval = [&](double t, uint64_t entityId, const TransformKeyframeTrack::EvalResult& result) {
+            if (!result.valid) return;
+            if (!seqPlayer_.isPlaying() && !sequencerPreviewPending_) return;
+            auto* ent = sceneMgr_.getModelEntity(entityId);
+            if (!ent) return;
+            ent->transform.position = result.position;
+            ent->transform.rotation = result.rotation;
+            ent->transform.scale = result.scale;
+            ent->syncCameraFromTransform();
+            if (sequencerPreviewPending_) sequencerPreviewPending_ = false;
         };
 
         seqCallbacks.onEvent = [&](const std::string& eventName) {
@@ -713,7 +726,14 @@ void Application::recordCommandBuffer(VkCommandBuffer cb, uint32_t imageIndex)
         constexpr uint32_t ph = FramebufferManager::kPipHeight;
 
         VkClearValue pipClears[2]{};
-        pipClears[0].color = { {0.1f, 0.1f, 0.1f, 1.f} };
+        // PiP 清除色与主 pass 保持一致（使用同一 ui_->getClearColor()），
+        // 避免小窗背景色与主视口背景色不一致。
+        if (ui_) {
+            const ImVec4 cc = ui_->getClearColor();
+            pipClears[0].color = { cc.x * cc.w, cc.y * cc.w, cc.z * cc.w, cc.w };
+        } else {
+            pipClears[0].color = { 0.f, 0.f, 0.f, 1.f };
+        }
         pipClears[1].depthStencil = { 1.f, 0 };
 
         VkRenderPassBeginInfo pipRpi{};

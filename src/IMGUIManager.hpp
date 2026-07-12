@@ -138,6 +138,12 @@ public:
     // Last seek time set by timeline drag (seconds)
     double seekTime_ = -1.0;
 
+    // Sequencer keyframe editing state
+    double sequencerEditTime_ = 0.0;
+    bool   sequencerEditTimeSet_ = false;
+    int    selectedKeyframeTrackIdx_ = -1;
+    int    selectedKeyframeIdx_ = -1;
+
 	int gizmoOperation_ = 7;  // ImGuizmo::TRANSLATE (bitmask: 7=TRANSLATE, 120=ROTATE, 896=SCALE)
 	bool gizmoLocal_ = false; // false=世界坐标(ImGuizmo::WORLD), true=本地坐标(ImGuizmo::LOCAL)，按 4 键切换
 

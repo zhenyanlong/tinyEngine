@@ -1,3 +1,18 @@
+## 2026-07-12
+
+- [ ] 实现 Sequencer ImGui 面板（TODO-026/027/028）：自适应秒数刻度的时间线、带 Mute/Solo 的轨道列表、clip 彩色矩形 + 关键帧菱形节点、片段属性编辑器、轨道管理（Add/Delete）、Load/Save .seq.json、相机路径录制控制、序列时长编辑（IMGUIManager.cpp）
+- [ ] 实现 TransformKeyframe 关键帧系统（方案B）：TransformKeyframe 结构（time/position/rotation/scale/easeToNext）+ TransformKeyframeTrack（targetEntityId 绑定实体）+ evaluate(t) 前后关键帧插值求值（Sequence.hpp/.cpp）
+- [ ] 新增 7 种混合模式：Linear、SmoothStep、EaseIn、EaseOut、EaseInOut、Cubic、Exponential，通过 applyEaseCurve() 通用曲线函数实现（Sequence.hpp）
+- [ ] 扩展 SequencePlayer：新增 onTransformKeyframeEval callback + setSequenceRef() 引用外部 Sequence 实现实时同步 + totalDur<=0 时关键帧预览兜底（SequencePlayer.hpp/.cpp）
+- [ ] 扩展 SequenceAssetLoader：支持 TransformKeyframeTrack 的 JSON 序列化（保存/加载后按 time 排序）（SequenceAssetLoader.cpp）
+- [ ] 新增 Sequencer 预览机制：Application 维护 sequencerPreviewPending_ 标志，requestSequencerPreview() API，onTransformKeyframeEval 仅在播放或预览请求时执行 — 避免持续覆盖实体 Transform（Application.hpp/.cpp）
+- [ ] 修复关键帧与时间轴对齐：统一 contentOriginX 坐标基准，移除子窗口边框确保 x 位置一致（IMGUIManager.cpp）
+- [ ] 新增 UI 工作流按钮：Add Selected to Track（绑定 Camera 到关键帧轨道）、Add Keyframe（自动记录实体 Transform）、Update from Entity（写回 Transform）、Preview / Preview Here（单次预览）（IMGUIManager.cpp）
+- [ ] 修复 seqPlayer_ 与 currentSequence_ 不同步：drawFrame 每帧调用 setSequenceRef() 引用外部 Sequence，不再使用过期的 owned 拷贝（Application.cpp, SequencePlayer.cpp）
+- [ ] 修复点击时间轴不触发实时预览：点击现在调用 seek() + requestSequencerPreview() 立即更新实体 Transform（IMGUIManager.cpp）
+- [ ] 时间轴刻度尺自适应：范围 = max(duration + 2, 10)，不再固定 0-6（IMGUIManager.cpp）
+- [ ] 更新 TDD.md §4.12.5：记录 Sequencer Phase C 已完成，含关键帧系统、7种混合模式、预览机制、UI 工作流
+
 ## 2026-07-09
 
 - [ ] 修复 PiP color/depth 输出为空且 PiP 显示与主视口一致的问题（TODO-034）：根因是两个叠加问题——(1) 所有管线使用静态 viewport/scissor 且未声明 VK_DYNAMIC_STATE_VIEWPORT/SCISSOR，PiP 的 vkCmdSetViewport(320×240) 被静默忽略，几何落在 framebuffer 外；(2) PiP renderpass 用 R8G8B8A8_UNORM 而主管线在 B8G8R8A8_SRGB 的 main renderpass 上创建，格式不兼容。修复：给 4 个管线 builder 启用动态 viewport/scissor（PipelineManager.cpp）；主 pass（Application.cpp）和 pick pass（PickSystem.cpp）begin 后补 vkCmdSetViewport/Scissor；PiP renderpass 与 color image 改用 swapchain 格式（RenderPassManager、FramebufferManager）

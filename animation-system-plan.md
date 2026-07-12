@@ -28,7 +28,7 @@
 │   ├── C1. SequenceTrack / SequenceClip 数据结构
 │   ├── C2. Sequence 播放控制器
 │   ├── C3. 相机路径轨道（Camera Path Track）
-│   ├── C4. 对象变换轨道（Transform Track）
+│   ├── C4. 对象变换轨道（TransformTween + TransformKeyframe）
 │   ├── C5. Sequence 资产序列化（.seq.json）
 │   └── C6. ImGui Sequencer 编辑器面板
 │
@@ -539,40 +539,45 @@ private:
 **新建文件：** `src/Animation/Sequence.hpp`
 
 ```cpp
-// 时间轴上的一个片段（通用基类）
-struct SequenceClipBase {
-    float startTime;   // 秒
-    float duration;    // 秒
-    float endTime() const { return startTime + duration; }
-};
-
 // 轨道类型枚举
 enum class TrackType {
-    AnimationClip,   // 播放某段骨骼动画
-    CameraPath,      // 相机沿路径运动
-    TransformTween,  // 对象 Transform 插值
-    Event,           // 触发一个命名事件（供逻辑层响应）
+    AnimationClip,      // 播放某段骨骼动画
+    CameraPath,         // 相机沿路径运动
+    TransformTween,     // 对象 Transform 补间（旧版，保留兼容）
+    TransformKeyframe,  // 关键帧轨道（新版，绑定实体）
+    Event,              // 触发一个命名事件（供逻辑层响应）
+};
+
+// 插值模式（7种混合曲线）
+enum class TweenEase {
+    Linear, SmoothStep, EaseIn, EaseOut, EaseInOut, Cubic, Exponential
+};
+
+// 时间轴上的一个片段（通用基类）
+struct SequenceClipBase {
+    std::string name;
+    double      startTime;   // 秒
+    double      duration;    // 秒
 };
 
 // 骨骼动画片段
 struct AnimTrackClip : SequenceClipBase {
     std::string clipName;   // AnimationClip::name
-    float       clipOffset; // 从 clip 内的哪个时间开始播
-    float       playSpeed;  // 1.0 = 正常速度
+    double      clipOffset; // 从 clip 内的哪个时间开始播
+    double      playSpeed;  // 1.0 = 正常速度
 };
 
 // 相机路径片段（见 C3 详述）
 struct CameraPathClip : SequenceClipBase {
-    std::string pathAssetPath;  // 指向 .campath.json
+    std::string pathAssetRelPath;  // 指向 .campath.json
 };
 
-// Transform 补间片段
+// Transform 补间片段（旧版）
 struct TransformTweenClip : SequenceClipBase {
-    glm::vec3 startPos, endPos;
-    glm::quat startRot, endRot;
+    glm::vec3 startPosition, endPosition;
+    glm::quat startRotation, endRotation;
     glm::vec3 startScale, endScale;
-    enum class Ease { Linear, SmoothStep, EaseIn, EaseOut } ease;
-    std::string targetEntity;  // 目标对象名（主模型 or box id）
+    TweenEase ease;
 };
 
 // 事件片段
@@ -580,33 +585,58 @@ struct EventClip : SequenceClipBase {
     std::string eventName;
 };
 
+// 关键帧：记录某一时刻的 Transform 状态（新版）
+struct TransformKeyframe {
+    double    time;           // 在序列时间轴上的位置（秒）
+    glm::vec3 position;
+    glm::quat rotation;
+    glm::vec3 scale;
+    TweenEase easeToNext;     // 到下一个关键帧的混合模式
+};
+
+// 关键帧轨道：绑定到特定实体
+struct TransformKeyframeTrack {
+    std::string  name;
+    uint64_t     targetEntityId;  // 关联的场景实体 ID
+    std::vector<TransformKeyframe> keyframes;  // 按 time 升序
+
+    struct EvalResult { glm::vec3 position; glm::quat rotation; glm::vec3 scale; bool valid; };
+    EvalResult evaluate(double t) const;
+    double totalDuration() const;
+};
+
 // 单条轨道（持有若干同类型片段）
 struct SequenceTrack {
     std::string name;
     TrackType   type;
-    bool        enabled = true;
-    bool        muted   = false;
 
-    // 同一轨道只存同类型片段（用 variant 或继承；此处用索引分存）
     std::vector<AnimTrackClip>       animClips;
-    std::vector<CameraPathClip>      cameraClips;
+    std::vector<CameraPathClip>      cameraPathClips;
     std::vector<TransformTweenClip>  tweenClips;
     std::vector<EventClip>           eventClips;
+    TransformKeyframeTrack           keyframeTrack;  // 新版关键帧轨道
+
+    double totalDuration() const;
 };
 
 // 整个 Sequence（时间轴）
 struct Sequence {
     std::string              name;
-    float                    totalDuration = 0.f;  // 所有轨道片段中最大 endTime
+    double                   totalDuration = 0.0;
     std::vector<SequenceTrack> tracks;
+
+    double computeTotalDuration() const;
 };
 ```
 
 **具体任务：**
 
 - [x] **C1-1** 新建 `src/Animation/Sequence.hpp`，定义上述所有结构体
-- [x] **C1-2** 实现 `Sequence::recalcDuration()`：遍历所有 track 所有 clip 取最大 endTime
-- [ ] **C1-3** 实现各 clip 类型的 `evaluate(localT)` 方法（localT ∈ [0,1]）：返回该片段在时间 t 处的值，供 Sequencer 播放控制器调用（属于 C2 SequencePlayer 范畴，见 TODO-021）
+- [x] **C1-2** 实现 `Sequence::computeTotalDuration()`：遍历所有 track 取最大 endTime（含 keyframeTrack）
+- [x] **C1-3** 实现各 clip 类型的 `evaluate(localT)` 方法：
+  - `TransformTweenClip::evaluate(localT)`：按 ease 曲线插值 start→end TRS
+  - `TransformKeyframeTrack::evaluate(t)`：查找前后关键帧，按 `easeToNext` 插值混合
+  - `applyEaseCurve(t, ease)`：通用曲线求值函数，支持 7 种混合模式
 
 ---
 
@@ -717,21 +747,37 @@ struct CameraPath {
 
 ---
 
-### C4. 对象变换轨道（Transform Track）
+### C4. 对象变换轨道（TransformTween + TransformKeyframe）
 
-**目标：** 支持对场景中的对象（主模型、box）做关键帧变换动画。
+**目标：** 支持对场景中的对象（主模型、box、Camera Actor）做关键帧变换动画。
 
-**具体任务：**
+**两种实现方式：**
+
+**C4-A TransformTweenClip（旧版，保留兼容）**
 
 - [x] **C4-1** 在 `Sequence.hpp` 中确认 `TransformTweenClip` 结构已包含 start/end TRS 和 ease 模式
-- [x] **C4-2** 实现三种 ease 函数（可复用 `smoothstep01` 或扩展到 `easeIn/easeOut`）：
-  ```cpp
-  float applyEase(float t, TransformTweenClip::Ease ease);
-  ```
+- [x] **C4-2** 实现 7 种 ease 函数（`applyEaseCurve(t, ease)`）：
+  - Linear、SmoothStep、EaseIn、EaseOut、EaseInOut、Cubic、Exponential
 - [x] **C4-3** 在 `SequencePlayer::update` 的 `onTransformTweenEval` callback 中，根据 `entity` 名称找到对应对象并更新其 `ObjectTransform`：
   - `"main"` → 更新 `Application::mainModelTransform`
   - `"box:<id>"` → 调用 `sceneMgr_.setBoxPosition(id, pos)`（当前 box 只支持位移，旋转和缩放为后续扩展）
-- [ ] **C4-4** 在 Sequencer ImGui 面板中，对 TransformTween clip 提供 "Record Start" 和 "Record End" 按钮（从当前对象的实际 Transform 抓取值）
+- [x] **C4-4** 在 Sequencer ImGui 面板中，对 TransformTween clip 提供 "Record Start" 和 "Record End" 按钮（从当前对象的实际 Transform 抓取值）
+  > **实际实现**：通过 **Update from Entity** 按钮将当前实体 Transform 写回选中的关键帧，等价于 Record Start/End
+
+**C4-B TransformKeyframeTrack（新版，推荐使用）**
+
+- [x] **C4-5** 新增 `TransformKeyframe` 结构体（time / position / rotation / scale / easeToNext）
+- [x] **C4-6** 新增 `TransformKeyframeTrack` 结构体（name / targetEntityId / keyframes[] + evaluate(t)）
+  - `evaluate(t)` 自动查找前后关键帧，按 `easeToNext` 插值混合
+  - 边界处理：t < 首帧返回首帧值，t > 末帧返回末帧值
+- [x] **C4-7** 在 `SequencePlayer` 中新增 `onTransformKeyframeEval` callback：
+  - 参数为 (t, entityId, EvalResult)
+  - Application 中根据 entityId 查找实体并更新 Transform + syncCameraFromTransform()
+- [x] **C4-8** 实时预览机制：
+  - Application 维护 `sequencerPreviewPending_` 标志
+  - `requestSequencerPreview()` 设置标志，下一帧执行一次后清除
+  - 非播放状态下不持续覆盖实体 Transform，允许用户通过 Gizmo 自由调整
+  - 播放状态下持续驱动 Transform 更新
 
 ---
 
@@ -750,13 +796,12 @@ struct CameraPath {
     {
       "name": "Camera",
       "type": "CameraPath",
-      "enabled": true,
-      "muted": false,
-      "cameraClips": [
+      "cameraPathClips": [
         {
+          "name": "Shot01",
           "startTime": 0.0,
           "duration": 8.0,
-          "pathAssetPath": "sequences/paths/shot01_cam.campath.json"
+          "pathAsset": "sequences/paths/shot01_cam.campath.json"
         }
       ]
     },
@@ -764,8 +809,8 @@ struct CameraPath {
       "name": "Character",
       "type": "AnimationClip",
       "animClips": [
-        { "startTime": 0.0, "duration": 3.0, "clipName": "Idle",  "clipOffset": 0.0, "playSpeed": 1.0 },
-        { "startTime": 3.0, "duration": 5.0, "clipName": "Walk",  "clipOffset": 0.0, "playSpeed": 1.0 }
+        { "name": "Idle", "startTime": 0.0, "duration": 3.0, "clipName": "Idle",  "clipOffset": 0.0, "playSpeed": 1.0 },
+        { "name": "Walk", "startTime": 3.0, "duration": 5.0, "clipName": "Walk",  "clipOffset": 0.0, "playSpeed": 1.0 }
       ]
     },
     {
@@ -773,14 +818,34 @@ struct CameraPath {
       "type": "TransformTween",
       "tweenClips": [
         {
+          "name": "Move01",
           "startTime": 2.0, "duration": 1.5,
-          "targetEntity": "main",
-          "startPos": [0,0,0], "endPos": [2,0,0],
-          "startRot": [0,0,0,1], "endRot": [0,0,0,1],
+          "startPosition": [0,0,0], "endPosition": [2,0,0],
+          "startRotation": [1,0,0,0], "endRotation": [1,0,0,0],
           "startScale": [1,1,1], "endScale": [1,1,1],
           "ease": "SmoothStep"
         }
       ]
+    },
+    {
+      "name": "CameraActorMove",
+      "type": "TransformKeyframe",
+      "keyframeTrack": {
+        "name": "CameraActorMove",
+        "targetEntityId": 12345,
+        "keyframes": [
+          {
+            "time": 0.0,
+            "position": [0,0,5], "rotation": [1,0,0,0], "scale": [1,1,1],
+            "easeToNext": "SmoothStep"
+          },
+          {
+            "time": 15.0,
+            "position": [3,2,8], "rotation": [0.9,0.1,0,0.4], "scale": [1,1,1],
+            "easeToNext": "Linear"
+          }
+        ]
+      }
     }
   ]
 }
@@ -792,10 +857,10 @@ struct CameraPath {
 {
   "version": 1,
   "name": "shot01_cam",
-  "interpolation": "CatmullRom",
+  "interpolation": 0,
   "keyframes": [
-    { "time": 0.0, "position": [0,-4,4], "orientation": [0,0,0,1], "fovDeg": 45.0 },
-    { "time": 2.0, "position": [3,-2,3], "orientation": [...],      "fovDeg": 40.0 }
+    { "time": 0.0, "position": [0,-4,4], "orientation": [1,0,0,0], "fovDeg": 45.0 },
+    { "time": 2.0, "position": [3,-2,3], "orientation": [0.9,0.1,0,0.4], "fovDeg": 40.0 }
   ]
 }
 ```
@@ -803,39 +868,53 @@ struct CameraPath {
 **具体任务：**
 
 - [x] **C5-1** 新建 `src/Animation/SequenceAssetLoader.hpp` / `.cpp`
-- [x] **C5-2** 实现 `SequenceAssetLoader::saveSequence(path, seq)` 和 `loadSequence(path)` — nlohmann/json 实现
-- [x] **C5-3** 实现 `SequenceAssetLoader::saveCameraPath(path, camPath)` 和 `loadCameraPath(path)`
-- [x] **C5-4** 在 `Application` 中增加 `void loadSequenceFromFile(const std::string& path)` 和 `void saveCurrentSequence(const std::string& path)`（已通过 SequencePlayer::loadSequence 和 SequenceAssetLoader 访问器实现）
-- [x] **C5-5** 在 `res/sequences/` 目录下提供一个示例 `.seq.json` 文件
+- [x] **C5-2** 实现 `SequenceAssetLoader::saveSequence(path, seq)` 和 `loadSequence(path, seq)` — nlohmann/json 实现，支持所有 5 种 TrackType（含 TransformKeyframeTrack）
+- [x] **C5-3** 实现 `SequenceAssetLoader::saveCameraPath(path, camPath)` 和 `loadCameraPath(path, camPath)` — 加载后按 time 排序
+- [x] **C5-4** 实现 7 种 TweenEase 的双向字符串转换（`easeToStr` / `strToEase`）
+- [x] **C5-5** TransformKeyframeTrack 完整序列化：targetEntityId + keyframes[]（time/position/rotation/scale/easeToNext），加载后按 time 排序
+- [x] **C5-6** 在 `res/sequences/` 目录下提供一个示例 `.seq.json` 文件
 
 ---
 
 ### C6. ImGui Sequencer 编辑器面板
 
-**目标：** 提供可视化的时间轴编辑器，支持录制、播放、轨道管理。
+**目标：** 提供可视化的时间轴编辑器，支持录制、播放、轨道管理、关键帧编辑。
+
+**实际实现：** `src/IMGUIManager.cpp::drawSequencerPanel()`
 
 **具体任务：**
 
-- [ ] **C6-1** 在 `IMGUIManager.hpp` 增加 `bool showSequencerPanel_ = false`，主面板顶部加 Checkbox 开关
-- [ ] **C6-2** 实现 `drawSequencerPanel(Sequence& seq, SequencePlayer& player)`：
-  - **顶部工具栏：** Play / Pause / Stop 按钮，时间显示 `"03.24 / 08.00"`, Loop 勾选框
-  - **时间线刻度：** 用 `ImGui::GetWindowDrawList()->AddLine` 手绘刻度尺（每 0.5s 一小格，每 1s 一大格 + 数字标签）
-  - **当前时间指示线：** 可拖动的红色竖线，拖动触发 `seqPlayer_->seek(t)`
-  - **轨道列表（左列）：** 每条 track 一行，显示名字 + Mute/Solo 图标按钮
-  - **片段区域（右列）：** 每个 clip 绘制为彩色矩形（可点选），点选后底部显示属性
-- [ ] **C6-3** 实现片段属性编辑器（Sequencer 底部区域）：
-  - 选中 `AnimTrackClip` → 显示 clipName 下拉（从 `animationClips_` 列表选）、offset、speed
-  - 选中 `CameraPathClip` → 显示 path 路径（可输入或从文件选择）
-  - 选中 `TransformTweenClip` → 显示 start/end TRS 的 InputFloat3 和 ease 下拉
-- [ ] **C6-4** 实现录制控制区域（位于轨道列表顶部）：
-  - "Record Camera Path" 开始/结束录制按钮（触发 `Application::recordingCameraPath_`）
-  - 录制中显示红色圆点 + 已录制时长
-  - 结束录制后弹出输入框要求命名，自动保存到 `res/sequences/paths/<name>.campath.json`，并在当前 Sequence 中新增一条 CameraPath track
-- [ ] **C6-5** 实现添加/删除轨道：
-  - "Add Track" 按钮 → Combo 选择轨道类型 → 在 `seq.tracks` 中插入新 track
-  - 右键某 track → 上下文菜单 "Delete Track"
-- [ ] **C6-6** 实现加载/保存：
-  - 面板顶部右侧：`InputText` 输入 `.seq.json` 路径 + Load / Save 按钮
+- [x] **C6-1** 在 `IMGUIManager.hpp` 增加 `bool showSequencerPanel_ = false`，主面板顶部加 Checkbox 开关
+- [x] **C6-2** 实现 `drawSequencerPanel()`：
+  - **顶部工具栏：** Play / Pause / Stop 按钮、Loop 勾选框、Zoom 缩放、序列时长编辑（Dur 输入框）、时间显示 `"03.24 / 08.00"`、Load/Save .seq.json 按钮
+  - **时间线刻度：** 基于 duration 自适应显示秒数刻度（`max(duration + 2, 10)`），用 `ImGui::GetWindowDrawList()->AddLine` 手绘刻度 + 数字标签
+  - **当前时间指示线：** 红色竖线（播放位置）+ 黄色竖线（编辑位置 sequencerEditTime_）
+  - **点击时间轴：** 设置编辑位置并触发实时预览（`seek()` + `requestSequencerPreview()`）
+  - **轨道列表（左列）：** 每条 track 一行，显示名字 + Mute/Solo 按钮，按轨道类型显示不同颜色
+  - **片段区域（右列）：** clip 绘制为彩色矩形，关键帧绘制为黄色菱形节点（选中高亮为白色），帧间连线
+- [x] **C6-3** 实现片段属性编辑器（Sequencer 底部区域）：
+  - 选中 `AnimTrackClip` → 显示 clipName 输入、offset、speed
+  - 选中 `CameraPathClip` → 显示 path 路径输入
+  - 选中 `TransformTweenClip` → 显示 start/end TRS 的 InputFloat3 和 ease 下拉（7种模式）
+  - 选中 `TransformKeyframe` → 显示 time/position/rotation/scale/easeToNext 编辑
+- [x] **C6-4** 实现录制控制区域（位于底部）：
+  - "Start Recording" / "Stop Recording" 按钮（触发 `Application::recordingCameraPath_`）
+  - 录制中显示红色 "Recording..." + 已录制时长
+  - Path Name 输入框用于保存 .campath.json
+- [x] **C6-5** 实现添加/删除轨道：
+  - "Add Track" 按钮 → 在 `seq.tracks` 中插入新 track（默认 AnimationClip 类型）
+  - "Delete Track" 按钮 → 删除选中 track
+  - Track Type 下拉切换轨道类型
+- [x] **C6-6** 实现加载/保存：
+  - 面板顶部右侧：`InputText` 输入序列名 + Load / Save 按钮
+  - 调用 `SequenceAssetLoader::loadSequence` / `saveSequence`
+
+**新增 UI 工作流按钮（关键帧系统）：**
+
+- [x] **C6-7** **Add Selected to Track**：将选中实体（Camera Actor）创建为 TransformKeyframe 轨道（绑定 targetEntityId）
+- [x] **C6-8** **Add Keyframe**：在当前编辑时间点添加关键帧，自动记录选中实体的当前 Transform
+- [x] **C6-9** **Update from Entity**：将当前实体 Transform 写回选中的关键帧（替代旧版的 Record Start/End）
+- [x] **C6-10** **Preview** / **Preview Here**：触发单次预览求值（`requestSequencerPreview()`），不持续覆盖实体 Transform
 
 ---
 
@@ -918,16 +997,16 @@ A1 → A2 → A3 → A4 → A5
 
 **推荐分阶段里程碑：**
 
-| 里程碑 | 完成条件 | 预计子任务数 |
-|--------|----------|-------------|
-| M1 基础骨骼播放 | CesiumMan.glb 实时播放行走动画 | A1-A4（约 18 个任务） |
-| M2 骨骼资产化 | 从 Anim .ast + .anim.bin 加载后动画正常 | A5（约 10 个任务） |
-| M3 状态机 | Idle ↔ Walk 按参数自动切换 | B1-B4（约 14 个任务） |
-| M4 状态机编辑器 | 在 ImGui 里改状态机并保存 | B5（约 5 个任务） |
-| M5 Sequencer 基础 | 时间轴驱动动画片段和 Transform 补间 | C1-C4（约 16 个任务） |
-| M6 相机路径 | 录制+回放相机路径 | C3+C5（约 8 个任务） |
-| M7 完整编辑器 | Sequencer ImGui 面板可用 | C6（约 6 个任务） |
-| M8 资产系统 | 一键加载 .ast 还原全部状态 | D1-D3（约 9 个任务） |
+| 里程碑 | 完成条件 | 状态 |
+|--------|----------|------|
+| M1 基础骨骼播放 | CesiumMan.glb 实时播放行走动画 | ✅ 已完成 |
+| M2 骨骼资产化 | 从 Anim .ast + .anim.bin 加载后动画正常 | ✅ 已完成 |
+| M3 状态机 | Idle ↔ Walk 按参数自动切换 | ✅ 已完成 |
+| M4 状态机编辑器 | 在 ImGui 里改状态机并保存 | ✅ 已完成 |
+| M5 Sequencer 基础 | 时间轴驱动动画片段和 Transform 补间 | ✅ 已完成 |
+| M6 相机路径 | 录制+回放相机路径 | ✅ 已完成 |
+| M7 完整编辑器 | Sequencer ImGui 面板可用（含关键帧系统） | ✅ 已完成 |
+| M8 资产系统 | 一键加载 .ast 还原全部状态 | ⏳ 待实现（Phase D） |
 
 ---
 
@@ -957,14 +1036,14 @@ Sequencer 播放期间，多个系统（AnimationPlayer、Camera、ObjectTransfo
 src/Animation/
 ├── Skeleton.hpp / .cpp
 ├── AnimationClip.hpp / .cpp
-├── AnimationPlayer.hpp / .cpp
 ├── AnimatorController.hpp / .cpp
-├── Sequence.hpp
+├── AnimationRetargeter.hpp / .cpp
+├── Sequence.hpp / .cpp
 ├── SequencePlayer.hpp / .cpp
-├── CameraPath.hpp / .cpp
+├── SequencerCamera.hpp / .cpp
 ├── AnimationAssetLoader.hpp / .cpp
 ├── SequenceAssetLoader.hpp / .cpp
-└── AnimationAssetRegistry.hpp / .cpp
+└── AnimationAssetRegistry.hpp / .cpp  （Phase D1，待实现）
 
 shaders/
 └── skinned_vert.glsl  （+ 编译为 skinned_vert.spv）

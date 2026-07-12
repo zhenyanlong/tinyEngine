@@ -90,6 +90,7 @@ public:
     SequencePlayer& getSequencePlayer() { return seqPlayer_; }
     Sequence&       getCurrentSequence() { return currentSequence_; }
     bool            isSequencerPlaying() const { return seqPlayer_.isPlaying(); }
+    void            requestSequencerPreview() { sequencerPreviewPending_ = true; }
 
     // ── Camera Path recording API ────────────────────────────────────────────
     void beginCameraPathRecording(const std::string& pathName);
@@ -177,6 +178,7 @@ private:
     // ── Sequencer state ───────────────────────────────────────────────────────
     SequencePlayer     seqPlayer_;
     Sequence           currentSequence_;
+    bool               sequencerPreviewPending_ = false;
     bool               sequenceCameraActive_ = false;
 
     // ── Camera Path cache ──────────────────────────────────────────────────

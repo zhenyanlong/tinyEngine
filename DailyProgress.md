@@ -1,3 +1,18 @@
+## 2026-07-12
+
+- [ ] Implemented Sequencer ImGui panel (TODO-026/027/028): timeline with adaptive second-based ruler, track list with Mute/Solo, clip rectangles + keyframe diamond nodes, clip property editor, track management (Add/Delete), Load/Save .seq.json, camera path recording controls, sequence duration editing (IMGUIManager.cpp)
+- [ ] Implemented TransformKeyframe system (Phase B alternative): TransformKeyframe struct (time/position/rotation/scale/easeToNext) + TransformKeyframeTrack (targetEntityId binding) + evaluate(t) with prev/next keyframe interpolation (Sequence.hpp/.cpp)
+- [ ] Added 7 blend modes: Linear, SmoothStep, EaseIn, EaseOut, EaseInOut, Cubic, Exponential via applyEaseCurve() utility function (Sequence.hpp)
+- [ ] Extended SequencePlayer with onTransformKeyframeEval callback + setSequenceRef() for live UI sync + totalDur<=0 keyframe preview fallback (SequencePlayer.hpp/.cpp)
+- [ ] Extended SequenceAssetLoader to serialize TransformKeyframeTrack (save/load with time-sorted keyframes) (SequenceAssetLoader.cpp)
+- [ ] Added Sequencer preview mechanism: sequencerPreviewPending_ flag in Application, requestSequencerPreview() API, onTransformKeyframeEval only fires when playing or preview requested — prevents continuous Transform override (Application.hpp/.cpp)
+- [ ] Fixed keyframe-timeline alignment: unified contentOriginX coordinate basis across timeline ruler and track clip rows, removed child window borders for consistent x positioning (IMGUIManager.cpp)
+- [ ] Added UI workflow buttons: Add Selected to Track (bind camera to keyframe track), Add Keyframe (auto-record entity Transform), Update from Entity (write back Transform), Preview / Preview Here (single-shot preview) (IMGUIManager.cpp)
+- [ ] Fixed seqPlayer_ vs currentSequence_ desync: setSequenceRef() called every frame in drawFrame to reference external Sequence instead of stale owned copy (Application.cpp, SequencePlayer.cpp)
+- [ ] Fixed timeline click not triggering live preview: click now calls seek() + requestSequencerPreview() to update entity Transform immediately (IMGUIManager.cpp)
+- [ ] Made timeline ruler adaptive: range = max(duration + 2, 10) instead of fixed 0-6 (IMGUIManager.cpp)
+- [ ] Updated TDD.md §4.12.5: documented Sequencer Phase C as completed with keyframe system, 7 blend modes, preview mechanism, UI workflow
+
 ## 2026-07-09
 
 - [ ] Fixed PiP color/depth output empty + PiP rendering same as main view (TODO-034): root cause was (1) all pipelines used static viewport/scissor without VK_DYNAMIC_STATE_VIEWPORT/SCISSOR, so PiP's vkCmdSetViewport(320×240) was silently ignored and geometry fell outside the framebuffer; (2) PiP renderpass used R8G8B8A8_UNORM while main pipelines were created on main renderpass (B8G8R8A8_SRGB), format-incompatible. Fix: enabled dynamic viewport/scissor on all 4 pipeline builders (PipelineManager.cpp); added vkCmdSetViewport/Scissor after main pass (Application.cpp) and pick pass (PickSystem.cpp) begin; changed PiP renderpass + color image to use swapchain format (RenderPassManager, FramebufferManager)
