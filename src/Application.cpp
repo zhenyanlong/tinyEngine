@@ -11,6 +11,7 @@
 #include <ImGuizmo.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <glm/gtx/matrix_decompose.hpp>
 #include "nlohmann/json.hpp"
 #include <algorithm>
 #include <array>
@@ -171,8 +172,20 @@ void Application::mouseCallback(GLFWwindow* w, double xpos, double ypos)
 
 // ─── Public entry ─────────────────────────────────────────────────────────────
 
-void Application::run()
+void Application::run(int argc, char* argv[])
 {
+    // 解析命令行参数
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--mcp") {
+            CommandBridge::instance().setEnabled(true);
+        } else if (arg == "--port" && i + 1 < argc) {
+            mcpPort_ = std::stoi(argv[++i]);
+        } else if (arg == "--exit-after" && i + 1 < argc) {
+            exitAfterFrames_ = std::stoi(argv[++i]);
+        }
+    }
+
     ui_ = new UIManager();
     tinyengine::debug::initRenderDoc();
     initGLFW();
@@ -300,6 +313,14 @@ void Application::initVulkan()
     pickSys_.create(ctx_, cmdMgr_);
     cmdMgr_.allocateCommandBuffers(ctx_, swapChain_.getImageCount());
     cmdMgr_.createSyncObjects(ctx_, swapChain_.getImageCount());
+
+    // ── MCP / IPC 初始化 ────────────────────────────────────────────────────
+    if (CommandBridge::instance().enabled()) {
+        CommandBridge::instance().registerBuiltinHandlers();
+        ipc_ = std::make_unique<IpcServer>();
+        ipc_->start(mcpPort_);
+        std::cout << "[MCP] IPC Server started on port " << mcpPort_ << "\n";
+    }
 }
 
 // ─── Main loop ────────────────────────────────────────────────────────────────
@@ -311,6 +332,21 @@ void Application::gameLoop()
             std::cout << "Exit Game" << std::endl;
             vkDeviceWaitIdle(ctx_.getDevice());
             break;
+        }
+
+        // ── MCP 命令队列排出 ──────────────────────────────────────────────────
+        if (CommandBridge::instance().enabled()) {
+            CommandBridge::instance().drainQueue();
+        }
+
+        // ── exit-after 帧数检查 ──────────────────────────────────────────────
+        if (exitAfterFrames_ > 0) {
+            ++frameCount_;
+            if (frameCount_ >= exitAfterFrames_) {
+                std::cout << "[MCP] Reached --exit-after " << exitAfterFrames_
+                          << " frames, exiting.\n";
+                break;
+            }
         }
 
         glfwPollEvents();
@@ -477,6 +513,8 @@ void Application::drawFrame(float dt)
         SequencePlayer::FrameCallbacks seqCallbacks;
         seqCallbacks.onAnimClipEval = [&](double localT, const std::string& clipName,
                                            double clipOffset, double playSpeed) {
+            // 预览模式 ON 时，Sequencer 不干预动画播放（由状态机控制）
+            if (animatorPreviewMode_) return;
             for (auto& ent : sceneMgr_.getModelEntities()) {
                 if (!ent.hasSkin_ || !ent.skeleton || ent.skeleton->bones.empty())
                     continue;
@@ -549,8 +587,9 @@ void Application::drawFrame(float dt)
         seqPlayer_.update(dt, seqCallbacks);
     }
 
-    // Sequencer 未播放 AnimationClip 轨道时，恢复所有实体到正常模式
-    if (!seqHasAnimTrack || !seqPlayer_.isPlaying()) {
+    // 当 Sequencer 正在播放但没有 AnimationClip 轨道时，
+    // 清理 Sequencer 设置的 preview 状态（通过 onAnimClipEval 设的 previewTime 和 previewClipIndex）
+    if (seqPlayer_.isPlaying() && !seqHasAnimTrack) {
         for (auto& ent : sceneMgr_.getModelEntities()) {
             ent.previewClipIndex = -1;
         }
@@ -576,19 +615,23 @@ void Application::drawFrame(float dt)
 
         AnimatorController::BlendCommand blendCommand;
         if (ent.previewClipIndex >= 0 && ent.previewClipIndex < static_cast<int>(clips.size())) {
-            // ── 预览模式：绕开状态机，直接播放单个 clip ──
+            // ── 预览模式（Animator Preview 按钮或 Sequencer 驱动）：绕开状态机 ──
             const AnimationClip* clip = &clips[ent.previewClipIndex];
             ent.previewTime += dt * ent.previewSpeed;
             if (clip->duration > 0.f)
                 ent.previewTime = std::fmod(ent.previewTime, clip->duration);
             blendCommand.clipA = clip;
             blendCommand.timeA = ent.previewTime;
-        } else {
-            // A4 已采用每实体动画状态；Controller 同样按实体保存，避免不同模型互相覆盖。
+        } else if (animatorPreviewMode_) {
+            // ── 预览模式 ON：状态机驱动 ──
             if (!ent.animatorController.hasStates() && !clips.empty()) {
                 ent.animatorController.configureFromClips(clips);
             }
             blendCommand = ent.animatorController.update(dt, clips);
+        } else {
+            // ── 预览模式 OFF：Sequencer 驱动，但当前没有 Sequencer 驱动此实体，
+            //     骨骼走 bind pose
+            // blendCommand 保持默认（clipA = nullptr），骨骼走 bind pose
         }
 
         std::vector<glm::mat4> localTransforms(skeleton->bones.size());
@@ -611,6 +654,63 @@ void Application::drawFrame(float dt)
                 pose.scale = glm::mix(pose.scale, target.scale, weight);
             }
             localTransforms[i] = pose.toMatrix();
+        }
+
+        // ── Root Motion ────────────────────────────────────────────
+        {
+            const auto& ctrl = ent.animatorController;
+            const std::string& curStateName = ctrl.currentStateName();
+            AnimatorState::RootMotionMode rootMotionMode = AnimatorState::RootMotionMode::None;
+            std::string rootBoneName;
+            for (const auto& st : ctrl.states()) {
+                if (st.name == curStateName) {
+                    rootMotionMode = st.rootMotion;
+                    rootBoneName = st.rootBoneName;
+                    break;
+                }
+            }
+
+            if (rootMotionMode != AnimatorState::RootMotionMode::None) {
+                int rootBoneIdx = 0;
+                if (!rootBoneName.empty()) {
+                    auto it = skeleton->boneNameToIndex.find(rootBoneName);
+                    if (it != skeleton->boneNameToIndex.end())
+                        rootBoneIdx = it->second;
+                }
+
+                if (rootMotionMode == AnimatorState::RootMotionMode::Locked) {
+                    localTransforms[rootBoneIdx] = skeleton->bones[rootBoneIdx].localBindTransform;
+                    ent.rootMotionInitialized = false;
+                } else if (rootMotionMode == AnimatorState::RootMotionMode::Follow) {
+                    BoneLocalTransform rootPose;
+                    {
+                        const glm::mat4& bindTransform = skeleton->bones[rootBoneIdx].localBindTransform;
+                        glm::vec3 skew;
+                        glm::vec4 perspective;
+                        if (glm::decompose(localTransforms[rootBoneIdx], rootPose.scale, rootPose.rotation, rootPose.translation, skew, perspective)) {
+                            rootPose.rotation = glm::normalize(rootPose.rotation);
+                        } else {
+                            rootPose = BoneLocalTransform{};
+                        }
+                    }
+
+                    if (!ent.rootMotionInitialized) {
+                        ent.prevRootTranslation = rootPose.translation;
+                        ent.prevRootRotation = rootPose.rotation;
+                        ent.rootMotionInitialized = true;
+                    } else {
+                        glm::vec3 deltaPos = rootPose.translation - ent.prevRootTranslation;
+                        glm::quat deltaRot = rootPose.rotation * glm::inverse(ent.prevRootRotation);
+                        ent.transform.position += deltaPos;
+                        ent.transform.rotation = deltaRot * ent.transform.rotation;
+                        ent.prevRootTranslation = rootPose.translation;
+                        ent.prevRootRotation = rootPose.rotation;
+                    }
+
+                    localTransforms[rootBoneIdx] = glm::mat4_cast(rootPose.rotation)
+                                                 * glm::scale(glm::mat4(1.f), rootPose.scale);
+                }
+            }
         }
 
         std::vector<glm::mat4> finalBoneMatrices;
@@ -2661,6 +2761,12 @@ void Application::setBoxPosition(RenderEntityId id, const glm::vec3& pos)
 void Application::cleanUp()
 {
     vkDeviceWaitIdle(ctx_.getDevice());
+
+    // 停止 MCP IPC 服务
+    if (ipc_) {
+        ipc_->stop();
+        ipc_.reset();
+    }
 
     thumbnailRenderer_.destroy(ctx_, matMgr_, sceneMgr_);
     pickSys_.destroy(ctx_, cmdMgr_);

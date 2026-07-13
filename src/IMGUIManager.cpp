@@ -1938,6 +1938,26 @@ void UIManager::drawAnimatorPanel()
     auto& clips = ent->animationClips;
     auto& ctrl = ent->animatorController;
 
+    // ── Animator Preview Mode 开关 ──
+    bool previewMode = vulkanRender->isAnimatorPreviewMode();
+    if (ImGui::Checkbox("Animator Preview Mode", &previewMode)) {
+        if (!previewMode) {
+            // 切换到 OFF 时，清掉 Animator Preview 按钮设置的 previewClipIndex
+            ent->previewClipIndex = -1;
+            ent->previewTime = 0.f;
+        }
+        vulkanRender->setAnimatorPreviewMode(previewMode);
+    }
+    ImGui::SameLine();
+    if (!previewMode) {
+        ImGui::TextDisabled("(Sequencer 驱动动画)");
+    } else {
+        ImGui::TextDisabled("(状态机驱动)");
+    }
+
+    // 预览模式 OFF 时禁用所有编辑操作
+    ImGui::BeginDisabled(!previewMode);
+
     if (animatorControllerAssetsEntityId_ != ent->entityId) {
         animatorControllerAssetsEntityId_ = ent->entityId;
         animatorControllerAssetsDirty_ = true;
@@ -2256,7 +2276,7 @@ void UIManager::drawAnimatorPanel()
                         s.name = clips[clipIdx].name;
                         s.clipName = clips[clipIdx].name;
                         ns.push_back(std::move(s));
-                        ctrl.configure(ns, ctrl.transitions(), ctrl.params(), ctrl.currentStateName());
+                        ctrl.configure(ns, ctrl.transitions(), ctrl.params(), s.name);
                         snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
                                  "Created state: %s", clips[clipIdx].name.c_str());
                     }
@@ -2274,7 +2294,7 @@ void UIManager::drawAnimatorPanel()
                     s.name = clips[clipIdx].name;
                     s.clipName = clips[clipIdx].name;
                     ns.push_back(std::move(s));
-                    ctrl.configure(ns, ctrl.transitions(), ctrl.params(), ctrl.currentStateName());
+                    ctrl.configure(ns, ctrl.transitions(), ctrl.params(), s.name);
                     snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
                              "Created state: %s", clips[clipIdx].name.c_str());
                 }
@@ -2346,76 +2366,155 @@ void UIManager::drawAnimatorPanel()
     if (animatorEditingTransition_ && animatorSelectedTransitionIdx_ >= 0
         && animatorSelectedTransitionIdx_ < static_cast<int>(ctrl.transitions().size()))
     {
-        const auto& t = ctrl.transitions()[animatorSelectedTransitionIdx_];
+        auto& t = const_cast<std::vector<AnimatorTransition>&>(ctrl.transitions())[animatorSelectedTransitionIdx_];
         ImGui::Text("Transition: %s -> %s", t.fromState.c_str(), t.toState.c_str());
         ImGui::Separator();
 
-        AnimatorTransition mutableT = t;
-
-        if (ImGui::BeginCombo("To##editTransTo", mutableT.toState.c_str())) {
+        if (ImGui::BeginCombo("To##editTransTo", t.toState.c_str())) {
             for (const auto& s : ctrl.states()) {
-                if (s.name == mutableT.fromState) continue;
-                const bool ssel = (s.name == mutableT.toState);
+                if (s.name == t.fromState) continue;
+                const bool ssel = (s.name == t.toState);
                 if (ImGui::Selectable(s.name.c_str(), ssel))
-                    mutableT.toState = s.name;
+                    t.toState = s.name;
                 if (ssel) ImGui::SetItemDefaultFocus();
             }
             ImGui::EndCombo();
         }
 
-        ImGui::DragFloat("Fade (s)", &mutableT.fadeDuration, 0.01f, 0.f, 10.f, "%.2f");
-        ImGui::Checkbox("Has Exit Time", &mutableT.hasExitTime);
-        if (mutableT.hasExitTime)
-            ImGui::DragFloat("Exit Time", &mutableT.exitTime, 0.01f, 0.f, 1.f, "%.2f");
+        ImGui::DragFloat("Fade (s)", &t.fadeDuration, 0.01f, 0.f, 10.f, "%.2f");
+        ImGui::Checkbox("Has Exit Time", &t.hasExitTime);
+        if (t.hasExitTime)
+            ImGui::DragFloat("Exit Time", &t.exitTime, 0.01f, 0.f, 1.f, "%.2f");
 
         const char* curveNames[] = { "Linear", "SmoothStep", "EaseIn", "EaseOut" };
-        int curveIdx = static_cast<int>(mutableT.blendCurve);
+        int curveIdx = static_cast<int>(t.blendCurve);
         if (ImGui::Combo("Blend Curve", &curveIdx, curveNames, IM_ARRAYSIZE(curveNames)))
-            mutableT.blendCurve = static_cast<BlendCurve>(curveIdx);
+            t.blendCurve = static_cast<BlendCurve>(curveIdx);
 
         ImGui::Separator();
         ImGui::Text("Conditions");
+        const auto& allParams = ctrl.params();
         int condDel = -1;
-        for (int ci = 0; ci < static_cast<int>(mutableT.conditions.size()); ++ci) {
-            auto& c = mutableT.conditions[ci];
+        for (int ci = 0; ci < static_cast<int>(t.conditions.size()); ++ci) {
+            auto& c = t.conditions[ci];
             ImGui::PushID(ci);
-            // Use a temporary char buffer for InputText (can't bind std::string directly)
-            char paramBuf[128];
-            snprintf(paramBuf, sizeof(paramBuf), "%s", c.paramName.c_str());
+
+            // 查找当前 param 的类型
+            AnimatorParam::Type paramType = AnimatorParam::Type::Float;
+            const auto& allParams = ctrl.params();
+            int paramIdx = -1;
+            for (int pi = 0; pi < static_cast<int>(allParams.size()); ++pi) {
+                if (allParams[pi].name == c.paramName) {
+                    paramIdx = pi;
+                    paramType = allParams[pi].type;
+                    break;
+                }
+            }
+
             char labelBuf[128];
-            snprintf(labelBuf, sizeof(labelBuf), "Param##cond_%d", ci);
-            if (ImGui::InputText(labelBuf, paramBuf, sizeof(paramBuf)))
-                c.paramName = paramBuf;
+            if (!allParams.empty()) {
+                snprintf(labelBuf, sizeof(labelBuf), "Param##cond_%d", ci);
+                ImGui::SetNextItemWidth(100);
+                if (ImGui::Combo(labelBuf, &paramIdx,
+                                 [](void* data, int idx, const char** out) -> bool {
+                                     const auto& params = *static_cast<const std::vector<AnimatorParam>*>(data);
+                                     if (idx < 0 || idx >= static_cast<int>(params.size())) return false;
+                                     *out = params[idx].name.c_str();
+                                     return true;
+                                 }, const_cast<std::vector<AnimatorParam>*>(&allParams),
+                                 static_cast<int>(allParams.size())))
+                {
+                    if (paramIdx >= 0 && paramIdx < static_cast<int>(allParams.size())) {
+                        c.paramName = allParams[paramIdx].name;
+                        paramType = allParams[paramIdx].type;
+                        // 切换 param 时重置 operator
+                        switch (paramType) {
+                        case AnimatorParam::Type::Float:
+                            c.op = TransitionCondition::Op::Greater;
+                            break;
+                        case AnimatorParam::Type::Bool:
+                            c.op = TransitionCondition::Op::Equal;
+                            break;
+                        case AnimatorParam::Type::Trigger:
+                            c.op = TransitionCondition::Op::True;
+                            break;
+                        default:
+                            c.op = TransitionCondition::Op::Equal;
+                            break;
+                        }
+                        c.threshold = 0.f;
+                    }
+                }
+            } else {
+                char paramBuf[128];
+                snprintf(paramBuf, sizeof(paramBuf), "%s", c.paramName.c_str());
+                snprintf(labelBuf, sizeof(labelBuf), "Param##cond_%d", ci);
+                if (ImGui::InputText(labelBuf, paramBuf, sizeof(paramBuf)))
+                    c.paramName = paramBuf;
+            }
 
-            const char* opNames[] = { "Greater", "Less", "Equal", "NotEqual", "True", "False" };
-            int opIdx = static_cast<int>(c.op);
-            snprintf(labelBuf, sizeof(labelBuf), "Op##cond_%d", ci);
-            if (ImGui::Combo(labelBuf, &opIdx, opNames, IM_ARRAYSIZE(opNames)))
-                c.op = static_cast<TransitionCondition::Op>(opIdx);
+            ImGui::SameLine();
 
-            snprintf(labelBuf, sizeof(labelBuf), "Threshold##cond_%d", ci);
-            ImGui::DragFloat(labelBuf, &c.threshold, 0.01f);
+            // 根据 param type 显示不同的 Operator 列表
+            switch (paramType) {
+            case AnimatorParam::Type::Float: {
+                const char* floatOps[] = { "Greater", "Less", "Equal", "NotEqual" };
+                int opIdx = static_cast<int>(c.op);
+                if (opIdx > 3) opIdx = 0;
+                snprintf(labelBuf, sizeof(labelBuf), "Op##cond_%d", ci);
+                ImGui::SetNextItemWidth(80);
+                if (ImGui::Combo(labelBuf, &opIdx, floatOps, IM_ARRAYSIZE(floatOps)))
+                    c.op = static_cast<TransitionCondition::Op>(opIdx);
+                ImGui::SameLine();
+                snprintf(labelBuf, sizeof(labelBuf), "Val##cond_%d", ci);
+                ImGui::SetNextItemWidth(70);
+                ImGui::DragFloat(labelBuf, &c.threshold, 0.01f);
+                break;
+            }
+            case AnimatorParam::Type::Bool: {
+                const char* boolOps[] = { "Equal", "NotEqual", "True", "False" };
+                int opIdx = static_cast<int>(c.op) - 2;
+                if (opIdx < 0) opIdx = 0;
+                snprintf(labelBuf, sizeof(labelBuf), "Op##cond_%d", ci);
+                if (ImGui::Combo(labelBuf, &opIdx, boolOps, IM_ARRAYSIZE(boolOps)))
+                    c.op = static_cast<TransitionCondition::Op>(opIdx + 2);
+                break;
+            }
+            case AnimatorParam::Type::Trigger: {
+                const char* triggerOps[] = { "True", "False" };
+                int opIdx = static_cast<int>(c.op) - 4;
+                if (opIdx < 0) opIdx = 0;
+                snprintf(labelBuf, sizeof(labelBuf), "Op##cond_%d", ci);
+                if (ImGui::Combo(labelBuf, &opIdx, triggerOps, IM_ARRAYSIZE(triggerOps)))
+                    c.op = static_cast<TransitionCondition::Op>(opIdx + 4);
+                break;
+            }
+            default:
+                break;
+            }
 
+            ImGui::SameLine();
             snprintf(labelBuf, sizeof(labelBuf), "X##delCond_%d", ci);
             if (ImGui::SmallButton(labelBuf)) { condDel = ci; }
             ImGui::PopID();
         }
         if (condDel >= 0)
-            mutableT.conditions.erase(mutableT.conditions.begin() + condDel);
+            t.conditions.erase(t.conditions.begin() + condDel);
 
-        if (ImGui::Button("+ Add Condition"))
-            mutableT.conditions.push_back({});
+        if (ImGui::Button("+ Add Condition")) {
+            TransitionCondition newCond;
+            if (!allParams.empty()) {
+                newCond.paramName = allParams[0].name;
+                switch (allParams[0].type) {
+                case AnimatorParam::Type::Float:   newCond.op = TransitionCondition::Op::Greater; break;
+                case AnimatorParam::Type::Bool:    newCond.op = TransitionCondition::Op::Equal; break;
+                case AnimatorParam::Type::Trigger: newCond.op = TransitionCondition::Op::True; break;
+                }
+            }
+            t.conditions.push_back(std::move(newCond));
+        }
 
         ImGui::Separator();
-        if (ImGui::Button("Apply Transition")) {
-            auto nt = ctrl.transitions();
-            if (animatorSelectedTransitionIdx_ < static_cast<int>(nt.size())) {
-                nt[animatorSelectedTransitionIdx_] = std::move(mutableT);
-                ctrl.configure(ctrl.states(), std::move(nt), ctrl.params(), ctrl.currentStateName());
-                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_), "Transition updated");
-            }
-        }
-        ImGui::SameLine();
         if (ImGui::Button("Delete Transition")) {
             auto nt = ctrl.transitions();
             if (animatorSelectedTransitionIdx_ < static_cast<int>(nt.size())) {
@@ -2428,25 +2527,62 @@ void UIManager::drawAnimatorPanel()
         }
 
     } else if (selState >= 0 && selState < static_cast<int>(ctrl.states().size())) {
-        const auto& s = ctrl.states()[selState];
+        auto& s = const_cast<std::vector<AnimatorState>&>(ctrl.states())[selState];
+        const bool isCurrent = (s.name == ctrl.currentStateName());
         ImGui::Text("State Properties");
         ImGui::Separator();
 
-        AnimatorState mutableS = s;
         char nameBuf[256];
         snprintf(nameBuf, sizeof(nameBuf), "Name: %s", s.name.c_str());
         ImGui::TextUnformatted(nameBuf);
-        ImGui::DragFloat("Speed##stateSpeed", &mutableS.speed, 0.01f, 0.f, 10.f, "%.2f");
-        ImGui::Checkbox("Loop##stateLoop", &mutableS.loop);
 
-        if (ImGui::Button("Apply State")) {
-            auto ns = ctrl.states();
-            if (selState < static_cast<int>(ns.size())) {
-                ns[selState] = std::move(mutableS);
-                ctrl.configure(std::move(ns), ctrl.transitions(), ctrl.params(), ctrl.currentStateName());
+        char clipNameBuf[256];
+        snprintf(clipNameBuf, sizeof(clipNameBuf), "%s", s.clipName.c_str());
+        ImGui::SetNextItemWidth(200);
+        if (ImGui::InputText("Clip Name##stateClipName", clipNameBuf, sizeof(clipNameBuf))) {
+            s.clipName = clipNameBuf;
+        }
+
+        ImGui::DragFloat("Speed##stateSpeed", &s.speed, 0.01f, 0.f, 10.f, "%.2f");
+        ImGui::Checkbox("Loop##stateLoop", &s.loop);
+
+        ImGui::Separator();
+        ImGui::Text("Root Motion");
+        const char* rootMotionNames[] = { "None", "Locked", "Follow" };
+        int rmIdx = static_cast<int>(s.rootMotion);
+        if (ImGui::Combo("Mode##rootMotion", &rmIdx, rootMotionNames, IM_ARRAYSIZE(rootMotionNames)))
+            s.rootMotion = static_cast<AnimatorState::RootMotionMode>(rmIdx);
+
+        if (s.rootMotion != AnimatorState::RootMotionMode::None) {
+            const auto& skeleton = ent->skeleton;
+            if (skeleton && !skeleton->bones.empty()) {
+                int boneIdx = 0;
+                if (!s.rootBoneName.empty()) {
+                    auto it = skeleton->boneNameToIndex.find(s.rootBoneName);
+                    if (it != skeleton->boneNameToIndex.end())
+                        boneIdx = it->second;
+                }
+                if (ImGui::Combo("Root Bone##rootBone", &boneIdx,
+                                 [](void* data, int idx, const char** out) -> bool {
+                                     const auto& bones = *static_cast<const std::vector<Bone>*>(data);
+                                     if (idx < 0 || idx >= static_cast<int>(bones.size())) return false;
+                                     *out = bones[idx].name.c_str();
+                                     return true;
+                                 }, const_cast<std::vector<Bone>*>(&skeleton->bones),
+                                 static_cast<int>(skeleton->bones.size())))
+                {
+                    s.rootBoneName = skeleton->bones[boneIdx].name;
+                }
             }
         }
-        ImGui::SameLine();
+
+        if (!isCurrent) {
+            ImGui::SameLine();
+            if (ImGui::Button("Set Active State")) {
+                ctrl.setActiveState(s.name);
+            }
+        }
+
         if (ImGui::Button("Delete State")) {
             auto ns = ctrl.states();
             if (selState < static_cast<int>(ns.size())) {
@@ -2468,32 +2604,55 @@ void UIManager::drawAnimatorPanel()
 
     // Quick Params
     ImGui::Separator();
-    ImGui::Text("Quick Params (click to trigger / change)");
-    for (const auto& p : ctrl.params()) {
-        switch (p.type) {
-        case AnimatorParam::Type::Float: {
-            float v = p.value.f;
-            if (ImGui::DragFloat(p.name.c_str(), &v, 0.01f))
-                ctrl.setFloat(p.name, v);
-            break;
+    ImGui::Text("Parameters");
+    {
+        auto& params = const_cast<std::vector<AnimatorParam>&>(ctrl.params());
+        int paramDel = -1;
+        for (int pi = 0; pi < static_cast<int>(params.size()); ++pi) {
+            auto& p = params[pi];
+            ImGui::PushID(pi);
+            char nameBuf[128];
+            snprintf(nameBuf, sizeof(nameBuf), "%s", p.name.c_str());
+            ImGui::SetNextItemWidth(100);
+            if (ImGui::InputText("##paramName", nameBuf, sizeof(nameBuf)))
+                p.name = nameBuf;
+
+            ImGui::SameLine();
+            switch (p.type) {
+            case AnimatorParam::Type::Float: {
+                float v = p.value.f;
+                ImGui::SetNextItemWidth(80);
+                if (ImGui::DragFloat("##paramVal", &v, 0.01f))
+                    p.setFloat(v);
+                break;
+            }
+            case AnimatorParam::Type::Int: {
+                int v = p.value.i;
+                ImGui::SetNextItemWidth(60);
+                if (ImGui::DragInt("##paramVal", &v, 1))
+                    p.setInt(v);
+                break;
+            }
+            case AnimatorParam::Type::Bool: {
+                bool v = p.value.b;
+                if (ImGui::Checkbox("##paramVal", &v))
+                    p.setBool(v);
+                break;
+            }
+            case AnimatorParam::Type::Trigger: {
+                if (ImGui::Button("Trigger##paramVal"))
+                    p.setTrigger();
+                break;
+            }
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("X##delParam")) { paramDel = pi; }
+            ImGui::PopID();
         }
-        case AnimatorParam::Type::Int: {
-            int v = p.value.i;
-            if (ImGui::DragInt(p.name.c_str(), &v, 1))
-                ctrl.setInt(p.name, v);
-            break;
-        }
-        case AnimatorParam::Type::Bool: {
-            bool v = p.value.b;
-            if (ImGui::Checkbox(p.name.c_str(), &v))
-                ctrl.setBool(p.name, v);
-            break;
-        }
-        case AnimatorParam::Type::Trigger: {
-            if (ImGui::Button(p.name.c_str()))
-                ctrl.setTrigger(p.name);
-            break;
-        }
+        if (paramDel >= 0) {
+            auto np = ctrl.params();
+            np.erase(np.begin() + paramDel);
+            ctrl.configure(ctrl.states(), ctrl.transitions(), std::move(np), ctrl.currentStateName());
         }
     }
 
@@ -2570,7 +2729,8 @@ void UIManager::drawAnimatorPanel()
             as.name = clips[newStateClipIdx].name;
             as.clipName = clips[newStateClipIdx].name;
             ns.push_back(std::move(as));
-            ctrl.configure(ns, ctrl.transitions(), ctrl.params(), ctrl.currentStateName());
+            ctrl.configure(ns, ctrl.transitions(), ctrl.params(), as.name);
+            animatorSelectedStateIdx_ = static_cast<int>(ctrl.states().size()) - 1;
             snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
                      "Added state: %s", as.name.c_str());
         }
@@ -2593,6 +2753,8 @@ void UIManager::drawAnimatorPanel()
     ImGui::EndChild(); // ##animatorBottom
 
     ImGui::EndGroup();
+
+    ImGui::EndDisabled();
 
     ImGui::End();
 }

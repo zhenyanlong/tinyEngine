@@ -67,6 +67,11 @@ public:
         float previewTime = 0.f;     // 预览 clip 的当前时间
         float previewSpeed = 1.f;    // 预览播放速度
 
+        // ── Root Motion 运行时状态 ─────────────────────────────
+        glm::vec3 prevRootTranslation{0.f};
+        glm::quat prevRootRotation{1.f, 0.f, 0.f, 0.f};
+        bool      rootMotionInitialized = false;
+
         // ── Camera 专属字段（仅 type == Camera 时有效） ─────────────────────
         SequencerCamera cameraData;
         bool cameraPreviewEnabled = true;

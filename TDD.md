@@ -440,12 +440,37 @@ struct BoneMapping {
 - **Windows 文件替换约束**：解析 `.anim.ast` 的输入流必须在 rename 前销毁，避免共享冲突；UI 使用稳定英文错误码，防止系统本地化文本因字体缺字显示为 `?`
 - **ImGui ID 安全**：condition 循环中所有控件 label 带 `_%d` 索引后缀，避免同帧多 condition 的 ID 冲突
 
+**Phase B5-7 — 实时编辑优化（2026-07-13）：**
+- **去掉 Apply State / Apply Transition 按钮**：所有 state 属性（clipName/speed/loop）和 transition 属性（toState/fadeDuration/hasExitTime/exitTime/blendCurve/conditions）修改直接写入状态机实例，不再触发 `configure()` → `reset()`
+- **新增 Set Active State 按钮**：选中非当前 state 时显示，调用 `AnimatorController::setActiveState(name)` 直接切换当前状态，跳过 transition
+- **State Properties 编辑区增加 clipName 显示**：用户可查看和修改 state 绑定的 clip 名称
+- **参数面板增加名称编辑和删除按钮**：每个参数行显示可编辑的名称输入框 + 值控件 + 删除按钮
+- **Condition 编辑优化**：Param 从手动 InputText 改为 Combo 下拉选择已有参数；根据参数类型动态显示 Op 和 Threshold（Float 显示 Greater/Less/Equal/NotEqual + DragFloat，Bool 显示 Equal/NotEqual/True/False，Trigger 显示 True/False）
+- **同名 clip 自动去重**：`AnimationAssetLoader::load()` 加载时检测同名 clip，自动追加 `_1`、`_2` 后缀
+
+**Phase B5-8 — Root Motion 支持（2026-07-13）：**
+- `AnimatorState` 新增 `RootMotionMode` 枚举（None / Locked / Follow）和 `rootBoneName` 字段
+- **None**：骨骼动画在原地播放（默认，保持现有行为）
+- **Locked**：根骨骼锁定在 bind pose 位置，子骨骼在局部做动画
+- **Follow**：提取根骨骼当前帧与上一帧的位移/旋转 delta，累加到 `ent.transform`，根骨骼 localTransform 去掉位移
+- `Application::drawFrame` 骨骼求值后、`computeFinalMatrices` 前插入 root motion 处理逻辑
+- 状态序列化支持：`.animctrl.json` 保存/加载 `rootMotion` 和 `rootBoneName` 字段
+- UI 支持：State Properties 区域增加 Root Motion 模式下拉选择和根骨骼名称下拉选择
+
+**Phase B5-9 — Animator Preview Mode（2026-07-13）：**
+- `Application::animatorPreviewMode_` 开关
+- **ON（默认）**：状态机驱动动画，保持现有行为
+- **OFF**：Sequencer 驱动动画，`onAnimClipEval` 回调跳过（由 `animatorPreviewMode_` 守卫）；`drawFrame` 中跳过 `animatorController.update()`，骨骼由 `previewClipIndex` 驱动或走 bind pose
+- Animator 面板变为只读（`ImGui::BeginDisabled`），所有编辑操作和按钮被禁用
+- 切换 OFF 时自动清空 `previewClipIndex` 残留
+
 **Phase B5-6 — 事件驱动系统：**
 - `AnimatorEvent` 结构体（Type: SetFloat/SetInt/SetBool/SetTrigger + paramName + 值）
 - `AnimatorController::dispatchEvent(event)` / `dispatchEvents(events)` 将事件转发到对应 `set*` 方法
 - 为未来 Sequence 系统预留标准接口：Sequence 可在 clip 开始/结束或特定时间点触发 `dispatchEvent` 改变参数，从而驱动状态机过渡
 
 **逐骨骼混合：** `Application::drawFrame(dt)` 分别采样两个 clip 的局部 TRS，Translation/Scale 使用 `glm::mix`，Rotation 使用 `glm::slerp`，之后再组合为局部矩阵并计算最终骨骼 palette。
+- **Root Motion**：每帧骨骼求值后、`computeFinalMatrices` 前插入 root motion 处理。`AnimatorState::RootMotionMode` 支持三种模式：None（原地播放）、Locked（根骨骼锁定 bind pose）、Follow（根骨骼 delta 累加到 entity transform）。根骨骼可通过 `rootBoneName` 配置，默认 `bones[0]`。
 
 **AnimationRetargeter 重定向流程（见 4.12.4）：**
 - `buildMapping()` 按名称匹配建立源/目标骨骼映射
@@ -922,10 +947,10 @@ TINYOBJLOADER_IMPLEMENTATION # tinyobjloader 实现编译
 | 动画资产序列化 | 已完成 | Phase A5：AnimationAssetLoader (.ast Header + .anim.bin 二进制) + 懒生成 + 启动恢复 + clip 元数据事务式重命名 |
 | Mixamo 无蒙皮动画 FBX 导入 | 已完成 | FbxImporter::loadAnimationOnly 将 scene 节点推断为骨骼树；AnimationRetargeter 按名称映射重定向到目标 Mesh 骨架；Application::importAnimationFbx 完成动画重定向持久化；Content Browser Import Anim... + Mesh 选择弹窗 UI |
 | 共享 GPU buffer 缓存 | 已完成 | SceneManager.modelResourceCache_ 共享 vertex/index buffer + animation state，重复拖拽不暴涨 |
-| 动画状态机 | 已完成 | Phase B1-B5：参数/状态/过渡/Trigger/exit time + 逐骨骼 TRS cross-fade（B1-B2）；BlendCurve ease 曲线（B3）；.animctrl.json 序列化、兼容资产筛选与新建/保存（B4）；ImGui 动画总控面板 + 拖拽创建 state + 预览/重命名 + 事件驱动系统（B5） |
+| 动画状态机 | 已完成（Phase B1-B5 + B5-7/8/9） | 参数/状态/过渡/Trigger/exit time + 逐骨骼 TRS cross-fade（B1-B2）；BlendCurve ease 曲线（B3）；.animctrl.json 序列化、兼容资产筛选与新建/保存（B4）；ImGui 动画总控面板 + 拖拽创建 state + 预览/重命名 + 事件驱动系统（B5）；实时编辑优化：去掉了 Apply State/Transition 按钮，属性直接写入状态机，Condition 从手打改为带类型感知的下拉选择（B5-7）；Root Motion 支持：per-state 三种模式（None/Locked/Follow），根骨骼可配置（B5-8）；Animator Preview Mode 开关：ON 状态机驱动，OFF Sequencer 驱动（B5-9） |
 | 蒙皮模型 GPU 拾取 | 已完成 | skinned pick pipeline 复用材质 bone UBO，按 submesh/当前动画姿势写入 Entity ID |
 | 重复蒙皮模型独立动画状态 | 受限 | Controller 已逐实体独立，但共享同一 skinned MaterialId 的实例仍共用 BoneMatricesUBO；后续需每实体描述符或 dynamic UBO |
-| 多 .anim.ast 合并加载 | **已修复** | 2026-07-02：根因是 `loadAndApplyMaterialAsset` 传入的 `astRelPath` 可能是 `.material.ast` 路径，不含 `animations` 数组。修复：(1) `ensureAnimationAssetForMeshAst` 增加回退逻辑，当打开的文件无 `animations` 数组时，检查实体 `astRelPath` 并以 `.mesh.ast` 路径重新读取；(2) `loadAndApplyMaterialAsset` 中记录实体 `astRelPath` 供回退使用。|
+| 多 .anim.ast 合并加载 | **已修复** | 2026-07-02：根因是 `loadAndApplyMaterialAsset` 传入的 `astRelPath` 可能是 `.material.ast` 路径，不含 `animations` 数组。修复：(1) `ensureAnimationAssetForMeshAst` 增加回退逻辑；(2) `loadAndApplyMaterialAsset` 中记录实体 `astRelPath` 供回退使用。<br>2026-07-13：修复同名 clip 跨文件问题，加载时自动 `_1`、`_2` 后缀去重。|
 | Sequencer | 已完成（Phase C1-C6） | C1 数据结构 + C2 播放控制器 + C3 相机路径 + C4 TransformTween/Keyframe + C5 序列化 + C6 ImGui 时间轴编辑器。新增关键帧轨道（targetEntityId 绑定实体），7种混合模式，实时预览机制（sequencerPreviewPending_），Add/Update/Preview 按钮工作流 |
 | Content Browser 离屏缩略图 | **修复中** | 使用离屏渲染（128×128）生成 mesh 缩略图，当前三个待修复问题：<br>1. **材质未显示**：glTF 材质已加载但渲染结果仍偏灰；OBJ/FBX 无 .ast 路径全用默认材质 — 需排查 UBO 更新或 descriptor set 绑定时机<br>2. **相机角度错误**：当前从 (1,1,1) 方向观察，用户反馈方向是反的，需调整摄像机朝向<br>3. **Remy skinned 模型全灰**：FBX 带动画蒙皮模型渲染结果为纯色，非蒙皮 pipeline 未正确处理其顶点数据 |
 | Sequencer Camera + PiP | 已完成 | 新增 SequencerCamera 类（独立 position/orientation/fov），场景中可添加可视化摄像机模型，选中后右下角显示 PiP 小窗渲染该摄像机视角<br>**已修复（2026-07-09）**：(1) createCameraEntity 四元数存储 bug；(2) SequencerCamera 坐标系 -Z 约定；(3) PiP UBO 时序冲突（新增 PiP 专用 UBO + descriptor set）；(4) Camera 模型加载（改用 FbxImporter）；(5) recreateSwapChain 重置 pipTextureCreated_；(6) PiP color/depth 输出为空（管线静态 viewport + renderpass 格式不兼容，见 §16）；(7) 蒙皮模型 PiP 用主视角（createSkinnedMaterialFrom 漏调 createPipResources）；(8) Camera 模型朝向与预览差 Y -90°（新增 modelRotationOffset 渲染偏移，主/PiP/pick 三路统一）；(9) Gizmo 世界/本地坐标系切换（4 键） |

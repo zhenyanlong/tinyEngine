@@ -131,6 +131,78 @@
 
 ---
 
+## 3 天 MCP 控制系统开发规划（2026-07-12 ~ 2026-07-14）
+
+> 基于 `mcp-control-plan.md`，建立 MCP 控制与验证层，让 AI Agent 能程序化操控引擎。整体里程碑：MM1 桥接打通（TCP ping 闭环 + scene.snapshot 返回正确）。
+
+### 第 1 天（2026-07-12）— 引擎侧命令桥接基础（Phase M0A + M0B）
+
+- [ ] TODO-035 【MCP】M0A-1~3：实现 CommandBridge 命令队列
+  - 上下文：新建 `src/Mcp/CommandBridge.hpp/.cpp`。定义 McpCommand 结构体、CommandBridge 单例类、dispatch() 投递 + 阻塞等待、drainQueue() 主线程执行、registerHandler() 注册。使用 promise/future + mutex + condition_variable 实现线程安全。
+  - 依赖：mcp-control-plan.md Phase M0A
+  - 日期：2026-07-12
+
+- [ ] TODO-036 【MCP】M0A-4~6：集成 CommandBridge 到 Application
+  - 上下文：在 `Application::gameLoop()` 中 processInput 之后调用 drainQueue()；在 `mainWindows.cpp` 增加 `--mcp` / `--port` / `--exit-after` 命令行解析；initVulkan 末尾检测 `--mcp` 时 setEnabled(true) 并注册 ping handler。
+  - 依赖：TODO-035
+  - 日期：2026-07-12
+
+- [ ] TODO-037 【MCP】M0B-1~5：实现 IpcServer 传输层
+  - 上下文：新建 `src/Mcp/IpcServer.hpp/.cpp`。封装 localhost TCP 监听 + 接收线程，按 `\n` 分隔解析 JSON 请求，调用 CommandBridge::dispatch() 后写回响应。支持大响应文件中转。Application 中持有 ipc_ 实例，initVulkan 启动、cleanUp 停止。
+  - 依赖：TODO-035
+  - 日期：2026-07-12
+
+- [ ] TODO-038 【MCP】第 1 天测试：TCP ping 闭环验证
+  - 上下文：引擎以 `--mcp` 启动后，用 Python socket 或 nc 连接 9527 端口，发送 `{"id":1,"method":"ping","params":{}}`，验证 1 帧内收到 `{"id":1,"result":{"pong":true},"error":null}`。断开重连测试通过。
+  - 依赖：TODO-036, TODO-037
+  - 日期：2026-07-12
+
+### 第 2 天（2026-07-13）— SceneSnapshot + MCP Server 骨架（Phase M0C + M1）
+
+- [ ] TODO-039 【MCP】M0C-1~5：实现 SceneSnapshot 场景快照
+  - 上下文：新建 `src/Mcp/SceneSnapshot.hpp/.cpp`。定义 EntitySnapshot 和 SceneSnapshot 结构体，实现 toJson()。SceneSnapshot::capture() 遍历 sceneMgr 实体和相机，返回完整 JSON。注册 handler scene.snapshot / scene.getEntity / scene.listAssets。
+  - 依赖：TODO-036（CommandBridge 集成）
+  - 日期：2026-07-13
+
+- [ ] TODO-040 【MCP】M1A-1~5：创建 Python MCP Server 骨架
+  - 上下文：新建 `mcp_server/` 目录结构（__init__.py / server.py / ipc_client.py / tools/ / verify/ / pyproject.toml）。实现 IpcClient TCP 客户端、用 mcp SDK 创建 server 注册工具、错误模型转换。
+  - 依赖：无
+  - 日期：2026-07-13
+
+- [ ] TODO-041 【MCP】M1B-1~5：引擎生命周期管理
+  - 上下文：实现 `mcp_server/engine.py` 的 EngineProcess 类，支持 launch(带 `--mcp`)/attach/shutdown。注册 engine.launch / engine.attach / engine.shutdown / engine.status 工具。
+  - 依赖：TODO-040
+  - 日期：2026-07-13
+
+- [ ] TODO-042 【MCP】第 2 天测试：Agent 通过 MCP Server 查询场景
+  - 上下文：启动引擎 → MCP Server 连接 → Agent 调用 `tiny.scene.snapshot` 获取场景实体列表、相机状态。验证返回 JSON 与场景实际状态一致。
+  - 依赖：TODO-039, TODO-040
+  - 日期：2026-07-13
+
+### 第 3 天（2026-07-14）— FrameCapture + 场景控制工具（Phase M0D + M2A/B）
+
+- [ ] TODO-043 【MCP】M0D-1~6：实现 FrameCapture 帧捕获
+  - 上下文：新建 `src/Mcp/FrameCapture.hpp/.cpp`。内部维护离屏 color/depth image + framebuffer。capture() 以固定分辨率离屏渲染主相机视角，vkCmdCopyImageToBuffer 回读像素，savePng() 写 PNG。重构 Application::recordCommandBuffer 抽取 recordSceneInto() 公共方法。注册 handler capture.frame / capture.pick / capture.sampleRect。
+  - 依赖：TODO-036
+  - 日期：2026-07-14
+
+- [ ] TODO-044 【MCP】M2A-1~7：资产与实体工具
+  - 上下文：在 `mcp_server/tools/scene.py` 注册工具：tiny.asset.scan / tiny.asset.importModel / tiny.asset.applyMaterial / tiny.entity.place / tiny.entity.delete / tiny.scene.save / tiny.scene.load。每个工具调用 ipc_client.call 转发到引擎 handler。
+  - 依赖：TODO-040, TODO-042
+  - 日期：2026-07-14
+
+- [ ] TODO-045 【MCP】M2B-1~5：实体变换工具
+  - 上下文：注册工具：tiny.entity.select / tiny.entity.setTransform / tiny.entity.getTransform / tiny.entity.setVisible / tiny.entity.focusCamera。引擎侧注册对应 handler 调用 SceneManager/Camera 现有 API。
+  - 依赖：TODO-044
+  - 日期：2026-07-14
+
+- [ ] TODO-046 【MCP】第 3 天测试：截图 + 实体控制完整闭环
+  - 上下文：Agent 调用 tiny.asset.scan 找到模型 → tiny.entity.place 放置 → tiny.entity.setTransform 移动 → tiny.capture.frame 截图保存 PNG → tiny.scene.save 保存场景。验证全流程无崩溃，截图文件可正常打开。
+  - 依赖：TODO-043, TODO-044, TODO-045
+  - 日期：2026-07-14
+
+---
+
 ## 待办（长期 / 低优先级）
 
 - [ ] TODO-006 【引擎/调试】支持 Agent 截图场景来调试和验证功能点

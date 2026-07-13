@@ -1,14 +1,69 @@
 {
-  "defaultState": "mixamo.com",
-  "params": null,
+  "defaultState": "Box1",
+  "params": [
+    {
+      "defaultValue": false,
+      "name": "trigger01",
+      "type": "Trigger"
+    },
+    {
+      "defaultValue": false,
+      "name": "bool01",
+      "type": "Bool"
+    },
+    {
+      "defaultValue": 0.0,
+      "name": "float01",
+      "type": "Float"
+    }
+  ],
   "states": [
     {
-      "clipName": "mixamo.com",
+      "clipName": "Box1",
       "loop": true,
-      "name": "mixamo.com",
+      "name": "Box1",
+      "rootMotion": "None",
+      "speed": 1.0
+    },
+    {
+      "clipName": "RealJumpDown",
+      "loop": true,
+      "name": "RealJumpDown",
+      "rootMotion": "None",
       "speed": 1.0
     }
   ],
-  "transitions": null,
+  "transitions": [
+    {
+      "blendCurve": "SmoothStep",
+      "conditions": [
+        {
+          "op": "True",
+          "param": "trigger01",
+          "threshold": 0.0
+        }
+      ],
+      "exitTime": 1.0,
+      "fadeDuration": 0.20000000298023224,
+      "from": "RealJumpDown",
+      "hasExitTime": false,
+      "to": "Box1"
+    },
+    {
+      "blendCurve": "SmoothStep",
+      "conditions": [
+        {
+          "op": "Greater",
+          "param": "float01",
+          "threshold": 0.0
+        }
+      ],
+      "exitTime": 1.0,
+      "fadeDuration": 0.20000000298023224,
+      "from": "Box1",
+      "hasExitTime": false,
+      "to": "RealJumpDown"
+    }
+  ],
   "version": 1
 }

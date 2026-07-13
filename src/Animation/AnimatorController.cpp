@@ -242,6 +242,17 @@ void AnimatorController::reset() {
     }
 }
 
+void AnimatorController::setActiveState(const std::string& name) {
+    if (!findState(name)) return;
+    currentState_ = name;
+    nextState_.clear();
+    stateTime_ = 0.f;
+    nextStateTime_ = 0.f;
+    blendT_ = 0.f;
+    activeFadeDuration_ = 0.f;
+    transitioning_ = false;
+}
+
 bool AnimatorController::checkAllConditions(const AnimatorTransition& transition) const {
     return std::all_of(
         transition.conditions.begin(), transition.conditions.end(),
@@ -346,6 +357,21 @@ BlendCurve strToCurve(const std::string& s) {
     return BlendCurve::SmoothStep;
 }
 
+std::string rootMotionModeToStr(AnimatorState::RootMotionMode m) {
+    switch (m) {
+    case AnimatorState::RootMotionMode::None:   return "None";
+    case AnimatorState::RootMotionMode::Locked: return "Locked";
+    case AnimatorState::RootMotionMode::Follow: return "Follow";
+    }
+    return "None";
+}
+
+AnimatorState::RootMotionMode strToRootMotionMode(const std::string& s) {
+    if (s == "Locked") return AnimatorState::RootMotionMode::Locked;
+    if (s == "Follow") return AnimatorState::RootMotionMode::Follow;
+    return AnimatorState::RootMotionMode::None;
+}
+
 std::string paramTypeToStr(AnimatorParam::Type t) {
     switch (t) {
     case AnimatorParam::Type::Float:   return "Float";
@@ -399,6 +425,9 @@ bool AnimatorController::saveToFile(const std::string& jsonPath) const {
         js["clipName"] = s.clipName;
         js["speed"] = s.speed;
         js["loop"] = s.loop;
+        js["rootMotion"] = rootMotionModeToStr(s.rootMotion);
+        if (!s.rootBoneName.empty())
+            js["rootBoneName"] = s.rootBoneName;
         jStates.push_back(std::move(js));
     }
 
@@ -459,6 +488,8 @@ bool AnimatorController::loadFromFile(const std::string& jsonPath) {
             s.clipName = js.value("clipName", std::string{});
             s.speed = js.value("speed", 1.f);
             s.loop = js.value("loop", true);
+            s.rootMotion = strToRootMotionMode(js.value("rootMotion", std::string{"None"}));
+            s.rootBoneName = js.value("rootBoneName", std::string{});
             states.push_back(std::move(s));
         }
     }

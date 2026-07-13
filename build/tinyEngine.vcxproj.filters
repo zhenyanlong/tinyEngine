@@ -55,6 +55,12 @@
     <ClCompile Include="E:\Projects\tinyEngine\src\MaterialManager.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="E:\Projects\tinyEngine\src\Mcp\CommandBridge.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\Projects\tinyEngine\src\Mcp\IpcServer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="E:\Projects\tinyEngine\src\ModelRegistry.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

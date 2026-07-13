@@ -23,6 +23,8 @@ set(OLD_GLOB
   "E:/Projects/tinyEngine/src/IMGUIManager.cpp"
   "E:/Projects/tinyEngine/src/MaterialAssetLoader.cpp"
   "E:/Projects/tinyEngine/src/MaterialManager.cpp"
+  "E:/Projects/tinyEngine/src/Mcp/CommandBridge.cpp"
+  "E:/Projects/tinyEngine/src/Mcp/IpcServer.cpp"
   "E:/Projects/tinyEngine/src/ModelRegistry.cpp"
   "E:/Projects/tinyEngine/src/PickSystem.cpp"
   "E:/Projects/tinyEngine/src/PipelineManager.cpp"

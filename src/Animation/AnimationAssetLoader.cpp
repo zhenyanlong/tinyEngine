@@ -315,6 +315,21 @@ bool AnimationAssetLoader::load(const std::string& astRelPath,
             clip.name = "clip_" + std::to_string(ci);
         }
 
+        // 同名 clip 自动去重：追加 _1, _2 后缀
+        {
+            std::string dedupName = clip.name;
+            int suffix = 1;
+            while (std::any_of(clips.begin(), clips.end(),
+                               [&](const AnimationClip& c) { return c.name == dedupName; })) {
+                dedupName = clip.name + "_" + std::to_string(suffix++);
+            }
+            if (dedupName != clip.name) {
+                std::cerr << "[AnimAsset] duplicate clip name \"" << clip.name
+                          << "\" renamed to \"" << dedupName << "\"\n";
+                clip.name = dedupName;
+            }
+        }
+
         uint32_t channelCount = 0;
         if (!readRaw(bin, channelCount)) {
             if (err) *err = "failed reading channel count: " + binPath.string();

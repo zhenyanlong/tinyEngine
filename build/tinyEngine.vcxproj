@@ -358,6 +358,8 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     <ClCompile Include="E:\Projects\tinyEngine\src\IMGUIManager.cpp" />
     <ClCompile Include="E:\Projects\tinyEngine\src\MaterialAssetLoader.cpp" />
     <ClCompile Include="E:\Projects\tinyEngine\src\MaterialManager.cpp" />
+    <ClCompile Include="E:\Projects\tinyEngine\src\Mcp\CommandBridge.cpp" />
+    <ClCompile Include="E:\Projects\tinyEngine\src\Mcp\IpcServer.cpp" />
     <ClCompile Include="E:\Projects\tinyEngine\src\ModelRegistry.cpp" />
     <ClCompile Include="E:\Projects\tinyEngine\src\PickSystem.cpp" />
     <ClCompile Include="E:\Projects\tinyEngine\src\PipelineManager.cpp" />

@@ -40,6 +40,11 @@ struct AnimatorState {
     std::string clipName;
     float speed = 1.f;
     bool loop = true;
+
+    // ── Root Motion ──
+    enum class RootMotionMode { None, Locked, Follow };
+    RootMotionMode rootMotion = RootMotionMode::None;
+    std::string rootBoneName;           ///< 用于 root motion 的骨骼名称，空字符串 = bones[0]
 };
 
 /** @brief blend 权重曲线类型。 */
@@ -123,6 +128,8 @@ public:
     BlendCommand update(float dt, const std::vector<AnimationClip>& clips);
 
     void reset();
+    /** @brief 直接切换到指定 state，跳过 transition。如果 name 不存在则忽略。 */
+    void setActiveState(const std::string& name);
     bool hasStates() const { return !states_.empty(); }
     bool isTransitioning() const { return transitioning_; }
     float blendProgress() const { return blendT_; }

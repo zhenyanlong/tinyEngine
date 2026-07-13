@@ -20,6 +20,8 @@
 #include "Animation/SequencePlayer.hpp"
 #include "Animation/SequenceAssetLoader.hpp"
 #include "Animation/SequencerCamera.hpp"
+#include "Mcp/CommandBridge.hpp"
+#include "Mcp/IpcServer.hpp"
 #include <glm/glm.hpp>
 #include <unordered_map>
 
@@ -28,7 +30,7 @@ public:
     Application();
     using RenderEntityId = uint64_t;
 
-    void run();
+    void run(int argc = 0, char* argv[] = nullptr);
 
     // ── Drag-place state ──────────────────────────────────────────────────────
     struct DragPlaceState {
@@ -91,6 +93,10 @@ public:
     Sequence&       getCurrentSequence() { return currentSequence_; }
     bool            isSequencerPlaying() const { return seqPlayer_.isPlaying(); }
     void            requestSequencerPreview() { sequencerPreviewPending_ = true; }
+
+    // ── Animator Preview Mode API ─────────────────────────────────────────────
+    bool            isAnimatorPreviewMode() const { return animatorPreviewMode_; }
+    void            setAnimatorPreviewMode(bool on) { animatorPreviewMode_ = on; }
 
     // ── Camera Path recording API ────────────────────────────────────────────
     void beginCameraPathRecording(const std::string& pathName);
@@ -181,6 +187,11 @@ private:
     bool               sequencerPreviewPending_ = false;
     bool               sequenceCameraActive_ = false;
 
+    // ── Animator Preview Mode ─────────────────────────────────────────────────
+    // ON (default)：Animator 面板自由驱动状态机
+    // OFF：动画由 Sequencer 时间轴控制，状态机不自动推进
+    bool               animatorPreviewMode_ = true;
+
     // ── Camera Path cache ──────────────────────────────────────────────────
     std::unordered_map<std::string, CameraPath> cameraPathCache_;
 
@@ -196,6 +207,12 @@ private:
     bool               pipActive_     = false;
     ImTextureID        pipTextureId_  = (ImTextureID)0;
     bool               pipTextureCreated_ = false;  // 标记纹理是否已创建
+
+    // ── MCP / IPC state ────────────────────────────────────────────────────────
+    std::unique_ptr<IpcServer> ipc_;
+    int                        mcpPort_ = 9527;
+    int                        exitAfterFrames_ = -1;
+    int                        frameCount_ = 0;
 
     bool  firstMouse_       = true;
     bool  rightMouseDown_   = false;

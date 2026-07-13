@@ -2,7 +2,8 @@
   "animations": [
     "content/Remy/Remy.anim.ast",
     "content/Remy/Remy.mesh_Body Block.anim.ast",
-    "content/Remy/Remy.mesh_Body Block_alt.anim.ast"
+    "content/Remy/Remy.mesh_Body Block_alt.anim.ast",
+    "content/Remy/Remy.mesh_Jumping Down.anim.ast"
   ],
   "materials": [
     "content/Remy/Shoesmat.material.ast",

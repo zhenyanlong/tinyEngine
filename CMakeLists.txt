@@ -27,6 +27,8 @@ add_executable(${PROJECT_NAME}
     thirdParty/ufbx/ufbx.c
 )
 
+# 添加 Mcp 目录的 include（nlohmann/json 已在全局 include 中）
+
 target_include_directories(${PROJECT_NAME} PUBLIC
                 src
                 thirdParty/glfw/include
