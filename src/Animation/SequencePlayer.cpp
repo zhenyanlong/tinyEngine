@@ -78,6 +78,12 @@ void SequencePlayer::update(double dt, const FrameCallbacks& cb)
                     cb.onTransformKeyframeEval(currentTime_, track.keyframeTrack.targetEntityId, result);
                 }
             }
+            if (track.type == TrackType::AnimatorKeyframe && !track.animatorTrack.keyframes.empty()) {
+                auto result = track.animatorTrack.evaluate(currentTime_);
+                if (cb.onAnimatorKeyframeEval) {
+                    cb.onAnimatorKeyframeEval(currentTime_, track.animatorTrack.targetEntityId, result);
+                }
+            }
         }
         return;
     }
@@ -141,13 +147,22 @@ void SequencePlayer::update(double dt, const FrameCallbacks& cb)
             }
             break;
 
+        case TrackType::AnimatorKeyframe:
+            if (!track.animatorTrack.keyframes.empty()) {
+                auto result = track.animatorTrack.evaluate(currentTime_);
+                if (cb.onAnimatorKeyframeEval) {
+                    cb.onAnimatorKeyframeEval(currentTime_, track.animatorTrack.targetEntityId, result);
+                }
+            }
+            break;
+
         case TrackType::Event:
             for (size_t ci = 0; ci < track.eventClips.size(); ++ci) {
                 const auto& clip = track.eventClips[ci];
                 const double end = clip.startTime + clip.duration;
 
                 size_t h = std::hash<std::string>{}(track.name)
-                         ^ (std::hash<std::string>{}(clip.eventName) << 1)
+                         ^ (std::hash<std::string>{}(clip.event.paramName) << 1)
                          ^ (std::hash<double>{}(clip.startTime) << 2);
 
                 const bool inRange = currentTime_ >= clip.startTime && currentTime_ < end;
@@ -156,7 +171,7 @@ void SequencePlayer::update(double dt, const FrameCallbacks& cb)
                 if (inRange && notFired) {
                     firedEventClipHashes_.insert(h);
                     if (cb.onEvent)
-                        cb.onEvent(clip.eventName);
+                        cb.onEvent(clip.event.paramName);
                 }
 
                 if (!inRange) {

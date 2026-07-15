@@ -29,6 +29,7 @@ const char* trackTypeName(TrackType t)
     case TrackType::CameraPath:         return "CameraPath";
     case TrackType::TransformTween:     return "TransformTween";
     case TrackType::TransformKeyframe:  return "TransformKeyframe";
+    case TrackType::AnimatorKeyframe:   return "AnimatorKeyframe";
     case TrackType::Event:              return "Event";
     }
     return "AnimationClip";
@@ -39,6 +40,7 @@ TrackType trackTypeFromName(const std::string& s)
     if (s == "CameraPath")         return TrackType::CameraPath;
     if (s == "TransformTween")     return TrackType::TransformTween;
     if (s == "TransformKeyframe")  return TrackType::TransformKeyframe;
+    if (s == "AnimatorKeyframe")   return TrackType::AnimatorKeyframe;
     if (s == "Event")              return TrackType::Event;
     return TrackType::AnimationClip;
 }
@@ -213,7 +215,27 @@ bool SequenceAssetLoader::saveSequence(const std::string& jsonRelPath,
             jc["name"] = c.name;
             jc["startTime"] = c.startTime;
             jc["duration"] = c.duration;
-            jc["eventName"] = c.eventName;
+            switch (c.event.type) {
+            case AnimatorEvent::Type::SetFloat:
+                jc["eventType"] = "SetFloat";
+                jc["paramName"] = c.event.paramName;
+                jc["floatValue"] = c.event.floatValue;
+                break;
+            case AnimatorEvent::Type::SetInt:
+                jc["eventType"] = "SetInt";
+                jc["paramName"] = c.event.paramName;
+                jc["intValue"] = c.event.intValue;
+                break;
+            case AnimatorEvent::Type::SetBool:
+                jc["eventType"] = "SetBool";
+                jc["paramName"] = c.event.paramName;
+                jc["boolValue"] = c.event.boolValue;
+                break;
+            case AnimatorEvent::Type::SetTrigger:
+                jc["eventType"] = "SetTrigger";
+                jc["paramName"] = c.event.paramName;
+                break;
+            }
             jEventClips.push_back(std::move(jc));
         }
 
@@ -230,6 +252,49 @@ bool SequenceAssetLoader::saveSequence(const std::string& jsonRelPath,
                 jk["rotation"] = quatToJson(kf.rotation);
                 jk["scale"] = vec3ToJson(kf.scale);
                 jk["easeToNext"] = easeToStr(kf.easeToNext);
+                jKeys.push_back(std::move(jk));
+            }
+        }
+
+        if (track.type == TrackType::AnimatorKeyframe) {
+            auto& jat = jt["animatorTrack"];
+            jat["name"] = track.animatorTrack.name;
+            jat["targetEntityId"] = track.animatorTrack.targetEntityId;
+            jat["initialState"] = track.animatorTrack.initialState;
+
+            auto& jKeys = jat["keyframes"];
+            for (const auto& kf : track.animatorTrack.keyframes) {
+                json jk;
+                jk["time"] = kf.time;
+
+                auto& jEvents = jk["events"];
+                for (const auto& ev : kf.events) {
+                    json je;
+                    switch (ev.type) {
+                    case AnimatorEvent::Type::SetFloat:
+                        je["type"] = "SetFloat";
+                        je["paramName"] = ev.paramName;
+                        je["floatValue"] = ev.floatValue;
+                        je["interp"] = paramInterpToStr(ev.interp);
+                        break;
+                    case AnimatorEvent::Type::SetInt:
+                        je["type"] = "SetInt";
+                        je["paramName"] = ev.paramName;
+                        je["intValue"] = ev.intValue;
+                        je["interp"] = paramInterpToStr(ev.interp);
+                        break;
+                    case AnimatorEvent::Type::SetBool:
+                        je["type"] = "SetBool";
+                        je["paramName"] = ev.paramName;
+                        je["boolValue"] = ev.boolValue;
+                        break;
+                    case AnimatorEvent::Type::SetTrigger:
+                        je["type"] = "SetTrigger";
+                        je["paramName"] = ev.paramName;
+                        break;
+                    }
+                    jEvents.push_back(std::move(je));
+                }
                 jKeys.push_back(std::move(jk));
             }
         }
@@ -335,7 +400,23 @@ bool SequenceAssetLoader::loadSequence(const std::string& jsonRelPath,
                     c.name = jc.value("name", std::string{});
                     c.startTime = jc.value("startTime", 0.0);
                     c.duration = jc.value("duration", 0.0);
-                    c.eventName = jc.value("eventName", std::string{});
+
+                    const std::string evType = jc.value("eventType", std::string{"SetTrigger"});
+                    c.event.paramName = jc.value("paramName", std::string{});
+
+                    if (evType == "SetFloat") {
+                        c.event.type = AnimatorEvent::Type::SetFloat;
+                        c.event.floatValue = jc.value("floatValue", 0.f);
+                    } else if (evType == "SetInt") {
+                        c.event.type = AnimatorEvent::Type::SetInt;
+                        c.event.intValue = jc.value("intValue", 0);
+                    } else if (evType == "SetBool") {
+                        c.event.type = AnimatorEvent::Type::SetBool;
+                        c.event.boolValue = jc.value("boolValue", false);
+                    } else {
+                        c.event.type = AnimatorEvent::Type::SetTrigger;
+                    }
+
                     track.eventClips.push_back(std::move(c));
                 }
             }
@@ -359,6 +440,52 @@ bool SequenceAssetLoader::loadSequence(const std::string& jsonRelPath,
 
                 std::sort(track.keyframeTrack.keyframes.begin(), track.keyframeTrack.keyframes.end(),
                           [](const TransformKeyframe& a, const TransformKeyframe& b) {
+                              return a.time < b.time;
+                          });
+            }
+
+            if (track.type == TrackType::AnimatorKeyframe && jt.contains("animatorTrack")) {
+                const auto& jat = jt["animatorTrack"];
+                track.animatorTrack.name = jat.value("name", std::string{});
+                track.animatorTrack.targetEntityId = jat.value("targetEntityId", uint64_t(0));
+                track.animatorTrack.initialState = jat.value("initialState", std::string{});
+
+                if (jat.contains("keyframes") && jat["keyframes"].is_array()) {
+                    for (const auto& jk : jat["keyframes"]) {
+                        AnimatorKeyframe kf;
+                        kf.time = jk.value("time", 0.0);
+
+                        if (jk.contains("events") && jk["events"].is_array()) {
+                            for (const auto& je : jk["events"]) {
+                                AnimatorParamEvent ev;
+                                const std::string evType = je.value("type", std::string{"SetTrigger"});
+                                ev.paramName = je.value("paramName", std::string{});
+
+                                if (evType == "SetFloat") {
+                                    ev.type = AnimatorEvent::Type::SetFloat;
+                                    ev.floatValue = je.value("floatValue", 0.f);
+                                    ev.interp = strToParamInterp(je.value("interp", std::string{"Step"}));
+                                } else if (evType == "SetInt") {
+                                    ev.type = AnimatorEvent::Type::SetInt;
+                                    ev.intValue = je.value("intValue", 0);
+                                    ev.interp = strToParamInterp(je.value("interp", std::string{"Step"}));
+                                } else if (evType == "SetBool") {
+                                    ev.type = AnimatorEvent::Type::SetBool;
+                                    ev.boolValue = je.value("boolValue", false);
+                                } else {
+                                    ev.type = AnimatorEvent::Type::SetTrigger;
+                                }
+
+                                kf.events.push_back(std::move(ev));
+                            }
+                        }
+
+                        track.animatorTrack.keyframes.push_back(std::move(kf));
+                    }
+                }
+
+                std::sort(track.animatorTrack.keyframes.begin(), track.animatorTrack.keyframes.end(),
+                          [](const AnimatorKeyframe& a, const AnimatorKeyframe& b) {
                               return a.time < b.time;
                           });
             }
@@ -479,4 +606,32 @@ TweenEase SequenceAssetLoader::strToEase(const std::string& s)
     if (s == "Cubic")       return TweenEase::Cubic;
     if (s == "Exponential") return TweenEase::Exponential;
     return TweenEase::SmoothStep;
+}
+
+std::string SequenceAssetLoader::paramInterpToStr(ParamInterp i)
+{
+    switch (i) {
+    case ParamInterp::Step:         return "Step";
+    case ParamInterp::Linear:       return "Linear";
+    case ParamInterp::SmoothStep:   return "SmoothStep";
+    case ParamInterp::EaseIn:       return "EaseIn";
+    case ParamInterp::EaseOut:      return "EaseOut";
+    case ParamInterp::EaseInOut:    return "EaseInOut";
+    case ParamInterp::Cubic:        return "Cubic";
+    case ParamInterp::Exponential:  return "Exponential";
+    }
+    return "Step";
+}
+
+ParamInterp SequenceAssetLoader::strToParamInterp(const std::string& s)
+{
+    if (s == "Step")         return ParamInterp::Step;
+    if (s == "Linear")       return ParamInterp::Linear;
+    if (s == "SmoothStep")   return ParamInterp::SmoothStep;
+    if (s == "EaseIn")       return ParamInterp::EaseIn;
+    if (s == "EaseOut")      return ParamInterp::EaseOut;
+    if (s == "EaseInOut")    return ParamInterp::EaseInOut;
+    if (s == "Cubic")        return ParamInterp::Cubic;
+    if (s == "Exponential")  return ParamInterp::Exponential;
+    return ParamInterp::Step;
 }

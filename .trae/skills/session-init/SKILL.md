@@ -1,6 +1,6 @@
 ---
 name: "session-init"
-description: "初始化 tinyEngine 项目会话。读取 TDD.md 技术设计文档、animation-system-plan.md 动画系统计划、DailyProgress.md 每日进度（含验证标记），扫描 src/ 代码目录结构和 .codex/skills/ 目录，并了解 Codex 技能清单。当用户说"初始化会话""开始工作""准备开发"或在新会话中需要了解项目上下文时调用。"
+description: "Initializes tinyEngine project context by reading TDD.md, animation-system-plan.md, and DailyProgress.md. Invoke when user says 'init session', 'start work', '初始化会话', or at the beginning of a new conversation."
 ---
 
 # tinyEngine 会话初始化

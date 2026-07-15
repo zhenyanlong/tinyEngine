@@ -1,3 +1,41 @@
+## 2026-07-15
+
+- [ ] 重构 Sequencer 面板为双列布局：固定左标签列（##seqLabels，无滚动）+ 可滚动右时间线列（##seqTimeline，水平滚动），通过 seqTimelineScrollY_ 实现垂直滚动同步（IMGUIManager.hpp/.cpp, TDD.md）
+- [ ] 左列轨道标签从 InvisibleButton+Dummy 混用改为 ImGui::Selectable，修复 hover/click 不稳定问题（IMGUIManager.cpp）
+- [ ] 修复 isParentTrack 对空子轨道的误判：新增 `!isSubTrack(ti)` 守卫，确保新建的 [T]/[A] 子轨道不被识别为父轨道（IMGUIManager.cpp）
+- [ ] 修复时间线列行 Y 光标漂移：用独立累加 rowCursorY 替代 GetCursorScreenPos()，将行布局与 clip/keyframe item 的 cursor 污染解耦（IMGUIManager.cpp）
+- [ ] 修复双列垂直对齐累积漂移：两列统一使用显式 SetCursorScreenPos + rowCursorY 累加，绕过 ImGui ItemSpacing（IMGUIManager.cpp）
+- [ ] 新增重复实体检测："Add Selected to Track" 在实体已在序列中拥有父轨道时跳过创建，代之以状态消息提示（IMGUIManager.cpp）
+- [ ] 更新 TDD.md Sequencer C6 章节：单列布局文档替换为双列布局，移除"已知 Bug"章节（两个 Bug 已修复）
+- [ ] 新增 SceneSerializer 对 animatorControllerPath 的持久化：.scene.json 保存/加载控制器绑定（SceneSerializer.cpp）
+- [ ] 新增 Animator 面板 Clear Controller 按钮，用于解绑并回退到运行时控制器（IMGUIManager.cpp）
+- [ ] 新增 State Properties 编辑区的 Set as Default State 按钮（AnimatorController.hpp, IMGUIManager.cpp）
+- [ ] 新增 defaultStateName() getter 到 AnimatorController（AnimatorController.hpp）
+- [ ] Animator 关键帧 Param 编辑器从 InputText 改为 Combo 下拉，自动从 Controller 参数列表推断类型（IMGUIManager.cpp）
+- [ ] Animator 关键帧 Initial State 从 InputText 改为 Combo 下拉，从 Controller states 列表选择（IMGUIManager.cpp）
+- [ ] 修复场景加载后 AnimatorController 绑定被覆盖：SceneManager::setEntityAnimationData() 增加 guard 条件，实体已有 animatorControllerPath 时跳过 configureFromClips()，不再覆盖从 .scene.json 恢复的 Controller。移除 loadScene() 中冗余的 Controller 重试代码。（SceneManager.cpp, Application.cpp）
+- [ ] 修复 AnimatorKeyframe 时间轴预览时状态过渡不生效：根因是 onAnimatorKeyframeEval 调用 AnimatorController::update(t) 以大步进推进状态机，导致 exitTime 检测窗口跳过、trigger 消费与内部状态耦合。重构方案：AnimatorController 新增 computeBlendAtTime() 纯函数，以 0.05s 步进逐帧模拟从 0 到 t 的状态演进，使用本地参数副本，不修改内部状态。（AnimatorController.hpp/.cpp, Application.cpp）
+- [ ] 新增 Animator 关键帧 event 编辑自动预览功能：所有 event 变更点（参数名 Combo/InputText、值编辑、插值模式、添加/删除事件、删除关键帧）均自动触发 seek(editTime) + requestSequencerPreview()。（IMGUIManager.cpp）
+- [ ] 更新 TDD.md：§4.12.3 新增 computeBlendAtTime() 文档，§4.12.5 将两个已修复 Bug 从"已知 Bug"移至"已修复的 Bug"，更新 C7 运行时描述
+
+## 2026-07-14
+
+- [ ] 实现 AnimatorKeyframeTrack 系统：新增 TrackType::AnimatorKeyframe、AnimatorParamEvent/AnimatorKeyframe/AnimatorKeyframeTrack 结构体、ParamInterp 枚举（Step/Linear/SmoothStep/EaseIn/EaseOut/EaseInOut/Cubic/Exponential）（Sequence.hpp/.cpp）
+- [ ] 实现 AnimatorKeyframeTrack::evaluate()：从 t=0 累积应用所有事件，SetFloat/SetInt 支持关键帧间插值，SetBool/SetTrigger 跳变（Sequence.cpp）
+- [ ] 扩展 EventClip：从 eventName 字符串改为完整 AnimatorEvent 结构体，支持 SetFloat/SetInt/SetBool/SetTrigger（Sequence.hpp）
+- [ ] 新增 onAnimatorKeyframeEval 回调到 SequencePlayer::FrameCallbacks（SequencePlayer.hpp/.cpp）
+- [ ] 在 Application.cpp 实现 onAnimatorKeyframeEval：重置状态机→应用累积参数→update(t) 演进到当前帧；有 AnimatorKeyframe 轨道时 BlendCommand 由状态机计算（Application.cpp）
+- [ ] 实现 AnimatorKeyframeTrack 完整序列化：.seq.json 保存事件/插值/初始状态；EventClip 序列化支持所有事件类型；新增 paramInterpToStr/strToParamInterp 辅助函数（SequenceAssetLoader.hpp/.cpp）
+- [ ] 新增 UE 风格层级轨道：点击 "Add Selected to Track" 自动创建父轨道 + Transform 子轨道 + Animator 子轨道（实体有 AnimatorController 时）；轨道用实体 displayName 命名（IMGUIManager.cpp）
+- [ ] 统一 "Add Keyframe" 按钮：自动检测当前选中轨道类型，添加 Transform 或 Animator 关键帧（IMGUIManager.cpp）
+- [ ] 新增 Animator 关键帧编辑 UI：事件类型下拉 / 参数名输入 / 值控件 / 插值模式下拉（IMGUIManager.cpp）
+- [ ] TransformTween 轨道类型在 UI 中标记为 "(Deprecated)"，颜色改为灰色（IMGUIManager.cpp）
+- [ ] 移除 Mute/Solo 按钮和 trackMuted_/trackSoloed_ 成员变量（简化代码，功能从未实现）（IMGUIManager.hpp/.cpp）
+- [ ] 移除冗余的 selectedKeyframeTrackIdx_ 状态变量，统一使用 selectedTrackIdx（IMGUIManager.hpp/.cpp）
+- [ ] 重构 Sequencer 面板为单列布局：所有内容（刻度尺+轨道行）放在一个 ##timelineScroll 子窗口内，避免并排子窗口争抢鼠标焦点（IMGUIManager.cpp）
+- [ ] **未解决 Bug**：单列布局中轨道标签的 InvisibleButton hover/点击不稳定。根因可能与同一窗口内 Dummy 占位区域与 InvisibleButton 的交互有关，需要新会话排查 ImGui item 交互逻辑
+- [ ] **未解决 Bug**：关键帧与时间轴刻度尺的竖向对齐可能因水平滚动偏移而不一致
+
 ## 2026-07-13
 
 - [ ] 修复 Animator Preview 被 Sequencer 误清理的问题：将条件从 `!seqHasAnimTrack || !seqPlayer_.isPlaying()` 改为 `seqPlayer_.isPlaying() && !seqHasAnimTrack`，避免每帧覆盖 Animator 面板的 Preview 按钮状态（Application.cpp）

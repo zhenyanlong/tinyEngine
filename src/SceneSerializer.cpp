@@ -148,6 +148,10 @@ bool SceneSerializer::save(const std::string& path,
                              ent.transform.scale.z };
         e["visible"]     = ent.visible;
 
+        // 持久化 AnimatorController 路径（相对 res/ 的相对路径），场景 reload 后自动恢复控制器
+        if (!ent.animatorControllerPath.empty())
+            e["animatorControllerPath"] = ent.animatorControllerPath;
+
         // 有 astRelPath 的实体：对比当前材质与 .ast 参考值，如有修改则存 materialOverride
         if (!ent.astRelPath.empty() && matMgr.isValid(ent.materialId)) {
             MaterialAssetDesc ref;
@@ -423,6 +427,19 @@ bool SceneSerializer::load(const std::string& path,
                             }
                         }
                     }
+                }
+            }
+
+            // 恢复 AnimatorController：从 .scene.json 读取控制器路径并加载
+            // 放在材质加载之后，确保 entity 的 skeleton/animationClips 已就绪
+            if (ej.contains("animatorControllerPath") && ej["animatorControllerPath"].is_string()) {
+                const std::string ctrlPath = ej["animatorControllerPath"].get<std::string>();
+                if (!ctrlPath.empty()) {
+                    // 兼容绝对路径和相对路径：绝对路径直接使用，相对路径拼接 resRoot
+                    const std::string absPath = (std::filesystem::path(ctrlPath).is_absolute())
+                        ? ctrlPath : (resRoot + "/" + ctrlPath);
+                    if (ent->animatorController.loadFromFile(absPath))
+                        ent->animatorControllerPath = ctrlPath;  // 保持原始路径格式（相对路径便于跨平台）
                 }
             }
         }

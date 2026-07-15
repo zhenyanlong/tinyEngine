@@ -584,12 +584,50 @@ void Application::drawFrame(float dt)
             }
         };
 
+        seqCallbacks.onAnimatorKeyframeEval = [&](double t, uint64_t entityId,
+                                                   const AnimatorKeyframeTrack::EvalResult& result) {
+            auto* ent = sceneMgr_.getModelEntity(entityId);
+            if (!ent || !ent->animatorController.hasStates()) return;
+
+            // 构造参数值数组（从 result.params 转换）
+            std::vector<AnimatorParam> paramValues = result.params;
+
+            // 使用纯函数 computeBlendAtTime 计算指定时间点的 BlendCommand，
+            // 不修改状态机内部状态，避免大步进导致的边界问题。
+            ent->pendingSequencerBlend = ent->animatorController.computeBlendAtTime(
+                static_cast<float>(t), ent->animationClips,
+                paramValues, result.initialState);
+            ent->hasPendingSequencerBlend = true;
+        };
+
         seqPlayer_.update(dt, seqCallbacks);
     }
 
     // 当 Sequencer 正在播放但没有 AnimationClip 轨道时，
     // 清理 Sequencer 设置的 preview 状态（通过 onAnimClipEval 设的 previewTime 和 previewClipIndex）
-    if (seqPlayer_.isPlaying() && !seqHasAnimTrack) {
+    // 但如果有 AnimatorKeyframe 轨道，不要清理（状态机由 AnimatorKeyframe 驱动）
+    bool seqHasAnimKeyframe = false;
+    {
+        const auto* seq = &currentSequence_;
+        if (seq) {
+            for (const auto& t : seq->tracks) {
+                if (t.type == TrackType::AnimatorKeyframe && !t.animatorTrack.keyframes.empty()) {
+                    seqHasAnimKeyframe = true; break;
+                }
+            }
+        }
+    }
+
+    if (seqPlayer_.isPlaying() && !seqHasAnimTrack && !seqHasAnimKeyframe) {
+        for (auto& ent : sceneMgr_.getModelEntities()) {
+            ent.previewClipIndex = -1;
+        }
+    }
+
+    // Animator Preview Mode ON 时，清除所有 Sequencer 设置的 previewClipIndex，
+    // 确保动画由状态机驱动而非 Sequencer 的 clip 直接播放。
+    // 否则点击时间轴后 previewClipIndex 残留，导致骨骼走 clip 预览而非状态机。
+    if (animatorPreviewMode_) {
         for (auto& ent : sceneMgr_.getModelEntities()) {
             ent.previewClipIndex = -1;
         }
@@ -615,15 +653,20 @@ void Application::drawFrame(float dt)
 
         AnimatorController::BlendCommand blendCommand;
         if (ent.previewClipIndex >= 0 && ent.previewClipIndex < static_cast<int>(clips.size())) {
-            // ── 预览模式（Animator Preview 按钮或 Sequencer 驱动）：绕开状态机 ──
+            // ── 预览模式（Animator Preview 按钮或 Sequencer 直接驱动）：绕开状态机 ──
             const AnimationClip* clip = &clips[ent.previewClipIndex];
             ent.previewTime += dt * ent.previewSpeed;
             if (clip->duration > 0.f)
                 ent.previewTime = std::fmod(ent.previewTime, clip->duration);
             blendCommand.clipA = clip;
             blendCommand.timeA = ent.previewTime;
-        } else if (animatorPreviewMode_) {
-            // ── 预览模式 ON：状态机驱动 ──
+        } else if (ent.hasPendingSequencerBlend) {
+            // ── Sequencer AnimatorKeyframe 求值缓存：使用 computeBlendAtTime 已计算好的
+            //     BlendCommand（精确对应时间轴上的 seek 位置），不修改状态机内部状态。
+            blendCommand = ent.pendingSequencerBlend;
+            ent.hasPendingSequencerBlend = false;
+        } else if (animatorPreviewMode_ || (seqPlayer_.isPlaying() && seqHasAnimKeyframe)) {
+            // ── 预览模式 ON 或 AnimatorKeyframe 轨道播放中：状态机正常推进 ──
             if (!ent.animatorController.hasStates() && !clips.empty()) {
                 ent.animatorController.configureFromClips(clips);
             }
@@ -1985,6 +2028,9 @@ bool Application::loadScene(const std::string& path)
                 ensureAnimationAssetForMeshAst(ent.astRelPath, "", false, ent.entityId);
         }
         convertModelMaterialsToSkinned();
+
+        // 保留 SceneSerializer 从 .scene.json 中加载的 AnimatorController
+        // （setEntityAnimationData 现在不会覆盖已有 controllerPath 的实体）
 
         // Reset UI state
         ui_->selectedEntityId_ = 0;

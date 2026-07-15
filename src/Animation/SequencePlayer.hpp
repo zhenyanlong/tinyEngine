@@ -24,6 +24,7 @@ public:
         std::function<void(double t, const std::string& pathAssetRelPath)> onCameraPathEval;
         std::function<void(double t, const TransformTweenClip& clip)> onTransformTweenEval;
         std::function<void(double t, uint64_t entityId, const TransformKeyframeTrack::EvalResult& result)> onTransformKeyframeEval;
+        std::function<void(double t, uint64_t entityId, const AnimatorKeyframeTrack::EvalResult& result)> onAnimatorKeyframeEval;
         std::function<void(const std::string& eventName)> onEvent;
     };
 

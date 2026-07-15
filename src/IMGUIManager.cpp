@@ -1287,8 +1287,7 @@ void UIManager::drawSequencerPanel()
     const float trackHeight = 50.0f;
     const float pixelsPerSecond = 100.0f * zoomLevel;
 
-    trackMuted_.resize(sequence.tracks.size(), false);
-    trackSoloed_.resize(sequence.tracks.size(), false);
+
 
     ImGui::Text("Sequencer");
     ImGui::SameLine(ImGui::GetWindowWidth() - 200);
@@ -1343,120 +1342,205 @@ void UIManager::drawSequencerPanel()
 
     ImGui::Separator();
 
-    ImGui::BeginChild("##timelineArea", ImVec2(0, -120), false, ImGuiWindowFlags_HorizontalScrollbar);
-
-    ImGui::BeginChild("##trackLabels", ImVec2(trackLabelWidth, 0), true);
-    ImGui::Text("Tracks");
-    ImGui::Separator();
-    for (int ti = 0; ti < static_cast<int>(sequence.tracks.size()); ++ti) {
+    // ── 计算每条轨道的行高（左右两列共用） ────────────────────────────
+    // 注意：父轨道判定不能仅凭"内容为空"——新建的子轨道（[T]/[A]）在添加关键帧前
+    // 内容数组也为空，会被误判为父轨道，导致点击不切换、不高亮、行高减半、右列不绘制。
+    // 必须额外排除以 [T] / [A] 开头的子轨道。
+    auto isSubTrack = [&](int ti) -> bool {
         const auto& track = sequence.tracks[ti];
-        const bool selected = (ti == selectedTrackIdx);
-        ImVec4 trackColor = (track.type == TrackType::AnimationClip) ? ImVec4(0.3f, 0.6f, 0.9f, 1.0f) :
-                            (track.type == TrackType::CameraPath) ? ImVec4(0.9f, 0.6f, 0.3f, 1.0f) :
-                            (track.type == TrackType::TransformTween) ? ImVec4(0.6f, 0.9f, 0.3f, 1.0f) :
-                            (track.type == TrackType::TransformKeyframe) ? ImVec4(0.9f, 0.9f, 0.3f, 1.0f) :
-                            ImVec4(0.9f, 0.3f, 0.3f, 1.0f);
+        return track.name.rfind("[T] ", 0) == 0 || track.name.rfind("[A] ", 0) == 0;
+    };
+    auto isParentTrack = [&](int ti) -> bool {
+        const auto& track = sequence.tracks[ti];
+        bool empty = track.animClips.empty() && track.cameraPathClips.empty()
+            && track.tweenClips.empty() && track.eventClips.empty()
+            && track.keyframeTrack.keyframes.empty() && track.animatorTrack.keyframes.empty();
+        return empty && !isSubTrack(ti);
+    };
+    auto getRowHeight = [&](int ti) -> float {
+        return isParentTrack(ti) ? trackHeight * 0.5f : trackHeight;
+    };
 
-        ImGui::PushStyleColor(ImGuiCol_Text, trackColor);
-        char label[256];
-        snprintf(label, sizeof(label), "%s##track%d", track.name.c_str(), ti);
-        if (ImGui::Selectable(label, selected, ImGuiSelectableFlags_AllowDoubleClick)) {
-            selectedTrackIdx = ti;
-            selectedClipType = -1;
-            selectedClipIdx = -1;
-        }
-        ImGui::PopStyleColor();
+    // ── 双列布局：左标签列（固定，不随水平滚动移动）+ 右时间线列（水平滚动） ──
+    // 解决单列布局中同一 Y 行混用 InvisibleButton(标签)+Dummy(时间线) 导致的
+    // hover/点击不稳定（根因：同行多交互 item 抢占 HoveredId，且标签列随滚动滑走），
+    // 同时让刻度尺与关键帧共用同一 contentOriginX，根除对齐漂移（Bug 1 + Bug 2）。
+    const float editorHeight = ImGui::GetWindowHeight() - 200.0f;
+    const float labelColWidth = trackLabelWidth;
+    const float timeColWidth  = std::max(ImGui::GetContentRegionAvail().x - labelColWidth, 1.0f);
 
-        ImGui::SameLine();
-        ImGui::PushID(ti);
-        bool muted = trackMuted_[ti];
-        if (ImGui::SmallButton(muted ? "M" : "M")) trackMuted_[ti] = !muted;
-        ImGui::SameLine();
-        bool solo = trackSoloed_[ti];
-        if (ImGui::SmallButton(solo ? "S" : "S")) {
-            for (int j = 0; j < static_cast<int>(trackSoloed_.size()); ++j)
-                trackSoloed_[j] = (j == ti) ? !solo : false;
+    // 两列共用同一套行高，保证垂直像素偏移一致（滚动同步的前提）
+    float tracksContentHeight = 0.0f;
+    for (int ti = 0; ti < static_cast<int>(sequence.tracks.size()); ++ti)
+        tracksContentHeight += getRowHeight(ti);
+
+    // ── 左列：轨道标签（无水平滚动，垂直滚动跟随右列） ───────────────
+    ImGui::BeginChild("##seqLabels", ImVec2(labelColWidth, editorHeight), true,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    // 跟随右列上一帧的垂直滚动位置（1 帧延迟，用户不可见）
+    ImGui::SetScrollY(seqTimelineScrollY_);
+    {
+        ImDrawList* lblDL = ImGui::GetWindowDrawList();
+        // 顶部留白对齐刻度尺行
+        ImGui::Dummy(ImVec2(labelColWidth, timelineHeight));
+        // 刻度尺底部对齐分隔线
+        ImVec2 sp = ImGui::GetCursorScreenPos();
+        lblDL->AddLine(ImVec2(sp.x, sp.y), ImVec2(sp.x + labelColWidth, sp.y), IM_COL32(80, 80, 80, 255));
+        // 行 Y 独立累加，与右列 ##seqTimeline 严格一致：
+        // Selectable 自然推进会叠加 Style.ItemSpacing.y（默认 8px），逐行比右列多出该间距，
+        // 轨道越多累积偏移越大。显式 SetCursorScreenPos 定位可绕过 ItemSpacing。
+        float lblRowCursorY = sp.y;
+        const float lblContentX = sp.x;
+        for (int ti = 0; ti < static_cast<int>(sequence.tracks.size()); ++ti) {
+            const auto& track = sequence.tracks[ti];
+            bool parent = isParentTrack(ti);
+            bool sub = isSubTrack(ti);
+            bool selected = (ti == selectedTrackIdx);
+            float rowH = getRowHeight(ti);
+
+            ImVec4 trackColor = (track.type == TrackType::AnimationClip) ? ImVec4(0.3f, 0.6f, 0.9f, 1.0f) :
+                                (track.type == TrackType::CameraPath) ? ImVec4(0.9f, 0.6f, 0.3f, 1.0f) :
+                                (track.type == TrackType::TransformTween) ? ImVec4(0.4f, 0.4f, 0.4f, 1.0f) :
+                                (track.type == TrackType::TransformKeyframe) ? ImVec4(0.9f, 0.9f, 0.3f, 1.0f) :
+                                (track.type == TrackType::AnimatorKeyframe) ? ImVec4(0.9f, 0.3f, 0.9f, 1.0f) :
+                                ImVec4(0.9f, 0.3f, 0.3f, 1.0f);
+
+            // 用 Selectable 提供可靠的 hover/click，替代 InvisibleButton+Dummy 同行混用
+            ImGui::PushID(ti + 100000);
+            ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.3f, 0.5f, 0.8f, 0.4f));
+            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.5f, 0.5f, 0.5f, 0.25f));
+            ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.3f, 0.5f, 0.8f, 0.6f));
+            // 显式定位到累加 Y，绕过 ItemSpacing，与右列每行 Y 完全对齐
+            ImGui::SetCursorScreenPos(ImVec2(lblContentX, lblRowCursorY));
+            if (ImGui::Selectable("##trackLbl", selected && !parent, 0,
+                                  ImVec2(labelColWidth, rowH))) {
+                if (!parent) {
+                    selectedTrackIdx = ti;
+                    selectedClipType = -1;
+                    selectedClipIdx = -1;
+                }
+            }
+            ImGui::PopStyleColor(3);
+            // 在 Selectable 上叠加居中文字（保持原视觉风格）
+            {
+                ImVec2 mn = ImGui::GetItemRectMin();
+                ImU32 txtCol = ImGui::ColorConvertFloat4ToU32(parent ? ImVec4(1, 1, 1, 0.6f) : trackColor);
+                float tx = mn.x + 4.0f + (sub ? 12.0f : 0.0f);
+                float ty = mn.y + (rowH - ImGui::GetTextLineHeight()) * 0.5f;
+                lblDL->AddText(ImVec2(tx, ty), txtCol, track.name.c_str());
+            }
+            ImGui::PopID();
+            lblRowCursorY += rowH;
         }
-        ImGui::PopID();
     }
     ImGui::EndChild();
 
     ImGui::SameLine();
 
-    ImGui::BeginChild("##timelineContent", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
-
-    const float contentOriginX = ImGui::GetCursorScreenPos().x;
-    const float timelineWidth = std::max(static_cast<float>(totalDuration * pixelsPerSecond + 200.0), ImGui::GetContentRegionAvail().x);
-    ImGui::BeginChild("##timelineScroll", ImVec2(timelineWidth, timelineHeight), false);
+    // ── 右列：时间线（水平滚动 + 垂直滚动，作为垂直滚动主控） ─────────
+    ImGui::BeginChild("##seqTimeline", ImVec2(timeColWidth, editorHeight), true,
+                      ImGuiWindowFlags_HorizontalScrollbar);
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
-    ImVec2 canvasPos = ImGui::GetCursorScreenPos();
-    float scaleX = contentOriginX;
+    const float timelineWidth = std::max(static_cast<float>(totalDuration * pixelsPerSecond + 200.0),
+                                         ImGui::GetContentRegionAvail().x);
+    // contentOriginX 每帧在时间线窗口内取值，天然含水平滚动偏移；
+    // 刻度尺与所有轨道行共用同一原点，根除对齐漂移
+    const float contentOriginX = ImGui::GetCursorScreenPos().x;
+    auto timeToX = [&](double t) { return contentOriginX + static_cast<float>(t) * pixelsPerSecond; };
 
-    const int maxSec = std::max(static_cast<int>(totalDuration) + 2, 10);
-    for (int sec = 0; sec <= maxSec; ++sec) {
-        float x = scaleX + sec * pixelsPerSecond;
-        drawList->AddLine(ImVec2(x, canvasPos.y), ImVec2(x, canvasPos.y + timelineHeight), IM_COL32(100, 100, 100, 255));
-        char buf[16];
-        snprintf(buf, sizeof(buf), "%d", sec);
-        drawList->AddText(ImVec2(x + 2, canvasPos.y + 2), IM_COL32(200, 200, 200, 255), buf);
-    }
+    // ── 刻度尺行 ──────────────────────────────────────────────────────
+    {
+        ImVec2 rowPos = ImGui::GetCursorScreenPos();
+        const int maxSec = std::max(static_cast<int>(totalDuration) + 2, 10);
+        for (int sec = 0; sec <= maxSec; ++sec) {
+            float x = timeToX(static_cast<double>(sec));
+            drawList->AddLine(ImVec2(x, rowPos.y), ImVec2(x, rowPos.y + timelineHeight), IM_COL32(100, 100, 100, 255));
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%d", sec);
+            drawList->AddText(ImVec2(x + 2, rowPos.y + 2), IM_COL32(200, 200, 200, 255), buf);
+        }
 
-    if (totalDuration > 0.0) {
-        float playheadX = scaleX + static_cast<float>(currentTime * pixelsPerSecond);
-        drawList->AddLine(ImVec2(playheadX, canvasPos.y), ImVec2(playheadX, canvasPos.y + 500), IM_COL32(255, 50, 50, 255), 2.0f);
-    }
+        const float rulerSpan = timelineHeight + tracksContentHeight;
+        if (totalDuration > 0.0) {
+            float playheadX = timeToX(currentTime);
+            drawList->AddLine(ImVec2(playheadX, rowPos.y), ImVec2(playheadX, rowPos.y + rulerSpan), IM_COL32(255, 50, 50, 255), 2.0f);
+        }
+        if (sequencerEditTimeSet_) {
+            float editX = timeToX(sequencerEditTime_);
+            drawList->AddLine(ImVec2(editX, rowPos.y), ImVec2(editX, rowPos.y + rulerSpan), IM_COL32(255, 255, 0, 200), 1.0f);
+        }
 
-    if (sequencerEditTimeSet_) {
-        float editX = scaleX + static_cast<float>(sequencerEditTime_ * pixelsPerSecond);
-        drawList->AddLine(ImVec2(editX, canvasPos.y), ImVec2(editX, canvasPos.y + 500), IM_COL32(255, 255, 0, 200), 1.0f);
-    }
-
-    ImGui::Dummy(ImVec2(timelineWidth, timelineHeight));
-
-    if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(0)) {
-        float mouseX = ImGui::GetMousePos().x - scaleX;
-        double clickedTime = mouseX / pixelsPerSecond;
-        if (clickedTime >= 0.0) {
-            sequencerEditTime_ = clickedTime;
-            sequencerEditTimeSet_ = true;
-            if (!seqPlayer.isPlaying()) {
-                seqPlayer.seek(sequencerEditTime_);
-                vulkanRender->requestSequencerPreview();
+        // 刻度尺点击区域
+        ImGui::InvisibleButton("##timelineRuler", ImVec2(timelineWidth, timelineHeight));
+        if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(0)) {
+            float mouseX = ImGui::GetMousePos().x - contentOriginX;
+            double clickedTime = mouseX / pixelsPerSecond;
+            if (clickedTime >= 0.0) {
+                sequencerEditTime_ = clickedTime;
+                sequencerEditTimeSet_ = true;
+                if (!seqPlayer.isPlaying()) {
+                    seqPlayer.seek(sequencerEditTime_);
+                    vulkanRender->requestSequencerPreview();
+                }
             }
         }
     }
 
-    if (sequencerEditTimeSet_ && !seqPlayer.isPlaying() &&
-        std::abs(seqPlayer.currentTime() - sequencerEditTime_) > 0.001) {
-        seqPlayer.seek(sequencerEditTime_);
-        vulkanRender->requestSequencerPreview();
+    // ── 分隔线 ────────────────────────────────────────────────────────
+    {
+        ImVec2 sp = ImGui::GetCursorScreenPos();
+        drawList->AddLine(ImVec2(contentOriginX, sp.y), ImVec2(contentOriginX + timelineWidth, sp.y), IM_COL32(80, 80, 80, 255));
     }
 
-    ImGui::EndChild();
+    // 行 Y 用独立累加偏移决定，不依赖 GetCursorScreenPos()：
+    // clip/keyframe 的 SetCursorScreenPos+Button 会把 cursor 上移，若用 GetCursorScreenPos
+    // 取下一行起点会逐行上移错位。此处显式累加，每行 Dummy 也显式定位。
+    float rowCursorY = ImGui::GetCursorScreenPos().y;
 
-    ImGui::BeginChild("##trackClips", ImVec2(timelineWidth, 0), false);
-
+    // ── 每条轨道一行 ──────────────────────────────────────────────────
     for (int ti = 0; ti < static_cast<int>(sequence.tracks.size()); ++ti) {
         const auto& track = sequence.tracks[ti];
         ImGui::PushID(ti);
 
-        ImGui::BeginChild(("##trackRow" + std::to_string(ti)).c_str(), ImVec2(0, trackHeight), false);
+        float rowH = getRowHeight(ti);
+        bool parent = isParentTrack(ti);
+        bool selected = (ti == selectedTrackIdx);
+
+        // contentPos.y 由独立累加偏移决定，不受上一行 clip/keyframe 挪动 cursor 的影响
+        ImVec2 contentPos(contentOriginX, rowCursorY);
+
+        // 选中行高亮背景（时间线列）
+        if (selected) {
+            drawList->AddRectFilled(contentPos, ImVec2(contentPos.x + timelineWidth, contentPos.y + rowH),
+                                    IM_COL32(60, 60, 90, 100));
+        }
+
+        // Dummy 占位该行时间线区域（定义滚动内容尺寸）；cursor 显式定位到行起点，
+        // 随后累加 rowH，使下一行 Y 与 clip/keyframe 的 cursor 漂移完全解耦
+        ImGui::SetCursorScreenPos(ImVec2(contentOriginX, rowCursorY));
+        ImGui::Dummy(ImVec2(timelineWidth, rowH));
+        rowCursorY += rowH;
 
         ImVec4 clipColor = (track.type == TrackType::AnimationClip) ? ImVec4(0.3f, 0.6f, 0.9f, 0.8f) :
                            (track.type == TrackType::CameraPath) ? ImVec4(0.9f, 0.6f, 0.3f, 0.8f) :
-                           (track.type == TrackType::TransformTween) ? ImVec4(0.6f, 0.9f, 0.3f, 0.8f) :
+                           (track.type == TrackType::TransformTween) ? ImVec4(0.4f, 0.4f, 0.4f, 0.8f) :
                            (track.type == TrackType::TransformKeyframe) ? ImVec4(0.9f, 0.9f, 0.3f, 0.8f) :
+                           (track.type == TrackType::AnimatorKeyframe) ? ImVec4(0.9f, 0.3f, 0.9f, 0.8f) :
                            ImVec4(0.9f, 0.3f, 0.3f, 0.8f);
 
-        ImVec2 rowPos = ImGui::GetCursorScreenPos();
-        float rowScaleX = contentOriginX;
+        // 父轨道不绘制内容
+        if (parent) {
+            ImGui::PopID();
+            continue;
+        }
 
+        // 绘制 clip / keyframe
         auto drawClip = [&](const SequenceClipBase& clip, int clipIdx, int clipType) {
             float startX = static_cast<float>(clip.startTime * pixelsPerSecond);
             float width = static_cast<float>(clip.duration * pixelsPerSecond);
-            ImVec2 clipMin(rowScaleX + startX, rowPos.y + 5);
-            ImVec2 clipMax(rowScaleX + startX + width, rowPos.y + trackHeight - 5);
+            ImVec2 clipMin(contentPos.x + startX, contentPos.y + 5);
+            ImVec2 clipMax(contentPos.x + startX + width, contentPos.y + rowH - 5);
 
             ImGui::SetCursorScreenPos(clipMin);
             char clipLabel[256];
@@ -1464,7 +1548,7 @@ void UIManager::drawSequencerPanel()
 
             ImGui::PushStyleColor(ImGuiCol_Button, clipColor);
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(clipColor.x + 0.1f, clipColor.y + 0.1f, clipColor.z + 0.1f, clipColor.w));
-            bool clicked = ImGui::Button(clipLabel, ImVec2(width, trackHeight - 10));
+            bool clicked = ImGui::Button(clipLabel, ImVec2(width, rowH - 10));
             ImGui::PopStyleColor(2);
 
             if (clicked) {
@@ -1472,7 +1556,6 @@ void UIManager::drawSequencerPanel()
                 selectedClipType = clipType;
                 selectedClipIdx = clipIdx;
             }
-
             if (selectedTrackIdx == ti && selectedClipType == clipType && selectedClipIdx == clipIdx) {
                 drawList->AddRect(clipMin, clipMax, IM_COL32(255, 255, 255, 255), 0.0f, 0, 2.0f);
             }
@@ -1490,30 +1573,63 @@ void UIManager::drawSequencerPanel()
         } else if (track.type == TrackType::TransformKeyframe) {
             for (int ci = 0; ci < static_cast<int>(track.keyframeTrack.keyframes.size()); ++ci) {
                 const auto& kf = track.keyframeTrack.keyframes[ci];
-                float kfX = rowScaleX + static_cast<float>(kf.time * pixelsPerSecond);
+                float kfX = contentPos.x + static_cast<float>(kf.time * pixelsPerSecond);
                 float kfSize = 8.0f;
-                ImVec2 kfMin(kfX - kfSize, rowPos.y + trackHeight * 0.5f - kfSize);
-                ImVec2 kfMax(kfX + kfSize, rowPos.y + trackHeight * 0.5f + kfSize);
+                ImVec2 kfMin(kfX - kfSize, contentPos.y + rowH * 0.5f - kfSize);
+                ImVec2 kfMax(kfX + kfSize, contentPos.y + rowH * 0.5f + kfSize);
 
-                bool isSelected = (selectedKeyframeTrackIdx_ == ti && selectedKeyframeIdx_ == ci);
+                bool isSelected = (selectedTrackIdx == ti && selectedKeyframeIdx_ == ci);
                 ImU32 kfColor = isSelected ? IM_COL32(255, 255, 255, 255) : IM_COL32(255, 220, 80, 220);
 
                 drawList->AddRectFilled(kfMin, kfMax, kfColor, 2.0f);
                 drawList->AddRect(kfMin, kfMax, IM_COL32(100, 100, 50, 200), 2.0f);
 
                 if (ci > 0) {
-                    float prevKfX = rowScaleX + static_cast<float>(track.keyframeTrack.keyframes[ci - 1].time * pixelsPerSecond);
-                    drawList->AddLine(ImVec2(prevKfX + kfSize, rowPos.y + trackHeight * 0.5f),
-                                      ImVec2(kfX - kfSize, rowPos.y + trackHeight * 0.5f),
+                    float prevKfX = contentPos.x + static_cast<float>(track.keyframeTrack.keyframes[ci - 1].time * pixelsPerSecond);
+                    drawList->AddLine(ImVec2(prevKfX + kfSize, contentPos.y + rowH * 0.5f),
+                                      ImVec2(kfX - kfSize, contentPos.y + rowH * 0.5f),
                                       IM_COL32(180, 180, 80, 100), 1.0f);
                 }
 
                 ImGui::SetCursorScreenPos(kfMin);
                 ImGui::InvisibleButton(("##kf" + std::to_string(ci)).c_str(), ImVec2(kfSize * 2, kfSize * 2));
                 if (ImGui::IsItemClicked()) {
-                    selectedKeyframeTrackIdx_ = ti;
-                    selectedKeyframeIdx_ = ci;
                     selectedTrackIdx = ti;
+                    selectedKeyframeIdx_ = ci;
+                    selectedClipType = -1;
+                    selectedClipIdx = -1;
+                    sequencerEditTime_ = kf.time;
+                    sequencerEditTimeSet_ = true;
+                    seqPlayer.seek(kf.time);
+                    vulkanRender->requestSequencerPreview();
+                }
+            }
+        } else if (track.type == TrackType::AnimatorKeyframe) {
+            for (int ci = 0; ci < static_cast<int>(track.animatorTrack.keyframes.size()); ++ci) {
+                const auto& kf = track.animatorTrack.keyframes[ci];
+                float kfX = contentPos.x + static_cast<float>(kf.time * pixelsPerSecond);
+                float kfSize = 8.0f;
+                ImVec2 kfMin(kfX - kfSize, contentPos.y + rowH * 0.5f - kfSize);
+                ImVec2 kfMax(kfX + kfSize, contentPos.y + rowH * 0.5f + kfSize);
+
+                bool isSelected = (selectedTrackIdx == ti && selectedKeyframeIdx_ == ci);
+                ImU32 kfColor = isSelected ? IM_COL32(255, 255, 255, 255) : IM_COL32(255, 120, 255, 220);
+
+                drawList->AddRectFilled(kfMin, kfMax, kfColor, 2.0f);
+                drawList->AddRect(kfMin, kfMax, IM_COL32(100, 50, 100, 200), 2.0f);
+
+                if (ci > 0) {
+                    float prevKfX = contentPos.x + static_cast<float>(track.animatorTrack.keyframes[ci - 1].time * pixelsPerSecond);
+                    drawList->AddLine(ImVec2(prevKfX + kfSize, contentPos.y + rowH * 0.5f),
+                                      ImVec2(kfX - kfSize, contentPos.y + rowH * 0.5f),
+                                      IM_COL32(180, 80, 180, 100), 1.0f);
+                }
+
+                ImGui::SetCursorScreenPos(kfMin);
+                ImGui::InvisibleButton(("##akf" + std::to_string(ci)).c_str(), ImVec2(kfSize * 2, kfSize * 2));
+                if (ImGui::IsItemClicked()) {
+                    selectedTrackIdx = ti;
+                    selectedKeyframeIdx_ = ci;
                     selectedClipType = -1;
                     selectedClipIdx = -1;
                     sequencerEditTime_ = kf.time;
@@ -1527,51 +1643,97 @@ void UIManager::drawSequencerPanel()
                 drawClip(track.eventClips[ci], ci, 3);
         }
 
-        ImGui::EndChild();
         ImGui::PopID();
     }
 
-    ImGui::EndChild();
-    ImGui::EndChild();
+    if (sequencerEditTimeSet_ && !seqPlayer.isPlaying() &&
+        std::abs(seqPlayer.currentTime() - sequencerEditTime_) > 0.001) {
+        seqPlayer.seek(sequencerEditTime_);
+        vulkanRender->requestSequencerPreview();
+    }
 
+    // 捕获时间线列垂直滚动，供左列标签下一帧跟随（双列滚动同步）
+    seqTimelineScrollY_ = ImGui::GetScrollY();
     ImGui::EndChild();
 
     ImGui::Separator();
 
     ImGui::BeginChild("##clipEditor", ImVec2(0, 0), true);
 
-    // ── Add Selected to Keyframe Track ────────────────────────────────
+    // ── Add Selected to Track → 自动判断子轨道 ────────────────────────
     if (vulkanRender->selectedCameraEntityId_ != 0 || selectedEntityId_ != 0) {
         uint64_t targetId = vulkanRender->selectedCameraEntityId_ != 0
             ? vulkanRender->selectedCameraEntityId_ : selectedEntityId_;
+
+        auto* ent = vulkanRender->getSceneManager().getModelEntity(targetId);
+        bool hasAnimator = ent && ent->animatorController.hasStates();
+
         if (ImGui::Button("Add Selected to Track")) {
-            SequenceTrack newTrack;
-            newTrack.name = "KeyframeTrack" + std::to_string(sequence.tracks.size() + 1);
-            newTrack.type = TrackType::TransformKeyframe;
-            newTrack.keyframeTrack.name = newTrack.name;
-            newTrack.keyframeTrack.targetEntityId = targetId;
-            sequence.tracks.push_back(std::move(newTrack));
-            trackMuted_.push_back(false);
-            trackSoloed_.push_back(false);
-        }
-    }
-    ImGui::SameLine();
-    if (sequencerEditTimeSet_) {
-        if (ImGui::Button("Add Keyframe")) {
-            int targetTi = selectedTrackIdx;
-            if (targetTi < 0 || targetTi >= static_cast<int>(sequence.tracks.size()) ||
-                sequence.tracks[targetTi].type != TrackType::TransformKeyframe) {
-                for (int ti = 0; ti < static_cast<int>(sequence.tracks.size()); ++ti) {
-                    if (sequence.tracks[ti].type == TrackType::TransformKeyframe) {
-                        targetTi = ti;
-                        break;
-                    }
+            // 用 displayName 命名，回退到 entityId
+            std::string entityName = (ent && !ent->displayName.empty())
+                ? ent->displayName : "Entity_" + std::to_string(targetId);
+
+            // 检查是否已存在：遍历已有 tracks，通过父轨道名称（entityName 匹配）判定
+            // 父轨道是唯一为 entityName 的纯组织轨道，子轨道以 [T] entityName / [A] entityName 开头
+            bool alreadyExists = false;
+            for (const auto& t : sequence.tracks) {
+                if (t.name == entityName) {
+                    alreadyExists = true;
+                    break;
                 }
             }
+            if (alreadyExists) {
+                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                         "Entity '%s' already has tracks in this sequence", entityName.c_str());
+            } else {
 
-            if (targetTi >= 0 && targetTi < static_cast<int>(sequence.tracks.size()) &&
-                sequence.tracks[targetTi].type == TrackType::TransformKeyframe) {
-                auto& track = sequence.tracks[targetTi];
+            auto addTrack = [&](const std::string& label, TrackType type, auto setup) {
+                SequenceTrack t;
+                t.name = label;
+                t.type = type;
+                setup(t);
+                sequence.tracks.push_back(std::move(t));
+            };
+
+            // 父轨道：仅用作分组标签，不可编辑
+            SequenceTrack parentTrack;
+            parentTrack.name = entityName;
+            parentTrack.type = TrackType::AnimationClip;  // 占位，不渲染 clip
+            sequence.tracks.push_back(std::move(parentTrack));
+
+            // Transform 子轨道
+            addTrack("[T] " + entityName + " Transform", TrackType::TransformKeyframe,
+                     [&](SequenceTrack& t) {
+                t.keyframeTrack.name = t.name;
+                t.keyframeTrack.targetEntityId = targetId;
+            });
+
+            // 有 Animator 时额外创建 Animator 子轨道
+            if (hasAnimator) {
+                addTrack("[A] " + entityName + " Animator", TrackType::AnimatorKeyframe,
+                         [&](SequenceTrack& t) {
+                    t.animatorTrack.name = t.name;
+                    t.animatorTrack.targetEntityId = targetId;
+                });
+            }
+
+            selectedTrackIdx = static_cast<int>(sequence.tracks.size()) - 1;
+            }
+        }
+    }
+
+    // ── 统一 Add Keyframe：根据当前选中轨道类型自动判断 ────────────────
+    ImGui::SameLine();
+    if (sequencerEditTimeSet_) {
+        bool canAddKeyframe = (selectedTrackIdx >= 0 &&
+            selectedTrackIdx < static_cast<int>(sequence.tracks.size()) &&
+            (sequence.tracks[selectedTrackIdx].type == TrackType::TransformKeyframe ||
+             sequence.tracks[selectedTrackIdx].type == TrackType::AnimatorKeyframe));
+
+        if (canAddKeyframe && ImGui::Button("Add Keyframe")) {
+            auto& track = sequence.tracks[selectedTrackIdx];
+
+            if (track.type == TrackType::TransformKeyframe) {
                 auto* ent = vulkanRender->getSceneManager().getModelEntity(track.keyframeTrack.targetEntityId);
                 if (ent) {
                     TransformKeyframe kf;
@@ -1586,23 +1748,38 @@ void UIManager::drawSequencerPanel()
                               [](const TransformKeyframe& a, const TransformKeyframe& b) {
                                   return a.time < b.time;
                               });
-
                     for (int ri = 0; ri < static_cast<int>(kfs.size()); ++ri) {
                         if (std::abs(kfs[ri].time - sequencerEditTime_) < 0.001) {
-                            selectedKeyframeTrackIdx_ = targetTi;
                             selectedKeyframeIdx_ = ri;
                             break;
                         }
                     }
-
                     if (sequence.totalDuration <= 0.0) {
                         sequence.totalDuration = track.keyframeTrack.totalDuration() + 5.0;
                     }
-
                     snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
-                             "Added keyframe at %.2fs for entity %llu", sequencerEditTime_,
-                             static_cast<unsigned long long>(track.keyframeTrack.targetEntityId));
+                             "Added transform keyframe at %.2fs", sequencerEditTime_);
                 }
+            } else if (track.type == TrackType::AnimatorKeyframe) {
+                AnimatorKeyframe kf;
+                kf.time = sequencerEditTime_;
+                auto& kfs = track.animatorTrack.keyframes;
+                kfs.push_back(std::move(kf));
+                std::sort(kfs.begin(), kfs.end(),
+                          [](const AnimatorKeyframe& a, const AnimatorKeyframe& b) {
+                              return a.time < b.time;
+                          });
+                for (int ri = 0; ri < static_cast<int>(kfs.size()); ++ri) {
+                    if (std::abs(kfs[ri].time - sequencerEditTime_) < 0.001) {
+                        selectedKeyframeIdx_ = ri;
+                        break;
+                    }
+                }
+                if (sequence.totalDuration <= 0.0) {
+                    sequence.totalDuration = track.animatorTrack.totalDuration() + 5.0;
+                }
+                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                         "Added animator keyframe at %.2fs", sequencerEditTime_);
             }
         }
     }
@@ -1617,7 +1794,7 @@ void UIManager::drawSequencerPanel()
         if (ImGui::InputText("##trackNameEdit", trackNameBuf, sizeof(trackNameBuf)))
             track.name = trackNameBuf;
 
-        const char* typeNames[] = { "AnimationClip", "CameraPath", "TransformTween", "TransformKeyframe", "Event" };
+        const char* typeNames[] = { "AnimationClip", "CameraPath", "TransformTween (Deprecated)", "TransformKeyframe", "AnimatorKeyframe", "Event" };
         int typeIdx = static_cast<int>(track.type);
         ImGui::SameLine();
         ImGui::SetNextItemWidth(120);
@@ -1639,7 +1816,7 @@ void UIManager::drawSequencerPanel()
                         static_cast<unsigned long long>(kft.targetEntityId));
             ImGui::Text("Keyframes: %zu", kft.keyframes.size());
 
-            if (selectedKeyframeTrackIdx_ == selectedTrackIdx && selectedKeyframeIdx_ >= 0
+            if (selectedKeyframeIdx_ >= 0
                 && selectedKeyframeIdx_ < static_cast<int>(kft.keyframes.size()))
             {
                 auto& kf = kft.keyframes[selectedKeyframeIdx_];
@@ -1714,6 +1891,227 @@ void UIManager::drawSequencerPanel()
                 vulkanRender->requestSequencerPreview();
             }
         }
+        // ── Animator Keyframe Track Editor ────────────────────────────────
+        if (track.type == TrackType::AnimatorKeyframe) {
+            auto& akt = track.animatorTrack;
+            ImGui::Text("Target Entity ID: %llu",
+                        static_cast<unsigned long long>(akt.targetEntityId));
+
+            // 初始状态：从 Controller states 列表中选择，避免手动输入拼写错误
+            // 通过 targetEntityId 查找实体以获取其 AnimatorController 的 states 列表
+            {
+                auto* entityForCtrl = vulkanRender->getSceneManager().getModelEntity(akt.targetEntityId);
+                std::vector<std::string> stateNames;
+                int selState = -1;
+                if (entityForCtrl && entityForCtrl->animatorController.hasStates()) {
+                    const auto& ctrlStates = entityForCtrl->animatorController.states();
+                    for (int si = 0; si < static_cast<int>(ctrlStates.size()); ++si) {
+                        stateNames.push_back(ctrlStates[si].name);
+                        if (ctrlStates[si].name == akt.initialState)
+                            selState = si;
+                    }
+                }
+                // 添加一个空选项（表示不指定 initialState，使用控制器默认状态）
+                stateNames.insert(stateNames.begin(), "(default)");
+                int comboIdx = (selState >= 0) ? selState + 1 : 0;
+                ImGui::SetNextItemWidth(150);
+                if (ImGui::Combo("Initial State", &comboIdx, [](void* data, int idx, const char** out) -> bool {
+                        auto* names = static_cast<std::vector<std::string>*>(data);
+                        if (idx < 0 || idx >= static_cast<int>(names->size())) return false;
+                        *out = (*names)[idx].c_str();
+                        return true;
+                    }, &stateNames, static_cast<int>(stateNames.size())))
+                {
+                    akt.initialState = (comboIdx > 0) ? stateNames[comboIdx] : std::string();
+                }
+            }
+
+            ImGui::Text("Keyframes: %zu", akt.keyframes.size());
+
+            if (selectedKeyframeIdx_ >= 0
+                && selectedKeyframeIdx_ < static_cast<int>(akt.keyframes.size()))
+            {
+                auto& kf = akt.keyframes[selectedKeyframeIdx_];
+                ImGui::Separator();
+                ImGui::Text("Animator Keyframe [%d] @ %.2fs", selectedKeyframeIdx_, kf.time);
+
+                double kfTime = kf.time;
+                if (ImGui::DragScalar("Time", ImGuiDataType_Double, &kfTime, 0.1f)) {
+                    kf.time = kfTime;
+                    std::sort(akt.keyframes.begin(), akt.keyframes.end(),
+                              [](const AnimatorKeyframe& a, const AnimatorKeyframe& b) {
+                                  return a.time < b.time;
+                              });
+                    for (int ri = 0; ri < static_cast<int>(akt.keyframes.size()); ++ri) {
+                        if (std::abs(akt.keyframes[ri].time - kfTime) < 0.001) {
+                            selectedKeyframeIdx_ = ri;
+                            break;
+                        }
+                    }
+                }
+
+                // 事件列表
+                int removeIdx = -1;
+                for (int ei = 0; ei < static_cast<int>(kf.events.size()); ++ei) {
+                    auto& ev = kf.events[ei];
+                    ImGui::PushID(ei);
+                    ImGui::Separator();
+                    ImGui::Text("Event %d", ei);
+
+                    // 参数名：从 Controller 参数列表中选择，自动填充类型
+                    {
+                        bool eventChanged = false;
+                        auto* entityForParams = vulkanRender->getSceneManager().getModelEntity(akt.targetEntityId);
+                        int selParam = -1;
+                        std::vector<std::string> paramNames;
+                        std::vector<AnimatorParam> ctrlParams;
+                        if (entityForParams && entityForParams->animatorController.hasStates()) {
+                            ctrlParams = entityForParams->animatorController.params();
+                            for (int pi = 0; pi < static_cast<int>(ctrlParams.size()); ++pi) {
+                                paramNames.push_back(ctrlParams[pi].name);
+                                if (ctrlParams[pi].name == ev.paramName)
+                                    selParam = pi;
+                            }
+                        }
+                        // 添加一个自由输入选项（允许手动输入不在列表中的参数名）
+                        paramNames.insert(paramNames.begin(), "(manual)");
+                        int paramComboIdx = (selParam >= 0) ? selParam + 1 : 0;
+                        ImGui::SetNextItemWidth(150);
+                        if (ImGui::Combo("Param##ev", &paramComboIdx, [](void* data, int idx, const char** out) -> bool {
+                                auto* names = static_cast<std::vector<std::string>*>(data);
+                                if (idx < 0 || idx >= static_cast<int>(names->size())) return false;
+                                *out = (*names)[idx].c_str();
+                                return true;
+                            }, &paramNames, static_cast<int>(paramNames.size())))
+                        {
+                            eventChanged = true;
+                            if (paramComboIdx > 0) {
+                                // 从列表中选择：自动设置 paramName 和对应的 type
+                                ev.paramName = paramNames[paramComboIdx];
+                                const auto& selectedParam = ctrlParams[paramComboIdx - 1];
+                                switch (selectedParam.type) {
+                                case AnimatorParam::Type::Float:
+                                    ev.type = AnimatorEvent::Type::SetFloat; break;
+                                case AnimatorParam::Type::Int:
+                                    ev.type = AnimatorEvent::Type::SetInt; break;
+                                case AnimatorParam::Type::Bool:
+                                    ev.type = AnimatorEvent::Type::SetBool; break;
+                                case AnimatorParam::Type::Trigger:
+                                    ev.type = AnimatorEvent::Type::SetTrigger; break;
+                                }
+                            }
+                            // 选择 "(manual)" 时不清除 paramName，保持原值
+                        }
+
+                        // 如果当前选中的是 manual 模式（参数名不在列表中），显示 InputText 供手动输入
+                        if (selParam < 0 && !ev.paramName.empty()) {
+                            ImGui::SameLine();
+                            static char manualParamBuf[128];
+                            snprintf(manualParamBuf, sizeof(manualParamBuf), "%s", ev.paramName.c_str());
+                            ImGui::SetNextItemWidth(120);
+                            if (ImGui::InputText("##manualParam", manualParamBuf, sizeof(manualParamBuf))) {
+                                ev.paramName = manualParamBuf;
+                                eventChanged = true;
+                            }
+                        } else if (paramNames.size() <= 1) {
+                            // 没有可用参数列表时显示普通 InputText
+                            static char paramBuf[128];
+                            snprintf(paramBuf, sizeof(paramBuf), "%s", ev.paramName.c_str());
+                            ImGui::SetNextItemWidth(150);
+                            if (ImGui::InputText("Param##ev", paramBuf, sizeof(paramBuf))) {
+                                ev.paramName = paramBuf;
+                                eventChanged = true;
+                            }
+                        }
+
+                        if (eventChanged && sequencerEditTimeSet_) {
+                            seqPlayer.seek(sequencerEditTime_);
+                            vulkanRender->requestSequencerPreview();
+                        }
+                    }
+
+                    switch (ev.type) {
+                    case AnimatorEvent::Type::SetFloat: {
+                        bool valChanged = ImGui::DragFloat("Value##ev", &ev.floatValue, 0.1f);
+                        {
+                            const char* interpNames[] = { "Step", "Linear", "SmoothStep", "EaseIn", "EaseOut", "EaseInOut", "Cubic", "Exponential" };
+                            int interpIdx = static_cast<int>(ev.interp);
+                            if (ImGui::Combo("Interp##ev", &interpIdx, interpNames, IM_ARRAYSIZE(interpNames))) {
+                                ev.interp = static_cast<ParamInterp>(interpIdx);
+                                valChanged = true;
+                            }
+                        }
+                        if (valChanged && sequencerEditTimeSet_) {
+                            seqPlayer.seek(sequencerEditTime_);
+                            vulkanRender->requestSequencerPreview();
+                        }
+                        break;
+                    }
+                    case AnimatorEvent::Type::SetInt: {
+                        bool valChanged = ImGui::DragInt("Value##ev", &ev.intValue, 1);
+                        {
+                            const char* interpNames[] = { "Step", "Linear", "SmoothStep", "EaseIn", "EaseOut", "EaseInOut", "Cubic", "Exponential" };
+                            int interpIdx = static_cast<int>(ev.interp);
+                            if (ImGui::Combo("Interp##ev", &interpIdx, interpNames, IM_ARRAYSIZE(interpNames))) {
+                                ev.interp = static_cast<ParamInterp>(interpIdx);
+                                valChanged = true;
+                            }
+                        }
+                        if (valChanged && sequencerEditTimeSet_) {
+                            seqPlayer.seek(sequencerEditTime_);
+                            vulkanRender->requestSequencerPreview();
+                        }
+                        break;
+                    }
+                    case AnimatorEvent::Type::SetBool:
+                        if (ImGui::Checkbox("Value##ev", &ev.boolValue) && sequencerEditTimeSet_) {
+                            seqPlayer.seek(sequencerEditTime_);
+                            vulkanRender->requestSequencerPreview();
+                        }
+                        break;
+                    case AnimatorEvent::Type::SetTrigger:
+                        break;
+                    }
+
+                    if (ImGui::SmallButton("Remove##ev")) removeIdx = ei;
+                    ImGui::PopID();
+                }
+
+                if (removeIdx >= 0) {
+                    kf.events.erase(kf.events.begin() + removeIdx);
+                    if (sequencerEditTimeSet_) {
+                        seqPlayer.seek(sequencerEditTime_);
+                        vulkanRender->requestSequencerPreview();
+                    }
+                }
+
+                ImGui::Separator();
+                if (ImGui::Button("+ Add Event")) {
+                    AnimatorParamEvent newEv;
+                    kf.events.push_back(std::move(newEv));
+                    if (sequencerEditTimeSet_) {
+                        seqPlayer.seek(sequencerEditTime_);
+                        vulkanRender->requestSequencerPreview();
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Delete Keyframe")) {
+                    akt.keyframes.erase(akt.keyframes.begin() + selectedKeyframeIdx_);
+                    selectedKeyframeIdx_ = -1;
+                    if (sequencerEditTimeSet_) {
+                        seqPlayer.seek(sequencerEditTime_);
+                        vulkanRender->requestSequencerPreview();
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Preview##akf")) {
+                    sequencerEditTime_ = kf.time;
+                    sequencerEditTimeSet_ = true;
+                    seqPlayer.seek(kf.time);
+                    vulkanRender->requestSequencerPreview();
+                }
+            }
+        }
         // ── Old clip-based editor for non-keyframe tracks ────────────
         else if (selectedClipType >= 0 && selectedClipIdx >= 0) {
             ImGui::Text("Clip Properties");
@@ -1784,11 +2182,29 @@ void UIManager::drawSequencerPanel()
             } else if (selectedClipType == 3 && selectedClipIdx < static_cast<int>(track.eventClips.size())) {
                 auto& clip = track.eventClips[selectedClipIdx];
                 drawClipEditor(clip);
-                static char eventBuf[256];
-                snprintf(eventBuf, sizeof(eventBuf), "%s", clip.eventName.c_str());
+                const char* eventTypeNames[] = { "SetFloat", "SetInt", "SetBool", "SetTrigger" };
+                int evType = static_cast<int>(clip.event.type);
+                ImGui::SetNextItemWidth(120);
+                if (ImGui::Combo("Event Type", &evType, eventTypeNames, IM_ARRAYSIZE(eventTypeNames)))
+                    clip.event.type = static_cast<AnimatorEvent::Type>(evType);
+                static char paramBuf[128];
+                snprintf(paramBuf, sizeof(paramBuf), "%s", clip.event.paramName.c_str());
                 ImGui::SetNextItemWidth(200);
-                if (ImGui::InputText("Event Name", eventBuf, sizeof(eventBuf)))
-                    clip.eventName = eventBuf;
+                if (ImGui::InputText("Param Name", paramBuf, sizeof(paramBuf)))
+                    clip.event.paramName = paramBuf;
+                switch (clip.event.type) {
+                case AnimatorEvent::Type::SetFloat:
+                    ImGui::DragFloat("Value", &clip.event.floatValue, 0.1f);
+                    break;
+                case AnimatorEvent::Type::SetInt:
+                    ImGui::DragInt("Value", &clip.event.intValue, 1);
+                    break;
+                case AnimatorEvent::Type::SetBool:
+                    ImGui::Checkbox("Value", &clip.event.boolValue);
+                    break;
+                case AnimatorEvent::Type::SetTrigger:
+                    break;
+                }
             }
 
             ImGui::Separator();
@@ -1850,6 +2266,11 @@ void UIManager::drawSequencerPanel()
                 }
             }
         }
+
+        // AnimatorKeyframe 轨道特殊处理：无 clip 添加，只有关键帧
+        if (track.type == TrackType::AnimatorKeyframe) {
+            // 关键帧通过上面的 Add Animator Keyframe 按钮添加
+        }
     } else {
         ImGui::TextDisabled("Select a track to edit");
     }
@@ -1861,19 +2282,15 @@ void UIManager::drawSequencerPanel()
         newTrack.name = "Track" + std::to_string(sequence.tracks.size() + 1);
         newTrack.type = TrackType::AnimationClip;
         sequence.tracks.push_back(std::move(newTrack));
-        trackMuted_.push_back(false);
-        trackSoloed_.push_back(false);
     }
     ImGui::SameLine();
     if (ImGui::Button("Delete Track##delTrack") && selectedTrackIdx >= 0 && selectedTrackIdx < static_cast<int>(sequence.tracks.size())) {
         sequence.tracks.erase(sequence.tracks.begin() + selectedTrackIdx);
-        trackMuted_.erase(trackMuted_.begin() + selectedTrackIdx);
-        trackSoloed_.erase(trackSoloed_.begin() + selectedTrackIdx);
         selectedTrackIdx = -1;
         selectedClipIdx = -1;
         selectedClipType = -1;
         selectedKeyframeIdx_ = -1;
-        selectedKeyframeTrackIdx_ = -1;
+        selectedKeyframeIdx_ = -1;
     }
 
     ImGui::Separator();
@@ -1960,6 +2377,17 @@ void UIManager::drawAnimatorPanel()
 
     if (animatorControllerAssetsEntityId_ != ent->entityId) {
         animatorControllerAssetsEntityId_ = ent->entityId;
+        animatorControllerAssetsDirty_ = true;
+        animatorSelectedStateIdx_ = -1;
+        animatorSelectedTransitionIdx_ = -1;
+        animatorEditingTransition_ = false;
+        animatorRenamingClipIdx_ = -1;
+        animatorClipRenameBuffer_[0] = '\0';
+    }
+
+    // 场景加载后修复：检测 Controller 是否被重新加载（路径非空但资产列表为空
+    // 或选中状态未重置），同步重置所有 UI 选中/编辑状态和资产列表。
+    if (!ent->animatorControllerPath.empty() && animatorControllerAssets_.empty()) {
         animatorControllerAssetsDirty_ = true;
         animatorSelectedStateIdx_ = -1;
         animatorSelectedTransitionIdx_ = -1;
@@ -2086,7 +2514,8 @@ void UIManager::drawAnimatorPanel()
                         == path.lexically_normal();
                 if (ImGui::Selectable(path.filename().string().c_str(), active)) {
                     if (ctrl.loadFromFile(assetPath)) {
-                        ent->animatorControllerPath = assetPath;
+                        // 保存相对路径（相对于 res/），便于跨平台场景序列化
+                        ent->animatorControllerPath = "animators/" + path.filename().string();
                         ent->previewClipIndex = -1;
                         ent->previewTime = 0.f;
                         animatorSelectedStateIdx_ = -1;
@@ -2109,6 +2538,8 @@ void UIManager::drawAnimatorPanel()
         } else {
             ImGui::Text("Current: %s",
                         std::filesystem::path(ent->animatorControllerPath).filename().string().c_str());
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", ent->animatorControllerPath.c_str());
         }
         ImGui::Separator();
         if (ImGui::Button("New AnimController")) {
@@ -2123,7 +2554,8 @@ void UIManager::drawAnimatorPanel()
             newController.configureFromClips(clips);
             if (!ec && newController.saveToFile(path.string())) {
                 ctrl = std::move(newController);
-                ent->animatorControllerPath = path.lexically_normal().string();
+                // 保存相对路径（相对于 res/），便于跨平台场景序列化
+                ent->animatorControllerPath = "animators/" + path.filename().string();
                 ent->previewClipIndex = -1;
                 ent->previewTime = 0.f;
                 animatorControllerAssetsDirty_ = true;
@@ -2149,6 +2581,24 @@ void UIManager::drawAnimatorPanel()
             } else {
                 snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_), "Save failed: %s",
                          ent->animatorControllerPath.c_str());
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Clear Controller")) {
+            if (!ent->animatorControllerPath.empty()) {
+                // 清除绑定的控制器路径，重置为运行时控制器
+                AnimatorController freshCtrl;
+                freshCtrl.configureFromClips(clips);
+                ent->animatorController = std::move(freshCtrl);
+                ent->animatorControllerPath.clear();
+                animatorSelectedStateIdx_ = -1;
+                animatorSelectedTransitionIdx_ = -1;
+                animatorEditingTransition_ = false;
+                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                         "Controller cleared, reverted to runtime controller");
+            } else {
+                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                         "No controller to clear");
             }
         }
     }
@@ -2580,6 +3030,16 @@ void UIManager::drawAnimatorPanel()
             ImGui::SameLine();
             if (ImGui::Button("Set Active State")) {
                 ctrl.setActiveState(s.name);
+            }
+        }
+
+        bool isDefaultState = (s.name == ctrl.defaultStateName());
+        if (!isDefaultState) {
+            ImGui::SameLine();
+            if (ImGui::Button("Set as Default State")) {
+                ctrl.configure(ctrl.states(), ctrl.transitions(), ctrl.params(), s.name);
+                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                         "Default state set to: %s", s.name.c_str());
             }
         }
 

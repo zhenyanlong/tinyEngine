@@ -127,6 +127,23 @@ public:
     /** @brief 推进状态机并返回本帧动画采样指令。 */
     BlendCommand update(float dt, const std::vector<AnimationClip>& clips);
 
+    /**
+     * @brief 纯函数：在指定时间点计算状态机的 BlendCommand，不修改内部状态。
+     *
+     * 从 initialState 开始，应用给定的参数值，模拟在时间 t 秒内的状态演进，
+     * 返回该时间点的 BlendCommand。不修改 params_ / stateTime_ 等内部成员。
+     *
+     * @param t          模拟的时间点（秒），从 0 开始
+     * @param clips      动画 clip 列表
+     * @param paramValues 要应用到状态机的参数值（覆盖 params_ 中的默认值）
+     * @param initialState 初始状态名（空字符串 = defaultState_）
+     * @return BlendCommand 在时间 t 处的混合指令
+     */
+    BlendCommand computeBlendAtTime(float t,
+                                    const std::vector<AnimationClip>& clips,
+                                    const std::vector<AnimatorParam>& paramValues = {},
+                                    const std::string& initialState = {}) const;
+
     void reset();
     /** @brief 直接切换到指定 state，跳过 transition。如果 name 不存在则忽略。 */
     void setActiveState(const std::string& name);
@@ -138,6 +155,7 @@ public:
     const std::vector<AnimatorState>& states() const { return states_; }
     const std::vector<AnimatorTransition>& transitions() const { return transitions_; }
     const std::vector<AnimatorParam>& params() const { return params_; }
+    const std::string& defaultStateName() const { return defaultState_; }
 
 private:
     std::vector<AnimatorState> states_;

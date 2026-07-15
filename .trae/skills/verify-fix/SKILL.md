@@ -1,6 +1,6 @@
 ---
 name: "verify-fix"
-description: "处理外部 LLM/人工对 DailyProgress 未验证条目的功能完整性验证反馈，分析问题根因和修复方式，将教训记录到 lessons-learned.md 以供未来开发参考，并将已验证条目标记为 [✓]。当用户提供其他 LLM 的验证反馈和修改后的代码，说"verify feedback""处理验证反馈""记录教训"时调用。"
+description: "Processes external LLM verification feedback for DailyProgress items, logs lessons to lessons-learned.md, and marks items as verified. Invoke when user says 'verify feedback', '处理验证反馈', or '记录教训'."
 ---
 
 # 验证反馈处理与教训积累

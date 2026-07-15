@@ -132,8 +132,7 @@ public:
     bool showSequencerPanel_ = false;
 
     // Track mute/solo state (indexed by track index in current sequence)
-    std::vector<bool> trackMuted_;
-    std::vector<bool> trackSoloed_;
+
 
     // Last seek time set by timeline drag (seconds)
     double seekTime_ = -1.0;
@@ -141,8 +140,9 @@ public:
     // Sequencer keyframe editing state
     double sequencerEditTime_ = 0.0;
     bool   sequencerEditTimeSet_ = false;
-    int    selectedKeyframeTrackIdx_ = -1;
     int    selectedKeyframeIdx_ = -1;
+    // 双列布局垂直滚动同步：左列标签跟随右列时间线的滚动位置（1 帧延迟）
+    float  seqTimelineScrollY_ = 0.0f;
 
 	int gizmoOperation_ = 7;  // ImGuizmo::TRANSLATE (bitmask: 7=TRANSLATE, 120=ROTATE, 896=SCALE)
 	bool gizmoLocal_ = false; // false=世界坐标(ImGuizmo::WORLD), true=本地坐标(ImGuizmo::LOCAL)，按 4 键切换

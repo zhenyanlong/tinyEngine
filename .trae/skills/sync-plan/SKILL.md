@@ -1,6 +1,6 @@
 ---
 name: "sync-plan"
-description: "将当前会话中完成的代码变更同步到 TDD.md 技术文档，并在 animation-system-plan.md 中为已完成任务打勾，同步 todolist.md 的搁置/完成状态。当用户说"更新TDD""同步计划""打勾"时调用。"
+description: "Syncs code changes to TDD.md and checks off completed tasks in animation-system-plan.md. Invoke when user says 'update TDD', 'sync plan', '更新TDD', or '打勾'."
 ---
 
 # 计划同步 Skill

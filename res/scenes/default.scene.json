@@ -258,6 +258,7 @@
       "visible": true
     },
     {
+      "animatorControllerPath": "E:\\Projects\\tinyEngine\\res\\animators\\Remy.animctrl.json",
       "astRelPath": "content/Remy/Remy.mesh.ast",
       "materialOverride": {
         "albedoPath": "E:\\Projects\\tinyEngine\\res\\bin\\texture\\Remy\\Remy_Shoesmat_albedo.png",
@@ -279,32 +280,6 @@
         1.0,
         1.0,
         1.0
-      ],
-      "subMaterialOverrides": [
-        {
-          "astRelPath": "content/Remy/Shoesmat.material.ast",
-          "slot": 0
-        },
-        {
-          "astRelPath": "content/Remy/Topmat.material.ast",
-          "slot": 1
-        },
-        {
-          "astRelPath": "content/Remy/Bottommat.material.ast",
-          "slot": 2
-        },
-        {
-          "astRelPath": "content/Remy/Hairmat.material.ast",
-          "slot": 3
-        },
-        {
-          "astRelPath": "content/Remy/Bodymat.material.ast",
-          "slot": 4
-        },
-        {
-          "astRelPath": "content/Remy/Eyelashmat.material.ast",
-          "slot": 5
-        }
       ],
       "visible": true
     }

@@ -1,6 +1,6 @@
 ---
 name: "defer-todo"
-description: "维护 project todolist.md，记录今天想做但暂时搁置的功能点。当用户说"记个todo""记下来""这个先不做""以后再做""留到后面""搁置"或需要增删/查看待办功能清单时调用。"
+description: "Maintains todolist.md for deferred features. Invoke when user says '记个todo', '搁置', 'defer', or needs to manage backlog items."
 ---
 
 # 待办功能清单维护

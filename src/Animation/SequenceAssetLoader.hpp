@@ -55,6 +55,8 @@ public:
     // ── 工具 ──────────────────────────────────────────────────────────────
     static std::string easeToStr(TweenEase e);
     static TweenEase strToEase(const std::string& s);
+    static std::string paramInterpToStr(ParamInterp i);
+    static ParamInterp strToParamInterp(const std::string& s);
 
 private:
     static std::string trackTypeToStr(TrackType t);

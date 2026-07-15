@@ -8,17 +8,34 @@
 #include <string>
 #include <vector>
 
+// 前向声明
+struct AnimatorEvent;
+struct AnimatorParam;
+
 /** @brief 轨道类型 */
 enum class TrackType {
     AnimationClip,      ///< 引用一段 .anim.ast 动画片段
     CameraPath,         ///< 相机路径（播放期间屏蔽右键相机控制）
     TransformTween,     ///< 场景对象 position/rotation/scale 补间（旧版，保留兼容）
     TransformKeyframe,  ///< 关键帧轨道（新版）
+    AnimatorKeyframe,   ///< Animator 参数关键帧轨道（驱动状态机）
     Event               ///< 时间点触发 AnimatorEvent
 };
 
 /** @brief 插值模式 */
 enum class TweenEase {
+    Linear,             ///< 线性插值
+    SmoothStep,         ///< 平滑插值（Hermite）
+    EaseIn,             ///< 缓入（二次方）
+    EaseOut,            ///< 缓出（二次方）
+    EaseInOut,          ///< 缓入缓出组合
+    Cubic,              ///< 三次方插值
+    Exponential         ///< 指数插值
+};
+
+/** @brief 参数插值模式（用于 Animator 关键帧之间的参数值过渡） */
+enum class ParamInterp {
+    Step,               ///< 跳变（无插值）
     Linear,             ///< 线性插值
     SmoothStep,         ///< 平滑插值（Hermite）
     EaseIn,             ///< 缓入（二次方）
@@ -106,9 +123,43 @@ struct TransformTweenClip : SequenceClipBase {
     EvalResult evaluate(double localT) const;
 };
 
+/** @brief 获取 ParamInterp 的显示名称 */
+inline const char* paramInterpToString(ParamInterp interp) {
+    switch (interp) {
+    case ParamInterp::Step:         return "Step";
+    case ParamInterp::Linear:       return "Linear";
+    case ParamInterp::SmoothStep:   return "SmoothStep";
+    case ParamInterp::EaseIn:       return "EaseIn";
+    case ParamInterp::EaseOut:      return "EaseOut";
+    case ParamInterp::EaseInOut:    return "EaseInOut";
+    case ParamInterp::Cubic:        return "Cubic";
+    case ParamInterp::Exponential:  return "Exponential";
+    }
+    return "Unknown";
+}
+
+/** @brief 应用参数插值曲线，输入 t 范围 [0, 1]，返回结果范围 [0, 1] */
+inline double applyParamInterpCurve(double t, ParamInterp interp) {
+    t = (t < 0.0) ? 0.0 : (t > 1.0) ? 1.0 : t;
+    switch (interp) {
+    case ParamInterp::Step:         return 0.0;  // 跳变：始终保持起始值
+    case ParamInterp::Linear:       return t;
+    case ParamInterp::SmoothStep:   return t * t * (3.0 - 2.0 * t);
+    case ParamInterp::EaseIn:       return t * t;
+    case ParamInterp::EaseOut:      return 1.0 - (1.0 - t) * (1.0 - t);
+    case ParamInterp::EaseInOut:
+        return (t < 0.5) ? 2.0 * t * t : 1.0 - (-2.0 * t + 2.0) * (-2.0 * t + 2.0) / 4.0;
+    case ParamInterp::Cubic:        return t * t * t;
+    case ParamInterp::Exponential:  return (t <= 0.0) ? 0.0 : std::pow(2.0, 10.0 * (t - 1.0));
+    }
+    return t;
+}
+
+#include "AnimatorController.hpp"
+
 /** @brief 事件片段，到达时间点时触发一个 AnimatorEvent */
 struct EventClip : SequenceClipBase {
-    std::string eventName;
+    AnimatorEvent event;  ///< 完整的事件定义，支持所有类型（SetFloat/SetInt/SetBool/SetTrigger）
 };
 
 /** @brief 关键帧：记录某一时刻的 Transform 状态 */
@@ -140,6 +191,59 @@ struct TransformKeyframeTrack {
     double totalDuration() const;
 };
 
+/**
+ * @brief 单个 Animator 参数变更事件（可插值）
+ *
+ * 用于 AnimatorKeyframe 中，在某一时刻设置一个 AnimatorController 参数。
+ * SetFloat/SetInt 类型支持插值（相邻关键帧之间的值过渡）。
+ * SetBool/SetTrigger 总是 Step 模式（跳变）。
+ */
+struct AnimatorParamEvent {
+    AnimatorEvent::Type type = AnimatorEvent::Type::SetFloat;
+    std::string paramName;
+
+    float floatValue = 0.f;
+    int   intValue   = 0;
+    bool  boolValue  = false;
+
+    /** @brief 插值模式（仅 SetFloat/SetInt 有效，SetBool/SetTrigger 忽略） */
+    ParamInterp interp = ParamInterp::Step;
+};
+
+/** @brief Animator 时间轴上的一个关键帧 */
+struct AnimatorKeyframe {
+    double time = 0.0;  ///< 在序列时间轴上的位置（秒）
+    std::vector<AnimatorParamEvent> events;  ///< 该时刻触发的所有参数变更
+};
+
+/** @brief Animator 参数关键帧轨道：绑定到特定实体，驱动其 AnimatorController */
+struct AnimatorKeyframeTrack {
+    std::string  name;
+    uint64_t     targetEntityId = 0;  ///< 关联的场景实体 ID
+    std::string  initialState;        ///< 初始状态名称（空字符串 = 使用控制器默认）
+
+    std::vector<AnimatorKeyframe> keyframes;  ///< 按 time 升序排列
+
+    /**
+     * @brief 求值结果：包含从 t=0 到 currentTime 累积后的最终参数值
+     *
+     * 策略：从 initialState 开始，按时间顺序依次应用所有 time <= currentTime 的关键帧事件。
+     * 对于 SetFloat/SetInt 类型，如果前后两个关键帧之间有插值，则计算插值结果。
+     * SetBool/SetTrigger 总是跳变。
+     */
+    struct EvalResult {
+        std::string initialState;           ///< 初始状态
+        std::vector<AnimatorParam> params;  ///< 最终参数值
+        double evalTime = 0.0;              ///< 当前求值时间
+    };
+
+    /** @brief 在指定时间 t 求值，返回累积后的参数值 */
+    EvalResult evaluate(double t) const;
+
+    /** @brief 获取轨道总时长（最后一个关键帧的时间） */
+    double totalDuration() const;
+};
+
 /** @brief 一条轨道，内部按 startTime 升序存放同一类型的片段 */
 struct SequenceTrack {
     std::string name;
@@ -151,6 +255,7 @@ struct SequenceTrack {
     std::vector<EventClip>          eventClips;
 
     TransformKeyframeTrack          keyframeTrack;  ///< 新版关键帧轨道
+    AnimatorKeyframeTrack           animatorTrack;  ///< Animator 参数关键帧轨道
 
     double totalDuration() const;
 };

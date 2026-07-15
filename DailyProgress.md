@@ -1,3 +1,41 @@
+## 2026-07-15
+
+- [ ] Refactored Sequencer panel from single-column to dual-column layout: fixed left label column (##seqLabels, NoScrollbar) + scrollable right timeline column (##seqTimeline, HorizontalScrollbar), with vertical scroll sync via seqTimelineScrollY_ (IMGUIManager.hpp/.cpp, TDD.md)
+- [ ] Replaced track label InvisibleButton+Dummy mixed layout with dedicated ImGui::Selectable in left column, fixing hover/click instability (IMGUIManager.cpp)
+- [ ] Fixed isParentTrack false-positive for empty sub-tracks: added `!isSubTrack(ti)` guard so newly created [T]/[A] sub-tracks are not misidentified as parent tracks (IMGUIManager.cpp)
+- [ ] Fixed per-row cursor Y drift in timeline column: replaced GetCursorScreenPos() with independent rowCursorY accumulator, decoupling row layout from clip/keyframe item cursor pollution (IMGUIManager.cpp)
+- [ ] Fixed dual-column vertical alignment drift: unified both columns to use explicit SetCursorScreenPos + rowCursorY accumulation, bypassing ImGui ItemSpacing (IMGUIManager.cpp)
+- [ ] Added duplicate entity detection: "Add Selected to Track" now skips creation if the entity already has a parent track in the current sequence, showing status message instead (IMGUIManager.cpp)
+- [ ] Updated TDD.md Sequencer C6 section: replaced single-column layout docs with dual-column layout, removed the "Known Bugs" section (both bugs fixed)
+- [ ] Added SceneSerializer persistence for animatorControllerPath: save/load controller bindings in .scene.json (SceneSerializer.cpp)
+- [ ] Added Clear Controller button in Animator Panel to unbind and revert to runtime controller (IMGUIManager.cpp)
+- [ ] Added Set as Default State button in State Properties editor (AnimatorController.hpp, IMGUIManager.cpp)
+- [ ] Added defaultStateName() getter to AnimatorController (AnimatorController.hpp)
+- [ ] Changed Animator keyframe Param editor from InputText to Combo dropdown with auto type inference from Controller params (IMGUIManager.cpp)
+- [ ] Changed Animator keyframe Initial State from InputText to Combo dropdown from Controller states list (IMGUIManager.cpp)
+- [ ] Fixed scene-load AnimatorController binding overwrite: added guard in SceneManager::setEntityAnimationData() to skip configureFromClips() when entity already has animatorControllerPath from .scene.json. Removed redundant Controller reload retry in loadScene(). (SceneManager.cpp, Application.cpp)
+- [ ] Fixed AnimatorKeyframe sequencer preview not reflecting state transitions: root cause was onAnimatorKeyframeEval calling AnimatorController::update(t) with large dt causing exitTime detection to skip and trigger states coupling with internal params. Refactored by adding computeBlendAtTime() pure function to AnimatorController — simulates state evolution from 0 to t in 0.05s steps using local param copies, returns BlendCommand without mutating internal state. (AnimatorController.hpp/.cpp, Application.cpp)
+- [ ] Added auto-preview on AnimatorKeyframe event changes: all event editor mutation points (param combo/input, value edit, interp mode, add/remove event, delete keyframe) now automatically trigger seek(editTime) + requestSequencerPreview(). (IMGUIManager.cpp)
+- [ ] Updated TDD.md: documented computeBlendAtTime() in §4.12.3, moved two resolved bugs from "Known Bugs" to "Fixed Bugs" in §4.12.5, updated C7 runtime description
+
+## 2026-07-14
+
+- [ ] Implemented AnimatorKeyframeTrack system: new TrackType::AnimatorKeyframe, AnimatorParamEvent/AnimatorKeyframe/AnimatorKeyframeTrack structs, ParamInterp enum (Step/Linear/SmoothStep/EaseIn/EaseOut/EaseInOut/Cubic/Exponential) (Sequence.hpp/.cpp)
+- [ ] Implemented AnimatorKeyframeTrack::evaluate() with cumulative event application from t=0, SetFloat/SetInt interpolation between keyframes, SetBool/SetTrigger step mode (Sequence.cpp)
+- [ ] Extended EventClip from eventName string to full AnimatorEvent struct, supporting SetFloat/SetInt/SetBool/SetTrigger (Sequence.hpp)
+- [ ] Added onAnimatorKeyframeEval callback to SequencePlayer::FrameCallbacks (SequencePlayer.hpp/.cpp)
+- [ ] Implemented onAnimatorKeyframeEval in Application.cpp: reset state machine → apply accumulated params → update(t) to advance to current frame; BlendCommand uses state machine when AnimatorKeyframe track present (Application.cpp)
+- [ ] Implemented full serialization for AnimatorKeyframeTrack: events/interp/initialState in .seq.json; EventClip serialization supports all event types; added paramInterpToStr/strToParamInterp helpers (SequenceAssetLoader.hpp/.cpp)
+- [ ] Added UE-style hierarchical tracks: "Add Selected to Track" creates parent track + Transform sub-track + Animator sub-track (if entity has AnimatorController); tracks named by entity displayName (IMGUIManager.cpp)
+- [ ] Unified "Add Keyframe" button: auto-detects selected track type and adds Transform or Animator keyframe accordingly (IMGUIManager.cpp)
+- [ ] Added Animator keyframe editor UI: event type dropdown / param name input / value control / interp mode dropdown (IMGUIManager.cpp)
+- [ ] Marked TransformTween track type as "(Deprecated)" in UI with gray color (IMGUIManager.cpp)
+- [ ] Removed Mute/Solo buttons and trackMuted_/trackSoloed_ member variables (simplification, feature was never implemented) (IMGUIManager.hpp/.cpp)
+- [ ] Removed redundant selectedKeyframeTrackIdx_ state variable, unified to selectedTrackIdx (IMGUIManager.hpp/.cpp)
+- [ ] Refactored Sequencer panel to single-column layout: all content (ruler + track rows) in one ##timelineScroll child window, avoiding parallel child window mouse focus contention (IMGUIManager.cpp)
+- [ ] **BUG (unresolved)**: Track label InvisibleButton hover/click is unreliable in single-column layout. Root cause likely related to Dummy placeholder interaction with InvisibleButton in same window. Needs new session to investigate ImGui item interaction logic
+- [ ] **BUG (unresolved)**: Keyframe vertical alignment with timeline ruler may be inconsistent due to horizontal scroll offset
+
 ## 2026-07-13
 
 - [ ] Fixed Animator Preview being cleared by Sequencer: changed condition from `!seqHasAnimTrack || !seqPlayer_.isPlaying()` to `seqPlayer_.isPlaying() && !seqHasAnimTrack` so Animator panel Preview button is not overwritten every frame (Application.cpp)
@@ -7,7 +45,7 @@
 - [ ] Removed Apply State button: clipName/speed/loop edits now write directly to state machine, no longer trigger `configure()` → `reset()` (IMGUIManager.cpp)
 - [ ] Added Set Active State button: directly switches current state without going through transitions (AnimatorController.hpp/.cpp, IMGUIManager.cpp)
 - [ ] Removed Apply Transition button: all transition properties (toState, fadeDuration, hasExitTime, exitTime, blendCurve, conditions) now write directly to state machine (IMGUIManager.cpp)
-- [ ] Added Root Motion per-state: 3 modes (None / Locked / Follow), configurable root bone, Follow mode applies root delta to entity transform (AnimatorController.hpp/.cpp, SceneManager.hpp, Application.cpp, IMGUIManager.cpp)
+- [ ] Added per-state Root Motion support: 3 modes (None / Locked / Follow), configurable root bone, Follow mode applies root delta to entity transform (AnimatorController.hpp/.cpp, SceneManager.hpp, Application.cpp, IMGUIManager.cpp)
 - [ ] Added parameter name editing and delete button in Parameters section (IMGUIManager.cpp)
 - [ ] Changed Condition param from manual InputText to Combo dropdown with dynamic Op/Threshold per param type (Float: Greater/Less/Equal/NotEqual + DragFloat, Bool: Equal/NotEqual/True/False, Trigger: True/False) (IMGUIManager.cpp)
 - [ ] Added Animator Preview Mode toggle: ON (default) — state machine drives animation; OFF — Sequencer drives animation, Animator panel becomes read-only, `onAnimClipEval` skipped in preview mode (Application.hpp/.cpp, IMGUIManager.cpp)

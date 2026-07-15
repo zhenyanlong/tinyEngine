@@ -67,6 +67,12 @@ public:
         float previewTime = 0.f;     // 预览 clip 的当前时间
         float previewSpeed = 1.f;    // 预览播放速度
 
+        // ── Sequencer AnimatorKeyframe 求值缓存 ──────────────
+        // 当 Sequencer 的 AnimatorKeyframe 轨道求值时，将计算出的 BlendCommand
+        // 缓存于此，供 drawFrame 直接使用，避免与状态机自身的 update(dt) 重复推进。
+        bool hasPendingSequencerBlend = false;
+        AnimatorController::BlendCommand pendingSequencerBlend;
+
         // ── Root Motion 运行时状态 ─────────────────────────────
         glm::vec3 prevRootTranslation{0.f};
         glm::quat prevRootRotation{1.f, 0.f, 0.f, 0.f};

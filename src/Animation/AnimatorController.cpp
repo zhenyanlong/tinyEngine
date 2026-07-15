@@ -227,6 +227,205 @@ AnimatorController::BlendCommand AnimatorController::update(
     return command;
 }
 
+AnimatorController::BlendCommand AnimatorController::computeBlendAtTime(
+    float t, const std::vector<AnimationClip>& clips,
+    const std::vector<AnimatorParam>& paramValues,
+    const std::string& initialState) const
+{
+    BlendCommand command;
+    if (states_.empty()) return command;
+
+    // 确定起始状态
+    std::string curState = initialState.empty() ? defaultState_ : initialState;
+    const AnimatorState* current = findState(curState);
+    if (!current) {
+        // 回退到第一个状态
+        if (states_.empty()) return command;
+        curState = states_.front().name;
+        current = &states_.front();
+    }
+
+    // 构造一份本地参数副本，叠加 paramValues 的覆盖值
+    std::vector<AnimatorParam> localParams = params_;
+    for (const auto& pv : paramValues) {
+        for (auto& lp : localParams) {
+            if (lp.name == pv.name) {
+                lp.value = pv.value;
+                break;
+            }
+        }
+    }
+
+    // 模拟状态机随时间演进，从 0 到 t
+    float stateTime = 0.f;
+    float nextStateTime = 0.f;
+    float blendT = 0.f;
+    float activeFadeDuration = 0.f;
+    BlendCurve activeBlendCurve = BlendCurve::SmoothStep;
+    bool transitioning = false;
+    std::string nextState;
+    bool consumed = false;  // 是否已检查过本轮的过渡条件
+
+    // 逐帧推进（使用较大步进提高性能，但确保不遗漏 exitTime 检测）
+    // 使用 0.05 秒步进，在边界精确到 t
+    constexpr float kStep = 0.05f;
+    float elapsed = 0.f;
+    while (elapsed < t) {
+        const float step = std::min(kStep, t - elapsed);
+        const float safeDt = std::max(step, 0.f);
+        const float previousStateTime = stateTime;
+
+        current = findState(curState);
+        if (!current) break;
+
+        // 推进当前状态时间
+        stateTime += safeDt * std::max(current->speed, 0.f);
+
+        if (transitioning) {
+            const AnimatorState* nextSt = findState(nextState);
+            if (!nextSt) {
+                transitioning = false;
+                nextState.clear();
+                blendT = 0.f;
+            } else {
+                nextStateTime += safeDt * std::max(nextSt->speed, 0.f);
+                blendT = activeFadeDuration <= kFloatEpsilon
+                    ? 1.f
+                    : std::min(1.f, blendT + safeDt / activeFadeDuration);
+
+                if (blendT >= 1.f) {
+                    // 过渡完成
+                    curState = nextState;
+                    stateTime = nextStateTime;
+                    nextState.clear();
+                    nextStateTime = 0.f;
+                    activeFadeDuration = 0.f;
+                    blendT = 0.f;
+                    transitioning = false;
+                    consumed = false;
+                }
+            }
+        }
+
+        // 检查新的过渡（仅在非过渡状态或过渡刚完成时）
+        if (!transitioning && !consumed) {
+            current = findState(curState);
+            if (!current) break;
+
+            const AnimationClip* currentClip = findClip(current->clipName, clips);
+            for (const auto& transition : transitions_) {
+                if (!transition.fromState.empty() && transition.fromState != curState)
+                    continue;
+                if (transition.toState == curState)
+                    continue;
+
+                const AnimatorState* target = findState(transition.toState);
+                if (!target || !findClip(target->clipName, clips))
+                    continue;
+
+                // 检查 exitTime：使用 stateTime 替代 this->stateTime_
+                bool exitOk = true;
+                if (transition.hasExitTime) {
+                    if (!currentClip || currentClip->duration <= kFloatEpsilon) {
+                        exitOk = false;
+                    } else {
+                        const float targetTime = std::clamp(transition.exitTime, 0.f, 1.f)
+                                                  * currentClip->duration;
+                        if (!current->loop) {
+                            exitOk = stateTime >= targetTime;
+                        } else if (targetTime > kFloatEpsilon) {
+                            const float elapsedInner = std::max(0.f, stateTime - previousStateTime);
+                            if (elapsedInner < currentClip->duration) {
+                                const float prevW = std::fmod(std::max(previousStateTime, 0.f), currentClip->duration);
+                                const float curW = std::fmod(std::max(stateTime, 0.f), currentClip->duration);
+                                const bool wrapped = curW < prevW;
+                                exitOk = wrapped
+                                    ? (targetTime > prevW || targetTime <= curW)
+                                    : (prevW < targetTime && curW >= targetTime);
+                            } else {
+                                exitOk = true;
+                            }
+                        } else {
+                            exitOk = true;
+                        }
+                    }
+                }
+
+                if (!exitOk) continue;
+
+                // 检查条件（使用本地参数副本）
+                bool allConditionsMet = true;
+                for (const auto& cond : transition.conditions) {
+                    const AnimatorParam* p = nullptr;
+                    for (const auto& lp : localParams) {
+                        if (lp.name == cond.paramName) { p = &lp; break; }
+                    }
+                    if (!p || !p->checkCondition(cond)) {
+                        allConditionsMet = false;
+                        break;
+                    }
+                }
+                if (!allConditionsMet) continue;
+
+                // 触发过渡
+                nextState = target->name;
+                nextStateTime = 0.f;
+                blendT = 0.f;
+                activeFadeDuration = std::max(transition.fadeDuration, 0.f);
+                activeBlendCurve = transition.blendCurve;
+                transitioning = true;
+
+                // 消费 trigger（在本地参数副本中）
+                for (const auto& cond : transition.conditions) {
+                    for (auto& lp : localParams) {
+                        if (lp.name == cond.paramName && lp.type == AnimatorParam::Type::Trigger) {
+                            lp.value.b = false;
+                            break;
+                        }
+                    }
+                }
+
+                // 零时长过渡
+                if (activeFadeDuration <= kFloatEpsilon) {
+                    curState = nextState;
+                    stateTime = 0.f;
+                    nextState.clear();
+                    nextStateTime = 0.f;
+                    activeFadeDuration = 0.f;
+                    blendT = 0.f;
+                    transitioning = false;
+                }
+                break;
+            }
+            consumed = true;
+        }
+
+        // 如果不在过渡中，下个步进可以继续检查过渡
+        if (!transitioning) consumed = false;
+
+        elapsed += step;
+    }
+
+    // 构建 BlendCommand
+    current = findState(curState);
+    if (!current) return command;
+
+    command.clipA = findClip(current->clipName, clips);
+    command.timeA = sampleTime(*current, command.clipA, stateTime);
+
+    if (transitioning) {
+        const AnimatorState* nextSt = findState(nextState);
+        if (nextSt) {
+            command.clipB = findClip(nextSt->clipName, clips);
+            command.timeB = sampleTime(*nextSt, command.clipB, nextStateTime);
+            const float raw = std::clamp(blendT, 0.f, 1.f);
+            command.blendWeight = applyBlendCurve(raw, activeBlendCurve);
+        }
+    }
+
+    return command;
+}
+
 void AnimatorController::reset() {
     currentState_ = defaultState_;
     nextState_.clear();

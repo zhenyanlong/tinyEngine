@@ -926,7 +926,10 @@ void SceneManager::setEntityAnimationData(uint64_t entityId,
     if (auto* e = getModelEntity(entityId)) {
         e->skeleton = std::move(skeleton);
         e->animationClips = std::move(clips);
-        e->animatorController.configureFromClips(e->animationClips);
+        // 仅当实体没有已绑定的 AnimatorController 时才创建默认状态机。
+        // 若实体已从 .scene.json 恢复了 controller，则保留现有 Controller 不覆盖。
+        if (e->animatorControllerPath.empty())
+            e->animatorController.configureFromClips(e->animationClips);
     }
 }
 
