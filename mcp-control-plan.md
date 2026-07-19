@@ -4,6 +4,42 @@
 
 ---
 
+## 2026-07-18 一晚 MVP 状态
+
+**本轮范围：** 实现可稳定闭环的只读/生命周期基础，以及“当前窗口最终帧 → PNG → MCP 图片内容块”的截图 MVP；不包含资产修改、动画控制、自动启动引擎和基线图像比对。
+
+### Codex 已完成
+
+- [x] 加固 `CommandBridge` 与跨平台 `IpcServer`，修复 Windows 64 位 socket 句柄和停止阻塞风险。
+- [x] 打通 `TCP → CommandBridge → 主线程 handler → TCP response`。
+- [x] 实现 `ping`、`engine.status`、`engine.shutdown`、`scene.snapshot`。
+- [x] `scene.snapshot` 返回实体、Box、相机、动画 clip 和 Animator 运行状态。
+- [x] 创建 Python FastMCP stdio Server，固定官方 SDK `mcp>=1.27,<2`。
+- [x] 创建线程安全 `IpcClient`、结构化错误透传和 `mcp_server.smoke`。
+- [x] Python 6 项测试通过：3 项 IPC 单元测试 + 2 项截图安全/内容测试 + 1 项官方 MCP stdio 工具发现测试。
+- [x] `x64-debug` 构建通过。
+- [x] 真实引擎闭环通过：读取 6 个实体的快照并通过 MCP 请求优雅关闭进程。
+- [x] 实现 `FrameCapture`：读取含 ImGui 的 Swapchain 最终帧，完成 Vulkan layout transition、GPU→CPU 回读、BGRA→RGBA 与 PNG 编码。
+- [x] 实现异步 `capture.frame` / `capture.get` 作业协议，以及直接返回 `ImageContent` 的 `tiny_capture_frame` MCP 工具。
+- [x] 路径限制在 `res/bin/verify/captures/`，Python 侧再次校验真实路径、PNG 后缀与 16 MiB 上限。
+- [x] 真实截图验收通过：1280×720、424,384 bytes，颜色/方向/ImGui 覆盖层均正确，MCP 返回 `image/png`。
+
+### 用户需要手动完成
+
+- [x] 项目级 `.codex/config.toml` 已写入 tinyEngine stdio MCP Server 配置。
+- [ ] 重载 Codex，让当前任务的 MCP 工具清单发现新增的 `tiny_capture_frame`；若项目配置出现信任提示，确认信任当前 tinyEngine 仓库。
+- [ ] 若 Windows 首次弹出防火墙提示，只允许本机/专用网络访问。
+- [x] 已用可见窗口启动引擎，并通过实际截图确认编辑器最终画面正常。
+
+### 明确延期
+
+- 自动 launch/attach 和场景路径启动参数；
+- M2 写操作、M3 动画控制、M4 基线图像比对与断言；
+- 真正 headless Vulkan、批量验证套件与 CI；
+- Pillow/NumPy 依赖仅在 M4 图像验证开始时加入。
+
+---
+
 ## 整体架构概览
 
 ```
@@ -120,10 +156,10 @@ private:
 
 **具体任务：**
 
-- [ ] **M0A-1** 新建 `src/Mcp/` 目录与 `CommandBridge.hpp` / `.cpp`，定义上述结构
-- [ ] **M0A-2** 实现 `dispatch`：构造 `McpCommand` + `promise`，加锁入队，`cv_.notify_one()`，`future.wait(timeout)`；超时返回 `{"error":"timeout","method":...}`
-- [ ] **M0A-3** 实现 `drainQueue`：主线程加锁取出全部命令（交换 `queue_` 到局部），**无锁**逐个调用 `handlers_[method](params)`，`promise->set_value(result)`；handler 抛异常时 `set_value({"error":...})`
-- [ ] **M0A-4** 在 `Application::gameLoop()` 中，`processInput()` 之后、`drawFrame()` 之前调用 `CommandBridge::instance().drainQueue()`（仅 `enabled_` 时）
+- [x] **M0A-1** 新建 `src/Mcp/` 目录与 `CommandBridge.hpp` / `.cpp`，定义上述结构
+- [x] **M0A-2** 实现 `dispatch`：构造 `McpCommand` + `promise`，加锁入队，`cv_.notify_one()`，`future.wait(timeout)`；超时返回 `{"error":"timeout","method":...}`
+- [x] **M0A-3** 实现 `drainQueue`：主线程加锁取出全部命令（交换 `queue_` 到局部），**无锁**逐个调用 `handlers_[method](params)`，`promise->set_value(result)`；handler 抛异常时 `set_value({"error":...})`
+- [x] **M0A-4** 在 `Application::gameLoop()` 中调用 `CommandBridge::instance().drainQueue()`（仅 `enabled_` 时）
 - [ ] **M0A-5** 在 `Application::initVulkan()` 末尾，若命令行含 `--mcp` 或 `--verify`，调用 `setEnabled(true)` 并注册 M2-M4 的全部 handler
 - [ ] **M0A-6** 命令行解析：`mainWindows.cpp` 支持 `--mcp [--port N] [--headless-frames N] [--scene path] [--exit-after N]`
 
@@ -147,11 +183,11 @@ private:
 
 **具体任务：**
 
-- [ ] **M0B-1** 新建 `IpcServer.hpp` / `.cpp`，封装一个监听 socket + 接收线程池（单连接即可，MCP 场景下同时只有一个 agent）
-- [ ] **M0B-2** 接收线程：按 `\n` 累积解析一行 JSON → `CommandBridge::dispatch(...)` 阻塞等结果 → 写回一行 JSON 响应
-- [ ] **M0B-3** 大响应分片：截图等结果可能很大（PNG base64）。约定单条响应上限 16MB；超出时写入临时文件并返回 `{"result":{"file":"<abs path>"}}`，由 MCP Server 读取后删除
-- [ ] **M0B-4** 连接生命周期：客户端断开时不关闭引擎；支持重连。引擎退出时 `IpcServer::stop()` 优雅关闭 socket
-- [ ] **M0B-5** 在 `Application` 中新增 `std::unique_ptr<IpcServer> ipc_`，`enabled_` 时于 `initVulkan` 末尾 `start()`，`cleanUp()` 中 `stop()`
+- [x] **M0B-1** 新建 `IpcServer.hpp` / `.cpp`，封装一个监听 socket + 接收线程（单连接即可，MCP 场景下同时只有一个 agent）
+- [x] **M0B-2** 接收线程：按 `\n` 累积解析一行 JSON → `CommandBridge::dispatch(...)` 阻塞等结果 → 写回一行 JSON 响应
+- [x] **M0B-3** 大响应旁路：引擎只通过 IPC 返回限定目录内的 PNG 文件路径和元数据；MCP Server 校验路径/大小后读取并编码为 `ImageContent`，不把 base64 塞进 C++ TCP 响应
+- [x] **M0B-4** 连接生命周期：客户端断开时不关闭引擎；支持重连。引擎退出时 `IpcServer::stop()` 优雅关闭 socket
+- [x] **M0B-5** 在 `Application` 中新增 `std::unique_ptr<IpcServer> ipc_`，`enabled_` 时于 `initVulkan` 末尾 `start()`，`cleanUp()` 中 `stop()`
 
 **验收标准：** 用 `nc` 或 Python `socket` 连上 9527，发送 `ping` 请求得到正确响应；强制断开后再连，引擎仍可响应。
 
@@ -199,9 +235,9 @@ struct SceneSnapshot {
 
 **具体任务：**
 
-- [ ] **M0C-1** 新建 `SceneSnapshot.hpp` / `.cpp`，实现 `toJson()`（glm 类型序列化为数组）
-- [ ] **M0C-2** 实现 `SceneSnapshot::capture(const Application&)`：遍历 `sceneMgr_.getModelEntities()` + `boxes_` + `camera_`，从 `ModelEntity` 读取 Transform/材质/AnimatorController 状态
-- [ ] **M0C-3** 注册 handler `scene.snapshot` → 返回完整快照 JSON
+- [x] **M0C-1** 新建 `SceneSnapshot.hpp` / `.cpp`，实现 JSON 捕获（glm 类型序列化为数组）
+- [x] **M0C-2** 实现 `SceneSnapshot::capture(...)`：遍历模型实体、Box 和相机，读取 Transform、材质、clip 与 AnimatorController 状态
+- [x] **M0C-3** 注册 handler `scene.snapshot` → 返回完整快照 JSON
 - [ ] **M0C-4** 注册 handler `scene.getEntity`（params: `entityId`）→ 返回单个实体快照
 - [ ] **M0C-5** 注册 handler `scene.listAssets`（params: `subFolder?`, `typeFilter?`）→ 返回 `ModelRegistry` 扫描结果
 
@@ -211,40 +247,20 @@ struct SceneSnapshot {
 
 ### M0D. 帧捕获与 GPU 回读（FrameCapture）
 
-**目标：** 以**确定性分辨率**捕获当前帧为 PNG / 原始像素，供截图比对验证。复用 `ThumbnailRenderer` 的离屏渲染基础设施，但渲染**当前场景的当前相机视角**，而非缩略图相机。
+**MVP 目标：** 捕获当前窗口分辨率下已经完成主场景和 ImGui 绘制的 Swapchain 最终帧，并以 PNG / MCP 图片内容块返回。自定义确定性分辨率与离屏基线比对保留到 M4。
 
 **新建文件：** `src/Mcp/FrameCapture.hpp` / `src/Mcp/FrameCapture.cpp`
 
-**数据结构：**
-
-```cpp
-class FrameCapture {
-public:
-    void init(VulkanContext& ctx, RenderPassManager& rp, VkFormat colorFormat);
-
-    // 以指定分辨率离屏渲染当前场景（主相机视角），读回像素
-    // width/height 固定后管线/帧缓冲只创建一次，后续复用
-    struct CaptureResult {
-        std::vector<uint8_t> rgba;   // width*height*4
-        int width, height;
-    };
-    CaptureResult capture(Application& app, uint32_t width, uint32_t height);
-
-    // 保存为 PNG（用 stb_image_write）
-    bool savePng(const CaptureResult& r, const std::string& path);
-};
-```
-
 **具体任务：**
 
-- [ ] **M0D-1** 新建 `FrameCapture.hpp` / `.cpp`，内部维护独立的 offscreen color image + depth image + framebuffer + command buffer（参考 `ThumbnailRenderer`）
-- [ ] **M0D-2** 实现 `capture`：复用主渲染管线的 command 录制逻辑（抽取出 `Application::recordSceneInto(cb, imageIndex, framebuffer, extent, cameraOverride)` 公共方法，主渲染与 FrameCapture 共用），渲染到 offscreen image，`vkCmdCopyImageToBuffer` 回读
-- [ ] **M0D-3** 注册 handler `capture.frame`（params: `width`, `height`, `path?`）→ 渲染并保存 PNG 到 `path`（缺省 `res/bin/verify/captures/<ts>.png`），返回 `{file, width, height, sha256}`
+- [x] **M0D-1** 新建 `FrameCapture.hpp` / `.cpp`，维护可随 Swapchain 重建的 host-visible staging buffer 与单任务状态机（pending/submitted/ready/failed）
+- [x] **M0D-2** 在主 RenderPass（含 ImGui）结束后执行 `PRESENT_SRC → TRANSFER_SRC → PRESENT_SRC`，用 `vkCmdCopyImageToBuffer` 回读，并处理 BGRA/RGBA 格式与 PNG 编码
+- [x] **M0D-3** 注册 `capture.frame` / `capture.get` 异步 handler；输出到 `res/bin/verify/captures/`，并由 `tiny_capture_frame(timeout_seconds)` 返回 MCP `ImageContent` + 元数据
 - [ ] **M0D-4** 注册 handler `capture.pick`（params: `x`, `y`）→ 调用 `PickSystem::runPick` 在屏幕坐标处拾取，返回 `{entityId, pickedBoxId}`
 - [ ] **M0D-5** 注册 handler `capture.sampleRect`（params: `x,y,w,h`）→ 回读指定矩形像素，返回 `{avgColor:[r,g,b,a], maxColor, pixelCount}`（用于验证清屏色/材质基色）
 - [ ] **M0D-6** 关键重构：把 `Application::recordCommandBuffer` 中"主模型 + Box + 拾取"的录制逻辑提取为 `recordSceneInto(...)`，使其可面向任意 framebuffer/extent，避免与 swapchain 耦合
 
-**验收标准：** `capture.frame` 生成 512×512 PNG，文件可被 `stbi_load` 读回且尺寸正确；`capture.pick` 在已知模型位置点击返回正确 entityId；`capture.sampleRect` 对纯清屏色场景返回的 avgColor 与清屏色一致（容差 ±2）。
+**MVP 验收结果：** 已由真实引擎生成 1280×720 PNG，直接返回 `image/png` 内容块；画面方向、颜色、主场景和 ImGui 均正确。后续验收仍包括自定义 512×512 离屏捕获、`capture.pick` 与 `capture.sampleRect`。
 
 ---
 
@@ -278,10 +294,10 @@ mcp_server/
 
 **具体任务：**
 
-- [ ] **M1A-1** 新建 `mcp_server/` 目录与 `pyproject.toml`（依赖 `mcp`、`pillow`、`numpy`）
-- [ ] **M1A-2** 实现 `ipc_client.py`：`IpcClient` 类，`connect(host, port)`、`call(method, params, timeout)` 同步返回 result 或抛 `IpcError`；自动管理递增 id
-- [ ] **M1A-3** 实现 `server.py`：用 `mcp` SDK 创建 server，`@mcp.tool()` 装饰器逐个注册工具，工具内部调用 `ipc_client.call(...)`
-- [ ] **M1A-4** 工具错误模型：IPC `error` → 抛 `ToolError(code, message)`，由 server 转为 MCP 错误响应；超时 → `code="ipc_timeout"`
+- [x] **M1A-1** 新建 `mcp_server/` 目录与 `pyproject.toml`（MVP 仅依赖 `mcp>=1.27,<2`；`pillow`、`numpy` 延至 M4）
+- [x] **M1A-2** 实现 `ipc_client.py`：`IpcClient` 类，`connect()`、`call(method, params, timeout)` 同步返回 result 或抛 `IpcError`；自动管理递增 id
+- [x] **M1A-3** 实现 `server.py`：用官方 MCP SDK 创建 FastMCP stdio server，MVP 注册 5 个工具并映射到 IPC（含 `tiny_capture_frame`）
+- [x] **M1A-4** 工具错误模型：IPC `error` → 抛 `ToolError`；超时保留 `ipc_timeout` 错误码
 - [ ] **M1A-5** 提供 `mcp_server/README.md`（仅在用户要求文档时创建；本计划默认不生成）说明启动方式：`python -m mcp_server.server`
 
 **验收标准：** 在 TRAE/Claude 配置 MCP server 后，agent 能列出全部工具并调用 `ping` 得到 `pong`。
@@ -296,8 +312,8 @@ mcp_server/
 
 - [ ] **M1B-1** 实现 `engine.py`（mcp_server 内）：`EngineProcess` 类，`launch(scene?, headless_frames?)` 以 `--mcp --port N` 启动编译好的 exe；`attach(port)` 连接已运行实例；`shutdown()` 发送 `engine.shutdown` 命令优雅退出，超时则 kill
 - [ ] **M1B-2** 注册工具 `engine.launch`（params: `scenePath?`, `frames?`）、`engine.attach`（params: `port`）、`engine.shutdown`、`engine.status`
-- [ ] **M1B-3** `engine.shutdown` handler：向 `Application` 设置 `shouldExit_ = true`，主循环下一帧退出，返回退出码
-- [ ] **M1B-4** `--exit-after N` 模式：引擎跑满 N 帧后自动退出，用于无头冒烟测试（仍需窗口，见风险章节）
+- [x] **M1B-3** `engine.shutdown` handler：设置延迟关闭请求，当前帧结束后退出并返回 `{accepted:true}`
+- [x] **M1B-4** `--exit-after N` 模式：引擎跑满 N 帧后自动退出，用于窗口模式冒烟测试
 - [ ] **M1B-5** 端口探测：server 启动时尝试连接默认端口，失败则 `launch` 新引擎；提供 `engine.port` 配置项
 
 **验收标准：** agent 调用 `engine.launch` → 引擎启动并加载指定场景 → `engine.status` 返回 `running` → `engine.shutdown` 后进程消失。

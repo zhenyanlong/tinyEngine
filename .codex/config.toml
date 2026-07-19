@@ -1,0 +1,13 @@
+[mcp_servers.tinyengine]
+command = "E:\\Projects\\tinyEngine\\.venv\\Scripts\\python.exe"
+args = ["-m", "mcp_server"]
+cwd = "E:\\Projects\\tinyEngine"
+enabled = true
+required = false
+startup_timeout_sec = 10.0
+tool_timeout_sec = 30.0
+
+[mcp_servers.tinyengine.env]
+TINYENGINE_MCP_HOST = "127.0.0.1"
+TINYENGINE_MCP_PORT = "9527"
+TINYENGINE_MCP_TIMEOUT = "5.0"

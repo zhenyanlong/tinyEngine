@@ -1,5 +1,6 @@
 #pragma once
 #include <nlohmann/json.hpp>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
@@ -34,8 +35,8 @@ public:
     // 注册命令处理函数（method → handler），handler 在主线程执行
     void registerHandler(const std::string& method, Handler h);
 
-    bool enabled() const { return enabled_; }
-    void setEnabled(bool e) { enabled_ = e; }
+    bool enabled() const { return enabled_.load(); }
+    void setEnabled(bool e) { enabled_.store(e); }
 
     // 注册一组内置 handler（ping 等）
     void registerBuiltinHandlers();
@@ -46,7 +47,7 @@ private:
     CommandBridge(const CommandBridge&) = delete;
     CommandBridge& operator=(const CommandBridge&) = delete;
 
-    bool                                       enabled_ = false;
+    std::atomic<bool>                          enabled_{false};
     std::mutex                                 mtx_;
     std::condition_variable                    cv_;
     std::deque<McpCommand>                     queue_;

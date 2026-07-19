@@ -3,6 +3,7 @@
 #include "Animation/AnimationRetargeter.hpp"
 #include "FbxImporter.hpp"
 #include "MaterialAssetLoader.hpp"
+#include "Mcp/SceneSnapshot.hpp"
 #include "SceneSerializer.hpp"
 #include "TinyEngineDebug.hpp"
 #include <imgui.h>
@@ -314,11 +315,22 @@ void Application::initVulkan()
     cmdMgr_.allocateCommandBuffers(ctx_, swapChain_.getImageCount());
     cmdMgr_.createSyncObjects(ctx_, swapChain_.getImageCount());
 
+    frameCapture_.configure(
+        ctx_, swapChain_.supportsTransferSrc(), swapChain_.getImageFormat(),
+        swapChain_.getExtent(),
+        (std::filesystem::path(resRoot) / "bin" / "verify" / "captures").string());
+
     // ── MCP / IPC 初始化 ────────────────────────────────────────────────────
     if (CommandBridge::instance().enabled()) {
         CommandBridge::instance().registerBuiltinHandlers();
+        registerMcpHandlers();
         ipc_ = std::make_unique<IpcServer>();
-        ipc_->start(mcpPort_);
+        if (!ipc_->start(mcpPort_)) {
+            ipc_.reset();
+            CommandBridge::instance().setEnabled(false);
+            throw std::runtime_error("Failed to start MCP IPC server on 127.0.0.1:"
+                                     + std::to_string(mcpPort_));
+        }
         std::cout << "[MCP] IPC Server started on port " << mcpPort_ << "\n";
     }
 }
@@ -339,9 +351,10 @@ void Application::gameLoop()
             CommandBridge::instance().drainQueue();
         }
 
+        ++frameCount_;
+
         // ── exit-after 帧数检查 ──────────────────────────────────────────────
         if (exitAfterFrames_ > 0) {
-            ++frameCount_;
             if (frameCount_ >= exitAfterFrames_) {
                 std::cout << "[MCP] Reached --exit-after " << exitAfterFrames_
                           << " frames, exiting.\n";
@@ -399,6 +412,10 @@ void Application::gameLoop()
         ui_->prepareFrame();
         drawFrame(dt);
 
+        if (mcpShutdownRequested_) {
+            glfwSetWindowShouldClose(window_, GLFW_TRUE);
+        }
+
         if (ui_->refreshVulkanShader()) {
             recreateSwapChain();
         }
@@ -407,6 +424,49 @@ void Application::gameLoop()
 
     ui_->cleanUp();
     cleanUp();
+}
+
+void Application::registerMcpHandlers()
+{
+    auto& bridge = CommandBridge::instance();
+
+    bridge.registerHandler("engine.status", [this](const json&) -> json {
+        return {
+            {"running", true},
+            {"mcpEnabled", true},
+            {"port", mcpPort_},
+            {"frameCount", frameCount_},
+            {"shutdownRequested", mcpShutdownRequested_},
+            {"entityCount", sceneMgr_.getModelEntities().size()},
+            {"boxCount", sceneMgr_.getBoxes().size()}
+        };
+    });
+
+    bridge.registerHandler("engine.shutdown", [this](const json&) -> json {
+        mcpShutdownRequested_ = true;
+        return {{"accepted", true}};
+    });
+
+    bridge.registerHandler("scene.snapshot", [this](const json&) -> json {
+        return SceneSnapshot::capture(sceneMgr_, camera_, pickedBoxEntityId);
+    });
+
+    bridge.registerHandler("capture.frame", [this](const json&) -> json {
+        return frameCapture_.request(frameCount_);
+    });
+
+    bridge.registerHandler("capture.get", [this](const json& params) -> json {
+        if (!params.contains("jobId") || !params["jobId"].is_number_integer()) {
+            return {{"error", {{"code", "invalid_params"},
+                                {"message", "jobId must be a positive integer"}}}};
+        }
+        const auto jobId = params["jobId"].get<int64_t>();
+        if (jobId <= 0) {
+            return {{"error", {{"code", "invalid_params"},
+                                {"message", "jobId must be a positive integer"}}}};
+        }
+        return frameCapture_.query(static_cast<uint64_t>(jobId));
+    });
 }
 
 // ─── Skinned material conversion ──────────────────────────────────────────────
@@ -825,6 +885,13 @@ void Application::drawFrame(float dt)
     pi.pImageIndices      = &imageIndex;
 
     result = vkQueuePresentKHR(ctx_.getPresentQueue(), &pi);
+
+    if (frameCapture_.isSubmitted()) {
+        VkFence captureFence = cmdMgr_.getInFlightFenceVal(currentFrame_);
+        if (vkWaitForFences(ctx_.getDevice(), 1, &captureFence, VK_TRUE, UINT64_MAX) == VK_SUCCESS)
+            frameCapture_.complete(ctx_);
+    }
+
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || framebufferResized_) {
         framebufferResized_ = false;
         recreateSwapChain();
@@ -1133,6 +1200,8 @@ void Application::recordCommandBuffer(VkCommandBuffer cb, uint32_t imageIndex)
     vkCmdEndRenderPass(cb);
     } // Main Render Pass scope
 
+    frameCapture_.record(cb, swapChain_.getImages()[imageIndex], frameCount_);
+
     if (vkEndCommandBuffer(cb) != VK_SUCCESS)
         throw std::runtime_error("Failed to record command buffer!");
 }
@@ -1163,6 +1232,10 @@ void Application::recreateSwapChain()
     swapChain_.destroy(ctx_);
 
     swapChain_.create(ctx_, window_);
+    frameCapture_.configure(
+        ctx_, swapChain_.supportsTransferSrc(), swapChain_.getImageFormat(),
+        swapChain_.getExtent(),
+        (std::filesystem::path(modelRegistry_.getResRoot()) / "bin" / "verify" / "captures").string());
     rpMgr_.create(ctx_, swapChain_);
 
     // Sync camera aspect ratio after swapchain recreate.
@@ -2815,6 +2888,7 @@ void Application::cleanUp()
     }
 
     thumbnailRenderer_.destroy(ctx_, matMgr_, sceneMgr_);
+    frameCapture_.destroy(ctx_);
     pickSys_.destroy(ctx_, cmdMgr_);
     sceneMgr_.destroy(ctx_);
     matMgr_.destroy(ctx_);

@@ -11,7 +11,7 @@ nlohmann::json CommandBridge::dispatch(uint64_t id, const std::string& method,
                                         const nlohmann::json& params,
                                         std::chrono::milliseconds timeout)
 {
-    if (!enabled_) {
+    if (!enabled()) {
         return {
             {"error", {{"code", "bridge_disabled"}, {"message", "CommandBridge is not enabled"}}}
         };
@@ -37,7 +37,7 @@ nlohmann::json CommandBridge::dispatch(uint64_t id, const std::string& method,
 
 void CommandBridge::drainQueue()
 {
-    if (!enabled_) return;
+    if (!enabled()) return;
 
     std::deque<McpCommand> localQueue;
     {

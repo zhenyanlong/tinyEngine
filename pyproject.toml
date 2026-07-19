@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tinyengine-mcp"
+version = "0.1.0"
+description = "MCP server for controlling and inspecting tinyEngine"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.27,<2",
+]
+
+[project.scripts]
+tinyengine-mcp = "mcp_server.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["mcp_server"]

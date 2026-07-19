@@ -10,6 +10,7 @@ public:
     VkSwapchainKHR             getSwapChain()       const { return swapChain_; }
     VkFormat                   getImageFormat()     const { return imageFormat_; }
     VkExtent2D                 getExtent()          const { return extent_; }
+    bool                       supportsTransferSrc() const { return transferSrcSupported_; }
     uint32_t                   getImageCount()      const { return static_cast<uint32_t>(images_.size()); }
     const std::vector<VkImage>&     getImages()     const { return images_; }
     const std::vector<VkImageView>& getImageViews() const { return imageViews_; }
@@ -20,6 +21,7 @@ private:
     std::vector<VkImageView>   imageViews_;
     VkFormat                   imageFormat_{};
     VkExtent2D                 extent_{};
+    bool                       transferSrcSupported_ = false;
 
     void createSwapChain(const VulkanContext& ctx, GLFWwindow* window);
     void createImageViews(const VulkanContext& ctx);

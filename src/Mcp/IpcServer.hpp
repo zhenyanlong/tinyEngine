@@ -1,5 +1,6 @@
 #pragma once
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <thread>
@@ -14,9 +15,15 @@ public:
     bool isRunning() const { return running_; }
 
 private:
-    void serverThreadFunc(int port);
+    using SocketHandle = std::intptr_t;
+    static constexpr SocketHandle kInvalidSocket = static_cast<SocketHandle>(-1);
+
+    void serverThreadFunc();
+    void handleClient(SocketHandle clientSocket);
 
     std::atomic<bool> running_{false};
     std::unique_ptr<std::thread> serverThread_;
-    int listenSocket_ = -1;  // SOCKET on Windows, int on POSIX
+    std::atomic<SocketHandle> listenSocket_{kInvalidSocket};
+    std::atomic<SocketHandle> clientSocket_{kInvalidSocket};
+    bool socketsInitialized_ = false;
 };

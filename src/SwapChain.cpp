@@ -44,7 +44,11 @@ void SwapChain::createSwapChain(const VulkanContext& ctx, GLFWwindow* window)
     ci.imageColorSpace  = surfFmt.colorSpace;
     ci.imageExtent      = ext;
     ci.imageArrayLayers = 1;
-    ci.imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    transferSrcSupported_ =
+        (support.capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+    ci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if (transferSrcSupported_)
+        ci.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 
     QueueFamilyIndices idx = ctx.findQueueFamilies(ctx.getPhysicalDevice());
     uint32_t families[]   = { idx.graphicsFamily.value(), idx.presentFamily.value() };

@@ -21,6 +21,7 @@
 #include "Animation/SequenceAssetLoader.hpp"
 #include "Animation/SequencerCamera.hpp"
 #include "Mcp/CommandBridge.hpp"
+#include "Mcp/FrameCapture.hpp"
 #include "Mcp/IpcServer.hpp"
 #include <glm/glm.hpp>
 #include <unordered_map>
@@ -210,9 +211,11 @@ private:
 
     // ── MCP / IPC state ────────────────────────────────────────────────────────
     std::unique_ptr<IpcServer> ipc_;
+    FrameCapture               frameCapture_;
     int                        mcpPort_ = 9527;
     int                        exitAfterFrames_ = -1;
     int                        frameCount_ = 0;
+    bool                       mcpShutdownRequested_ = false;
 
     bool  firstMouse_       = true;
     bool  rightMouseDown_   = false;
@@ -229,6 +232,7 @@ private:
     void tryPickMainModel(float cx, float cy);
     void tryBeginCameraFocusOnPick();
     void cleanUp();
+    void registerMcpHandlers();
     bool ensureAnimationAssetForMeshAst(const std::string& meshAstRelPath,
                                         const std::string& modelPathOrRel,
                                         bool refreshRegistryAfterWrite,
