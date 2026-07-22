@@ -15,6 +15,16 @@
       "defaultValue": 0.0,
       "name": "float01",
       "type": "Float"
+    },
+    {
+      "defaultValue": false,
+      "name": "NewBool",
+      "type": "Bool"
+    },
+    {
+      "defaultValue": true,
+      "name": "NewTrigger",
+      "type": "Trigger"
     }
   ],
   "states": [
@@ -39,7 +49,7 @@
       "conditions": [
         {
           "op": "True",
-          "param": "trigger01",
+          "param": "NewTrigger",
           "threshold": 0.0
         }
       ],
@@ -55,7 +65,7 @@
         {
           "op": "Greater",
           "param": "float01",
-          "threshold": 0.0
+          "threshold": 1.0
         }
       ],
       "exitTime": 1.0,

@@ -1,0 +1,143 @@
+{
+  "name": "test01Seqad",
+  "totalDuration": 10.0,
+  "tracks": [
+    {
+      "animClips": null,
+      "cameraPathClips": null,
+      "eventClips": null,
+      "name": "Remy",
+      "tweenClips": null,
+      "type": "AnimationClip"
+    },
+    {
+      "animClips": null,
+      "cameraPathClips": null,
+      "eventClips": null,
+      "keyframeTrack": {
+        "keyframes": [
+          {
+            "easeToNext": "Linear",
+            "position": [
+              1.3948853015899658,
+              1.1271312236785889,
+              16.49445343017578
+            ],
+            "rotation": [
+              -0.08173659443855286,
+              0.0,
+              0.9966539740562439,
+              0.0
+            ],
+            "scale": [
+              0.9999982118606567,
+              1.0,
+              0.9999982118606567
+            ],
+            "time": 0.009999999776482582
+          },
+          {
+            "easeToNext": "Linear",
+            "position": [
+              1.3948853015899658,
+              -2.598827362060547,
+              7.954400539398193
+            ],
+            "rotation": [
+              -0.08173659443855286,
+              0.0,
+              0.9966539740562439,
+              0.0
+            ],
+            "scale": [
+              0.9999982118606567,
+              1.0,
+              0.9999982118606567
+            ],
+            "time": 2.0199999809265137
+          },
+          {
+            "easeToNext": "Linear",
+            "position": [
+              2.1009109020233154,
+              -2.598827362060547,
+              2.8672432899475098
+            ],
+            "rotation": [
+              -0.08173659443855286,
+              0.0,
+              0.9966539740562439,
+              0.0
+            ],
+            "scale": [
+              0.9999982118606567,
+              1.0,
+              0.9999982118606567
+            ],
+            "time": 3.0399999618530273
+          },
+          {
+            "easeToNext": "Linear",
+            "position": [
+              3.845215082168579,
+              -2.598827362060547,
+              2.8672432899475098
+            ],
+            "rotation": [
+              0.9974763989448547,
+              0.0,
+              -0.07099872827529907,
+              0.0
+            ],
+            "scale": [
+              0.9999932050704956,
+              1.0,
+              0.9999932050704956
+            ],
+            "time": 3.4800000190734863
+          },
+          {
+            "easeToNext": "Linear",
+            "position": [
+              3.845215082168579,
+              -3.011793375015259,
+              4.659371852874756
+            ],
+            "rotation": [
+              0.9974763989448547,
+              0.0,
+              -0.07099872827529907,
+              0.0
+            ],
+            "scale": [
+              0.9999932050704956,
+              1.0,
+              0.9999932050704956
+            ],
+            "time": 4.0
+          }
+        ],
+        "name": "[T] Remy Transform",
+        "targetEntityId": 1005
+      },
+      "name": "[T] Remy Transform",
+      "tweenClips": null,
+      "type": "TransformKeyframe"
+    },
+    {
+      "animClips": null,
+      "animatorTrack": {
+        "initialState": "",
+        "keyframes": null,
+        "name": "[A] Remy Animator",
+        "targetEntityId": 1005
+      },
+      "cameraPathClips": null,
+      "eventClips": null,
+      "name": "[A] Remy Animator",
+      "tweenClips": null,
+      "type": "AnimatorKeyframe"
+    }
+  ],
+  "version": 1
+}

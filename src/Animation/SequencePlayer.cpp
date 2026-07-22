@@ -16,6 +16,8 @@ void SequencePlayer::load(const Sequence& seq)
 
 void SequencePlayer::setSequenceRef(Sequence& seq)
 {
+    if (seq_ == &seq)
+        return;
     seq_ = &seq;
     firedEventClipHashes_.clear();
 }

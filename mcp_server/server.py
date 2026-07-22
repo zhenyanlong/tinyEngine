@@ -57,6 +57,78 @@ def tiny_scene_snapshot() -> dict[str, Any]:
     return _call("scene.snapshot")
 
 
+@mcp.tool()
+def tiny_asset_list(keyword: str = "", folder: str = "") -> dict[str, Any]:
+    """List registered, placeable model assets; use astRelPath with tiny_model_place."""
+
+    return _call("asset.list", {"keyword": keyword, "folder": folder})
+
+
+def _transform_params(
+    position: list[float] | None,
+    rotation_euler_deg: list[float] | None,
+    rotation_quaternion: list[float] | None,
+    scale: list[float] | None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {}
+    if position is not None:
+        params["position"] = position
+    if rotation_euler_deg is not None:
+        params["rotationEulerDeg"] = rotation_euler_deg
+    if rotation_quaternion is not None:
+        params["rotationQuaternion"] = rotation_quaternion
+    if scale is not None:
+        params["scale"] = scale
+    return params
+
+
+@mcp.tool()
+def tiny_model_place(
+    ast_rel_path: str,
+    position: list[float] | None = None,
+    rotation_euler_deg: list[float] | None = None,
+    rotation_quaternion: list[float] | None = None,
+    scale: list[float] | None = None,
+) -> dict[str, Any]:
+    """Place a registered model asset and return its new entity ID and applied transform.
+
+    Rotations accept either XYZ Euler degrees or an [x, y, z, w] quaternion.
+    """
+
+    params = {"astRelPath": ast_rel_path}
+    params.update(_transform_params(position, rotation_euler_deg, rotation_quaternion, scale))
+    return _call("entity.place", params)
+
+
+@mcp.tool()
+def tiny_model_get_transform(entity_id: int) -> dict[str, Any]:
+    """Return one scene entity's position, quaternion rotation, and scale."""
+
+    return _call("entity.getTransform", {"entityId": entity_id})
+
+
+@mcp.tool()
+def tiny_model_set_transform(
+    entity_id: int,
+    position: list[float] | None = None,
+    rotation_euler_deg: list[float] | None = None,
+    rotation_quaternion: list[float] | None = None,
+    scale: list[float] | None = None,
+) -> dict[str, Any]:
+    """Update any supplied transform components while preserving omitted components."""
+
+    params = {"entityId": entity_id}
+    params.update(_transform_params(position, rotation_euler_deg, rotation_quaternion, scale))
+    return _call("entity.setTransform", params)
+
+
+@mcp.tool()
+def tiny_model_delete(entity_id: int) -> dict[str, Any]:
+    """Delete a model entity from the current scene."""
+
+    return _call("entity.delete", {"entityId": entity_id})
+
+
 def _validated_capture_path(path_value: Any, capture_root: Path | None = None) -> Path:
     """Resolve an engine-produced PNG without allowing paths outside its capture root."""
 
@@ -78,14 +150,17 @@ def _validated_capture_path(path_value: Any, capture_root: Path | None = None) -
 
 
 @mcp.tool()
-async def tiny_capture_frame(timeout_seconds: float = 10.0) -> CallToolResult:
-    """Capture the current tinyEngine window and return the PNG directly as MCP image content."""
+async def tiny_capture_frame(
+    include_ui: bool = True,
+    timeout_seconds: float = 10.0,
+) -> CallToolResult:
+    """Capture tinyEngine and return a PNG, optionally omitting editor UI for one frame."""
 
     if not 0.1 <= timeout_seconds <= 30.0:
         raise ToolError("timeout_seconds must be between 0.1 and 30.0")
 
     started = time.monotonic()
-    created = await asyncio.to_thread(_call, "capture.frame")
+    created = await asyncio.to_thread(_call, "capture.frame", {"includeUi": include_ui})
     if not isinstance(created, dict) or not isinstance(created.get("jobId"), int):
         raise ToolError("tinyEngine returned an invalid capture job")
 
@@ -111,6 +186,7 @@ async def tiny_capture_frame(timeout_seconds: float = 10.0) -> CallToolResult:
         "height": result.get("height"),
         "bytes": path.stat().st_size,
         "capturedFrame": result.get("capturedFrame"),
+        "includeUi": result.get("includeUi", include_ui),
         "elapsedMs": round((time.monotonic() - started) * 1000.0, 2),
         "path": str(path),
     }

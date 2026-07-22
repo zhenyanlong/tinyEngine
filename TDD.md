@@ -1,6 +1,6 @@
 # tinyEngine 技术设计文档
 
-> 最后更新：2026-07-14
+> 最后更新：2026-07-22
 
 ---
 
@@ -9,6 +9,7 @@
 tinyEngine 是一个基于 **Vulkan API** 的 C++20 实时 3D 渲染引擎，定位为教学/实践项目。采用 **ECM（Engine Core Modules）模式** 将 Vulkan 各子系统拆分为独立 Manager 类，由 `Application` 作为顶层调度器统一驱动主循环。
 
 - **语言：** C++20
+- **Agent 适配层：** Python 3.11+、FastMCP / MCP SDK 1.x
 - **图形 API：** Vulkan 1.x（通过 `Vulkan::Vulkan` CMake 包）
 - **构建系统：** CMake 3.8+
 - **窗口系统：** GLFW 3.x
@@ -46,16 +47,21 @@ tinyEngine/
 │   ├── camera.hpp/.cpp            # FPS 自由相机（四元数姿态、平滑聚焦）
 │   ├── vectex.hpp                 # Vertex/InstanceData 结构体 + Vulkan 属性描述
 │   ├── TinyEngineDebug.hpp/.cpp   # RenderDoc + VK_EXT_debug_utils 集成
+│   ├── Mcp/                       # Agent 控制、状态快照与帧捕获
+│   │   ├── CommandBridge.hpp/.cpp # IPC 线程到引擎主线程的命令队列
+│   │   ├── IpcServer.hpp/.cpp     # localhost TCP + NDJSON 请求/响应
+│   │   ├── SceneSnapshot.hpp/.cpp # schema v2 场景/动画/世界包围盒快照
+│   │   └── FrameCapture.hpp/.cpp  # Swapchain 回读、PNG 与可选 UI 捕获
 │   └── Animation/                 # 动画子系统
 │       ├── Skeleton.hpp/.cpp      # Bone / Skeleton 数据结构 + computeFinalMatrices
 │       ├── AnimationClip.hpp/.cpp # AnimChannel / AnimationClip + 关键帧求值
 │       ├── AnimationAssetLoader.hpp/.cpp # Anim .ast + .anim.bin 二进制资产序列化
 │       ├── AnimatorController.hpp/.cpp # 状态、参数、过渡条件与运行时状态机
 │       ├── AnimationRetargeter.hpp/.cpp # 骨骼名称映射 + 动画重定向工具
-│       ├── Sequence.hpp            # SequenceTrack / SequenceClip 数据结构（Phase C1，待实现）
-│       ├── SequencePlayer.hpp/.cpp # Sequence 播放控制器（Phase C2，待实现）
-│       ├── CameraPath.hpp/.cpp     # 相机路径关键帧与插值（Phase C3，待实现）
-│       └── SequenceAssetLoader.hpp/.cpp # .seq.json / .campath.json 序列化（Phase C5，待实现）
+│       ├── Sequence.hpp            # Sequence/Track/Clip 与关键帧轨道数据结构
+│       ├── SequencePlayer.hpp/.cpp # Sequence 播放、seek 与轨道求值调度
+│       ├── CameraPath.hpp/.cpp     # 相机路径关键帧与插值
+│       └── SequenceAssetLoader.hpp/.cpp # .seq.json / .campath.json 序列化
 │
 ├── res/                           # 运行时资源（唯一基准，不再复制到 exe 旁）
 │   ├── content/                   # 新资产描述文件根（.mesh.ast / .material.ast / .anim.ast）
@@ -70,6 +76,12 @@ tinyEngine/
 │   ├── icons/                     # UI 图标（model.png 占位符）
 │   ├── textures/                  # 旧纹理（兼容保留）
 │   └── thumbnails/                # 模型缩略图 PNG
+│
+├── mcp_server/                    # Python FastMCP stdio 适配层
+│   ├── server.py                  # 10 个 tinyEngine MCP 工具
+│   ├── ipc_client.py              # 线程安全 TCP 客户端与错误透传
+│   ├── mcp_smoke.py               # MCP stdio 冒烟入口
+│   └── tests/                     # IPC、工具发现、截图与场景工具测试
 │
 ├── thirdParty/                    # 第三方库（Git Submodule / 直接包含）
 │   ├── glfw/                      # GLFW3 窗口库
@@ -99,9 +111,10 @@ tinyEngine/
 ```
 main() → Application::run()
   ├── initGLFW()           # 创建窗口，注册回调
-  └── initVulkan()         # 初始化所有 Manager + 加载默认模型 + 收缩略图 + 扫描资产
-        │                    （末尾可选调用 ThumbnailRenderer::generateAll + assetRegistry_.scan()）
+  └── initVulkan()         # 初始化所有 Manager + 加载场景 + 缩略图 + 资产扫描 + 可选 MCP
+        │                    （末尾可选调用 ThumbnailRenderer::generateAll + modelRegistry_.scan()）
         └── gameLoop()
+        ├── CommandBridge::drainQueue() # --mcp 时在主线程执行 Agent 命令
         ├── glfwPollEvents()
         ├── processInput()        # WASD / QE 相机移动
         ├── camera_.UpdataCameraPosition(dt)
@@ -114,8 +127,9 @@ main() → Application::run()
         │     │     ├── Main Model (submesh loop, bind desc set per material)
         │     │     ├── Box Instances (instanced draw)
         │     │     ├── Pick pass (GPU pick)
-        │     │     └── ImGui_ImplVulkan_RenderDrawData
+        │     │     ├── ImGui_ImplVulkan_RenderDrawData（截图可逐帧跳过）
         │     │     └── vkEndRenderPass
+        │     │     └── FrameCapture::record() # 按需回读最终 Swapchain 图像
         │     └── vkQueueSubmit + vkQueuePresentKHR
         └── currentFrame_ = (currentFrame_ + 1) % MAX_FRAMES_IN_FLIGHT
 ```
@@ -137,9 +151,11 @@ descMgr_.create(ctx_, swapChain_, ...)      # 11. 描述符管理器
 ui_->initIMGUI()                            # 12. ImGui 后端
 pickSys_.create(ctx_, cmdMgr_)              # 13. 拾取系统
 thumbRenderer_.generateAll(resRoot)         # 14. 离屏缩略图（可选，模型导入后触发）
-// assetRegistry_.scan(resRoot)             # 15. 资产注册扫描（Phase D1，待实现）
-cmdMgr_.allocateCommandBuffers(...)         # 16. 分配绘制命令缓冲
-cmdMgr_.createSyncObjects(...)              # 17. 同步原语
+modelRegistry_.scan(resRoot)                 # 15. 递归扫描 content/**/*.ast
+frameCapture_.configure(...)                # 16. 配置截图回读缓冲与输出目录
+registerMcpHandlers(); ipc_->start(port)     # 17. --mcp 时注册并启动 localhost IPC
+cmdMgr_.allocateCommandBuffers(...)         # 18. 分配绘制命令缓冲
+cmdMgr_.createSyncObjects(...)               # 19. 同步原语
 ```
 
 ---
@@ -260,6 +276,8 @@ GPU 缓冲创建/销毁/拷贝的统一入口。提供：
 
 **纹理热替换：** Properties 面板可修改 Mesh 与 Material 类型的 Albedo/Normal。相对路径基于 `MaterialAssetLoader` 配置的绝对 `res/` 根解析；新纹理成功创建后才销毁旧纹理并重写 DescriptorSet，失败时保留原材质并在 UI/控制台反馈。
 
+**独立蒙皮绑定（2026-07-22）：** 材质纹理/参数仍按 `MaterialId` 共享，但骨骼 UBO 与蒙皮 DescriptorSet 已拆分为运行时 `SkinBinding`。`ModelEntity` 为无 submesh 模型保存一个 `skinBindingId`，为多 primitive 模型按 submesh 保存 `subMeshSkinBindings[]`；绑定键包含实体、材质与 `skinIndex`，因此同材质的两个眼球或重复放置的同一角色不再互相覆盖 bone palette。主视口、PiP 和 GPU Pick 均按各 draw range 绑定对应 SkinBinding，实体删除、场景重载和 MaterialManager 销毁时统一释放资源。
+
 ### 4.11 SceneManager（SceneManager.hpp）
 
 场景管理，当前支持：
@@ -269,6 +287,7 @@ GPU 缓冲创建/销毁/拷贝的统一入口。提供：
 - **glTF 皮肤/动画解析**：加载带骨骼的 glTF 时自动解析 `cgltf_skin` → `Skeleton`，`cgltf_animation` → `AnimationClip`
 - **FBX 导入适配**：`FbxImporter` 将 ufbx 场景转换为统一的 Vertex/SubMesh/Material/Skeleton/AnimationClip 数据
 - **每实体 Animator**：`ModelEntity` 独立持有 `Skeleton`、`AnimationClip[]` 和 `AnimatorController`，不同动画实体互不覆盖运行时状态
+- **稳定实体身份**：模型与 Camera Actor 共用 `SceneManager::allocateEntityId()`；场景可恢复持久化 `entityId`，新实体从当前最大 ID 后继续分配并拒绝重复 ID
 - **glTF 材质预生成**：`dumpGltfMaterialAst()` 公开静态方法，将 glTF primitive 材质导出为 `.ast`。供 `Application::importModel` 在导入时调用；`loadModelFromGltf` 检测 `.ast` 已存在则跳过重复生成
 
 **拖拽放置系统（dragPlace）：**
@@ -486,17 +505,17 @@ Phase C 提供时间轴驱动的多轨道动画系统，支持骨骼动画片段
 
 **C1 — SequenceTrack / SequenceClip 数据结构（`src/Animation/Sequence.hpp`）**
 - `SequenceClipBase`：所有片段基类（startTime / duration）
-- `TrackType` 枚举：AnimationClip / CameraPath / TransformTween / TransformKeyframe / Event
-- 各 Clip 派生类型：`AnimTrackClip`（clipName / clipOffset / playSpeed）、`CameraPathClip`（pathAssetPath）、`TransformTweenClip`（start/end TRS + ease）、`EventClip`（eventName）
-- `SequenceTrack`：name、type、每条轨道存同类型片段的 vector + `keyframeTrack`（新版关键帧轨道）
+- `TrackType` 枚举：AnimationClip / CameraPath / TransformTween / TransformKeyframe / AnimatorKeyframe / Event
+- 各 Clip 派生类型：`AnimTrackClip`（clipName / clipOffset / playSpeed）、`CameraPathClip`（pathAssetPath）、`TransformTweenClip`（start/end TRS + ease）、`EventClip`（完整 `AnimatorEvent`）
+- `SequenceTrack`：name、type、每条轨道存同类型片段的 vector + `keyframeTrack` / `animatorTrack`
 - `Sequence`：name、tracks、totalDuration
 
 **C2 — SequencePlayer 播放控制器（`src/Animation/SequencePlayer.hpp/.cpp`）**
 - play / pause / stop / seek 接口
-- `setSequenceRef(Sequence& seq)`：引用外部 Sequence（不拷贝），使 UI 修改实时生效
+- `setSequenceRef(Sequence& seq)`：引用外部 Sequence（不拷贝），使 UI 修改实时生效；仅在引用对象实际变化时清空事件去重集合，避免每帧调用导致事件重复触发
 - `update(dt, FrameCallbacks)`：按 ticks 逐帧推进，遍历各 track 的 clip 判断当前时间是否在区间内
 - `FrameCallbacks` 通过 lambda 连接相机路径求值、动画 clip 求值、变换更新、关键帧求值、事件触发
-- Event clip 首次进入时通过 `firedEvents_` 去重
+- Event clip 首次进入时通过事件哈希集合去重
 - Sequencer 播放期间屏蔽右键拖拽（camera track 存在时）
 - `totalDur <= 0` 但有关键帧轨道时，仍执行关键帧求值（支持空序列预览）
 
@@ -510,7 +529,7 @@ Phase C 提供时间轴驱动的多轨道动画系统，支持骨骼动画片段
 - TransformTween（旧版，已废弃）：对场景对象做 start→end TRS 关键帧补间。UI 中标记为 "(Deprecated)"
 - TransformKeyframe（新版）：
   - `TransformKeyframe`：time / position / rotation / scale / easeToNext
-  - `TransformKeyframeTrack`：name / targetEntityId / keyframes[] + `evaluate(t)` 求值
+  - `TransformKeyframeTrack`：name / targetEntityId / targetAstRelPath / targetDisplayName / keyframes[] + `evaluate(t)` 求值
   - `evaluate(t)` 自动查找前后关键帧，按 `easeToNext` 插值混合
   - 支持 7 种混合模式：Linear / SmoothStep / EaseIn / EaseOut / EaseInOut / Cubic / Exponential
   - `applyEaseCurve(t, ease)` 通用曲线求值函数
@@ -521,7 +540,7 @@ Phase C 提供时间轴驱动的多轨道动画系统，支持骨骼动画片段
 - `AnimatorParamEvent`：单个参数变更事件（type / paramName / floatValue / intValue / boolValue / interp）
 - `AnimatorKeyframe`：某一时刻触发的所有参数变更（time + events 列表）
 - `AnimatorKeyframeTrack`：绑定实体的 AnimatorController 轨道
-  - `targetEntityId` / `initialState`（初始状态名）/ `keyframes[]`
+  - `targetEntityId` / `targetAstRelPath` / `targetDisplayName` / `initialState`（初始状态名）/ `keyframes[]`
   - `evaluate(t)` 从 t=0 累积应用所有事件，SetFloat/SetInt 支持插值，SetBool/SetTrigger 跳变
   - 返回 `EvalResult`（initialState + 最终参数值 + evalTime）
 - `EventClip` 扩展：从 `eventName` 字符串改为完整 `AnimatorEvent` 结构体，支持所有事件类型
@@ -533,11 +552,13 @@ Phase C 提供时间轴驱动的多轨道动画系统，支持骨骼动画片段
 **C5 — 序列化（`src/Animation/SequenceAssetLoader.hpp/.cpp`）**
 - `.seq.json`：Sequence 完整保存（tracks / clips / keyframeTrack / 所有参数）
 - `.campath.json`：CameraPath 单独保存（keyframes / interpolation）
-- TransformKeyframeTrack 完整 JSON 读写，加载后按 time 排序
+- TransformKeyframeTrack / AnimatorKeyframeTrack 完整 JSON 读写，包含稳定目标元数据，加载后按 time 排序
+- `Application::loadSequenceAsset()` 使用临时对象解析，失败时保留当前编辑中的 Sequence，成功后才原子替换
 - nlohmann/json 实现
 
 **C6 — ImGui Sequencer 编辑器面板（`src/IMGUIManager.cpp::drawSequencerPanel`）**
 - 顶部工具栏：Play / Pause / Stop、Loop 勾选、Zoom 缩放、序列时长编辑（Dur）、Load/Save .seq.json
+- Load 弹窗递归扫描 `res/sequences/**/*.seq.json`，支持搜索、刷新、单选、双击加载，并显示时长、轨道数和无效资产错误
 - 双列布局（2026-07-15 重构）：左标签列（`##seqLabels`，无水平滚动）+ 右时间线列（`##seqTimeline`，水平滚动+垂直滚动主控），两列通过 `seqTimelineScrollY_` 垂直滚动同步
 - 左列轨道标签用 `ImGui::Selectable` 提供可靠 hover/click，不再混用 InvisibleButton+Dummy；两列行 Y 均通过独立累加 `rowCursorY` 推进，绕过 ImGui ItemSpacing，确保任意轨道数量下左右像素对齐
 - `isParentTrack` 判定的根因修复（2026-07-15）：父轨道不能仅凭"内容数组为空"判断，须排除以 `[T]`/`[A]` 前缀的子轨道（`empty && !isSubTrack`）
@@ -553,17 +574,21 @@ Phase C 提供时间轴驱动的多轨道动画系统，支持骨骼动画片段
 - EventClip 编辑器支持完整 AnimatorEvent（SetFloat/SetInt/SetBool/SetTrigger）
 - TransformTween 轨道类型在 UI 中标记为 "(Deprecated)"，颜色改为灰色
 - 已移除 Mute/Solo 按钮（功能未实现，简化代码）
+- Sequence 加载后按“现有持久化 ID → 唯一 astRelPath/displayName → 旧 `[T]/[A]` 轨道名称”顺序恢复目标；无法唯一匹配时弹出 `Rebind Sequence Tracks` 手动绑定，未绑定轨道以红色 `Target Missing` 标记
 
 **已知 Bug（待新会话修复）**：
 - **Animator Panel 入口不直观**：绑定 Controller 的入口隐藏在 Animator 面板内部的资产列表 Selectable 中，需要在 `tinyEngineOperationWindow` 先勾选 "Animator" 打开面板，再在左侧侧边栏的 "Animator Controllers" 区点击资产项。没有独立的"绑定"或"加载"按钮。
 
-**已修复的 Bug（2026-07-15）：**
+**已修复的 Bug（2026-07-15～2026-07-22）：**
 - **场景加载后 AnimatorController 绑定失效**：`SceneManager::setEntityAnimationData()` 增加 `animatorControllerPath` 守卫条件，仅当实体没有已绑定的 Controller 路径时才调用 `configureFromClips()` 创建默认状态机，避免覆盖从 `.scene.json` 恢复的 Controller。
 - **AnimatorKeyframe 轨道 seek 预览时状态过渡不生效**：`onAnimatorKeyframeEval` 直接调用 `AnimatorController::update(t)` 以大步进推进状态机，导致 exitTime 检测窗口跳过、trigger 消费状态与内部状态耦合。重构为 `computeBlendAtTime()` 纯函数，以 0.05s 步进逐帧模拟，使用本地参数副本，不修改状态机内部状态。
+- **程序重启后 Sequence 关键帧无法驱动原模型**：旧轨道仅保存进程内 `targetEntityId`，而实体 ID 在重启后重新分配。场景现持久化 ID，轨道同时保存资产路径与显示名；旧 Sequence 可通过轨道名称自动迁移，歧义情况交由手动重绑定弹窗处理。
+- **多 Transform 轨道单次预览只有第一条生效**：`sequencerPreviewPending_` 不再由第一条 Transform callback 提前清除，而是在本帧全部轨道求值完成后统一清除。
+- **EventClip 去重状态每帧被重置**：`SequencePlayer::setSequenceRef()` 仅在 Sequence 引用变化时清空事件哈希。
 
 **实时预览机制**：
 - Application 维护 `sequencerPreviewPending_` 标志
-- `requestSequencerPreview()` 设置标志，下一帧 `onTransformKeyframeEval` 执行一次后清除
+- `requestSequencerPreview()` 设置标志，下一帧所有 Transform 轨道完成求值后统一清除
 - 非播放状态下不持续覆盖实体 Transform，允许用户通过 Gizmo 自由调整
 - 播放状态下持续驱动 Transform 更新
 
@@ -637,7 +662,9 @@ struct MaterialAssetDesc {
   "version": 1,
   "entities": [
     {
+      "entityId": 1002,
       "astRelPath": "materials/viking_room.ast",
+      "displayName": "Viking Room",
       "position": [0, 0, 0],
       "rotation": [0, 0, 0, 1],
       "scale": [1, 1, 1],
@@ -667,7 +694,7 @@ struct MaterialAssetDesc {
 
 **subMaterialOverrides 机制：** 对于含 `subMaterials` 数组的入口 `.ast`，保存时对比每个槽位当前材质与该槽位 `.ast` 参考值的差异，写入 `subMaterialOverrides` 数组（含 `slot`、`astRelPath`、可选的 `override`）。加载时先逐槽位加载子材质，再叠加各槽位的 `override`。
 
-**兼容性：** load 时优先读 `astRelPath`，回退 `displayName`（扫描 `res/models/`）；优先读 `orientation` 四元数，回退 `pitch/yaw`。
+**兼容性：** `entityId` 与并存的 `displayName` 均为可选字段，旧 v1 场景仍可加载；load 时优先读 `astRelPath`，回退 `displayName`（扫描 `res/models/`）；优先读 `orientation` 四元数，回退 `pitch/yaw`。保存后的新场景会固定实体 ID，为 Sequence 轨道提供跨进程稳定身份。
 
 | 关键方法 | 说明 |
 |---|---|
@@ -858,12 +885,14 @@ struct PushConstants {
 ## 9. 相机系统（Camera）
 
 - **姿态表示：** 四元数（`orientation_`），由独立累积的 `pitchAccum_` / `yawAccum_` 合成
-- **视角移动：** 右键拖拽旋转，WASD 移动，Q/E 升降，鼠标滚轮调整速度
+- **视角移动：** 右键拖拽旋转，yaw 始终绕世界 `WorldUp`；WASD 移动，Q/E 沿世界 `WorldUp` 升降，鼠标滚轮调整速度
+- **输入互斥：** ImGui 捕获键盘/鼠标时清零移动输入并跳过视角操作，避免编辑 UI 时相机误移动
 - **速度机制：** `SPEED` 基数 × deltaTime → 帧率无关
 - **平滑聚焦（SmoothFocus）：** 选择物体后相机平滑移动到目标前方
 - **View 矩阵：** 从 `worldTransform_`（Camera-to-World 矩阵） 取逆
 - **场景持久化：** `GetOrientation()` 返回四元数，`SetOrientation(quat)` 直接设置四元数姿态并回解 pitch/yaw，确保 round-trip 无精度损失
 - **ImGuizmo 操作：** 键盘 1/2/3 分别切换平移（TRANSLATE）、旋转（ROTATE）、缩放（SCALE）Gizmo 模式，由 `processInput()` 驱动 `UIManager::gizmoOperation_`
+- **New Camera：** 新 Camera Actor 直接复制当前主摄像机的世界位置与四元数朝向，不再在视线前方附加固定距离
 
 ---
 
@@ -974,11 +1003,11 @@ TINYOBJLOADER_IMPLEMENTATION # tinyobjloader 实现编译
 | 共享 GPU buffer 缓存 | 已完成 | SceneManager.modelResourceCache_ 共享 vertex/index buffer + animation state，重复拖拽不暴涨 |
 | 动画状态机 | 已完成（Phase B1-B5 + B5-7/8/9） | 参数/状态/过渡/Trigger/exit time + 逐骨骼 TRS cross-fade（B1-B2）；BlendCurve ease 曲线（B3）；.animctrl.json 序列化、兼容资产筛选与新建/保存（B4）；ImGui 动画总控面板 + 拖拽创建 state + 预览/重命名 + 事件驱动系统（B5）；实时编辑优化：去掉了 Apply State/Transition 按钮，属性直接写入状态机，Condition 从手打改为带类型感知的下拉选择（B5-7）；Root Motion 支持：per-state 三种模式（None/Locked/Follow），根骨骼可配置（B5-8）；Animator Preview Mode 开关：ON 状态机驱动，OFF Sequencer 驱动（B5-9） |
 | 蒙皮模型 GPU 拾取 | 已完成 | skinned pick pipeline 复用材质 bone UBO，按 submesh/当前动画姿势写入 Entity ID |
-| 重复蒙皮模型独立动画状态 | 受限 | Controller 已逐实体独立，但共享同一 skinned MaterialId 的实例仍共用 BoneMatricesUBO；后续需每实体描述符或 dynamic UBO |
+| 重复蒙皮模型独立动画状态 | 已完成 | Controller 逐实体独立；SkinBinding 将 bone UBO/descriptor 从 MaterialId 中解耦，并按实体/材质/skinIndex 分配，主视口、PiP、Pick 三条路径一致使用 |
 | 多 .anim.ast 合并加载 | **已修复** | 2026-07-02：根因是 `loadAndApplyMaterialAsset` 传入的 `astRelPath` 可能是 `.material.ast` 路径，不含 `animations` 数组。修复：(1) `ensureAnimationAssetForMeshAst` 增加回退逻辑；(2) `loadAndApplyMaterialAsset` 中记录实体 `astRelPath` 供回退使用。<br>2026-07-13：修复同名 clip 跨文件问题，加载时自动 `_1`、`_2` 后缀去重。|
-| Sequencer | 已完成（Phase C1-C7） | C1 数据结构 + C2 播放控制器 + C3 相机路径 + C4 TransformTween(已废弃)/Keyframe + C5 序列化 + C6 ImGui 时间轴编辑器 + C7 AnimatorKeyframe 轨道（驱动状态机）。新增 AnimatorParamEvent/AnimatorKeyframe/AnimatorKeyframeTrack，支持 SetFloat/SetInt 插值和 SetBool/SetTrigger 跳变，initialState 指定初始状态，EventClip 扩展为完整 AnimatorEvent。UI 单列布局，UE 风格层级轨道。**已知 Bug**：轨道标签 hover/点击不稳定 |
+| Sequencer | 已完成（Phase C1-C7） | C1 数据结构 + C2 播放控制器 + C3 相机路径 + C4 TransformTween(已废弃)/Keyframe + C5 序列化 + C6 ImGui 双列时间轴编辑器 + C7 AnimatorKeyframe 轨道。支持递归 Sequence 资产选择、原子加载、稳定目标元数据、重启后自动重绑定、歧义手动重绑定和 Target Missing 状态 |
 | Content Browser 离屏缩略图 | **修复中** | 使用离屏渲染（128×128）生成 mesh 缩略图，当前三个待修复问题：<br>1. **材质未显示**：glTF 材质已加载但渲染结果仍偏灰；OBJ/FBX 无 .ast 路径全用默认材质 — 需排查 UBO 更新或 descriptor set 绑定时机<br>2. **相机角度错误**：当前从 (1,1,1) 方向观察，用户反馈方向是反的，需调整摄像机朝向<br>3. **Remy skinned 模型全灰**：FBX 带动画蒙皮模型渲染结果为纯色，非蒙皮 pipeline 未正确处理其顶点数据 |
-| Sequencer Camera + PiP | 已完成 | 新增 SequencerCamera 类（独立 position/orientation/fov），场景中可添加可视化摄像机模型，选中后右下角显示 PiP 小窗渲染该摄像机视角<br>**已修复（2026-07-09）**：(1) createCameraEntity 四元数存储 bug；(2) SequencerCamera 坐标系 -Z 约定；(3) PiP UBO 时序冲突（新增 PiP 专用 UBO + descriptor set）；(4) Camera 模型加载（改用 FbxImporter）；(5) recreateSwapChain 重置 pipTextureCreated_；(6) PiP color/depth 输出为空（管线静态 viewport + renderpass 格式不兼容，见 §16）；(7) 蒙皮模型 PiP 用主视角（createSkinnedMaterialFrom 漏调 createPipResources）；(8) Camera 模型朝向与预览差 Y -90°（新增 modelRotationOffset 渲染偏移，主/PiP/pick 三路统一）；(9) Gizmo 世界/本地坐标系切换（4 键） |
+| Sequencer Camera + PiP | 已完成 | SequencerCamera 独立保存 position/orientation/fov，场景中可添加可视化 Camera Actor 并通过 PiP 预览；New Camera 直接复制主摄像机当前 Transform。历史 PiP、坐标约定、模型朝向与 Gizmo 问题均已修复，详见 §16 |
 | 资产系统扩充 | 待实现 | Phase D1-D3：AnimationAssetRegistry 资产注册、.ast 文件扩展（animationAssetPath/animControllerPath）、ImGui Assets 浏览器面板（TabBar 重构） |
 | PBR 管线 | 基础支持（metallic/roughness/ao） | 已有 |
 | 阴影 | 不支持 | 未规划 |
@@ -1081,3 +1110,77 @@ TINYOBJLOADER_IMPLEMENTATION # tinyobjloader 实现编译
 1. `vkCmdSetViewport` 仅在管线声明 `VK_DYNAMIC_STATE_VIEWPORT` 时生效，否则被静默忽略——离屏渲染复用主管线时务必启用动态 viewport。
 2. Vulkan 管线 renderpass 兼容性要求 attachment 格式一致，跨 renderpass 复用管线须保证格式匹配。
 3. `getPipDescriptorSet` 类回退逻辑在资源缺失时不报错而静默用主资源，会让症状表现为"用主视角"而非崩溃——资源创建函数（含蒙皮变体）必须一致地调用 `createPipResources`。
+
+---
+
+## 17. MCP 场景搭建与可选 UI 截图（2026-07-19）
+
+### 17.1 能力边界
+
+- 引擎以 `--mcp --port 9527` 启动；所有 handler 由 `CommandBridge` 排队并在主线程执行。
+- Agent 只能通过 `ModelRegistry` 返回的 `astRelPath` 放置模型，不能传入任意文件系统路径。
+- 模型放置复用 Content Browser 的材质、子材质、动画资产和蒙皮材质绑定逻辑，但不模拟鼠标拖拽。
+- Transform 协议：position/scale 为三元素数组；旋转支持 XYZ 欧拉角（度）或 `[x,y,z,w]` 四元数，二者互斥；省略字段在更新时保持原值。
+- 截图仍读取当前 Swapchain 最终帧；`includeUi=false` 只让捕获帧跳过 ImGui draw data，随后自动恢复。
+
+### 17.2 MCP 工具与 IPC 映射
+
+| MCP 工具 | IPC method | 结果 |
+|---|---|---|
+| `tiny_asset_list` | `asset.list` | 可放置资产列表 |
+| `tiny_model_place` | `entity.place` | 新实体 ID 与实际 Transform |
+| `tiny_model_get_transform` | `entity.getTransform` | 当前 Transform |
+| `tiny_model_set_transform` | `entity.setTransform` | 部分更新后的 Transform |
+| `tiny_model_delete` | `entity.delete` | 删除状态 |
+| `tiny_capture_frame` | `capture.frame` + `capture.get` | PNG ImageContent 与元数据 |
+
+### 17.3 场景快照 schema v2
+
+每个模型实体除原有 Transform、材质和动画状态外，新增：
+
+- `bounds.localMin/localMax`：模型局部 AABB；
+- `bounds.worldMin/worldMax`：应用实体 TRS 与模型旋转偏移后的世界 AABB。
+
+首实体、其他模型实体和 Camera Actor 的渲染现统一读取 `ModelEntity::transform`。`mainModelTransform` 仅保留为旧 UI 兼容镜像，不再作为首实体的独立渲染数据源。
+
+### 17.4 验证记录
+
+- `cmake --build --preset x64-debug`：通过。
+- `python -m unittest discover -s mcp_server/tests -v`：10/10 通过。
+- 真实引擎：列出 9 个可放置资产；成功放置两个模型并更新/回读 Transform；snapshot schema=2 且世界 AABB 非零。
+- 截图：1280×720，`includeUi=false` 生成纯场景图，`includeUi=true` 生成包含 Outliner/Properties 的编辑器图；两张均经人工查看确认。
+- 验收实体已删除，场景实体数从 8 恢复到 6；引擎已收到优雅关闭请求。
+
+---
+
+## 18. 角色蒙皮、Sequencer 重载与相机交互修复（2026-07-22）
+
+### 18.1 Mixamo 多 skin 角色
+
+- 根因：同一角色的多个 skin/submesh 复用材质级 BoneMatricesUBO，左右眼等独立 skin 在逐帧更新时互相覆盖 palette，表现为播放动画时眼球漂移。
+- 修复：新增独立 `SkinBinding` 资源层；按实体、材质和 `skinIndex` 为 draw range 分配 bone UBO 与主/PiP descriptor set，同一材质仍共享 PBR 纹理和参数。
+- 覆盖路径：主视口、PiP、GPU Pick、重复模型资源缓存、实体删除、场景重载与引擎销毁。
+
+### 18.2 Sequence 资产加载与跨进程目标恢复
+
+- Load 不再依赖手输路径，改为递归资产列表弹窗，支持搜索、刷新、双击与错误展示。
+- Sequence 解析采用临时对象，JSON 失败不会破坏当前时间线。
+- SceneSerializer 保存 `entityId + astRelPath + displayName`；SceneManager 的模型/Camera ID 使用统一分配器。
+- Transform/Animator 轨道保存 `targetEntityId + targetAstRelPath + targetDisplayName`。加载旧资产时优先使用现有 ID，其次使用唯一稳定元数据，最后兼容 `[T] <name> Transform` / `[A] <name> Animator` 命名。
+- 无法唯一匹配时弹出手动重绑定窗口；未绑定轨道在标签和属性区显示红色 `Target Missing`。
+- 迁移策略：旧 Scene/Sequence 无需批量改写；成功加载后各保存一次，即可写入新稳定字段。
+
+### 18.3 主摄像机与 Camera Actor
+
+- 鼠标 yaw 改为绕世界 `WorldUp`，不再随相机本地 Y 轴倾斜。
+- Q/E 分别沿世界 `WorldUp` 下降/上升，行为与 UE 自由视角相近。
+- ImGui 捕获输入时阻止相机旋转和移动。
+- `New Camera` 直接复制主摄像机当前世界位置和朝向。
+
+### 18.4 验证记录
+
+- `cmake --build --preset x64-debug`：本次各阶段修改后均通过，最终生成 `out/build/x64-debug/Debug/tinyEngine.exe`。
+- `python -m unittest discover -s mcp_server/tests -v`：10/10 通过。
+- Sequence 绑定元数据 C++ 往返测试：Transform/Animator 的 ID、资产路径和显示名保存/加载一致。
+- Camera 世界轴 yaw、Q/E 升降与 Sequence 原子加载专项 smoke test：通过。
+- `git diff --check`：通过；测试生成的临时源码、可执行文件、JSON 和 OBJ 已清理。

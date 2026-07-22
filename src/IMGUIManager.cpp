@@ -361,9 +361,7 @@ void UIManager::prepareFrame()
     if (ImGui::Button("New Camera")) {
         if (vulkanRender) {
             Camera& cam = vulkanRender->getCamera();
-            glm::vec3 forward = cam.Forward;
-            glm::vec3 spawnPos = cam.Position + forward * 5.0f;
-            vulkanRender->createCameraActor(spawnPos, cam.GetOrientation());
+            vulkanRender->createCameraActor(cam.GetWorldPosition(), cam.GetOrientation());
         }
     }
 
@@ -636,19 +634,24 @@ void UIManager::prepareFrame()
 			}
 		}
 		else if (vulkanRender->mainModelSelected) {
-			glm::mat4 model = vulkanRender->mainModelTransform.GetModelMatrix();
-			ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), op, gizmoMode,
-				glm::value_ptr(model), nullptr, nullptr);
-			vulkanRender->mainModelTransform.position = glm::vec3(model[3]);
-			vulkanRender->mainModelTransform.scale = glm::vec3(
-				glm::length(glm::vec3(model[0])),
-				glm::length(glm::vec3(model[1])),
-				glm::length(glm::vec3(model[2])));
-			glm::mat3 rot;
-			rot[0] = glm::vec3(model[0]) / vulkanRender->mainModelTransform.scale.x;
-			rot[1] = glm::vec3(model[1]) / vulkanRender->mainModelTransform.scale.y;
-			rot[2] = glm::vec3(model[2]) / vulkanRender->mainModelTransform.scale.z;
-			vulkanRender->mainModelTransform.rotation = glm::quat_cast(rot);
+			auto& entities = vulkanRender->getSceneManager().getModelEntities();
+			if (!entities.empty()) {
+				auto& transform = entities.front().transform;
+				glm::mat4 model = transform.GetModelMatrix();
+				ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), op, gizmoMode,
+					glm::value_ptr(model), nullptr, nullptr);
+				transform.position = glm::vec3(model[3]);
+				transform.scale = glm::vec3(
+					glm::length(glm::vec3(model[0])),
+					glm::length(glm::vec3(model[1])),
+					glm::length(glm::vec3(model[2])));
+				glm::mat3 rot;
+				rot[0] = glm::vec3(model[0]) / transform.scale.x;
+				rot[1] = glm::vec3(model[1]) / transform.scale.y;
+				rot[2] = glm::vec3(model[2]) / transform.scale.z;
+				transform.rotation = glm::quat_cast(rot);
+				vulkanRender->mainModelTransform = transform;
+			}
 		}
 		else if (vulkanRender->pickedBoxEntityId != 0) {
 			glm::vec3 boxPos = vulkanRender->getBoxPosition(vulkanRender->pickedBoxEntityId);
@@ -1255,6 +1258,67 @@ void UIManager::drawPipWindow()
 
 // ─── Sequencer Panel ─────────────────────────────────────────────────────────
 
+void UIManager::scanSequenceAssets()
+{
+    sequenceAssets_.clear();
+    sequenceAssetSelected_ = -1;
+    if (!vulkanRender) return;
+
+    const std::filesystem::path root =
+        std::filesystem::path(vulkanRender->getResRoot()) / "sequences";
+    std::error_code errorCode;
+    if (!std::filesystem::is_directory(root, errorCode)) return;
+
+    constexpr const char* suffix = ".seq.json";
+    constexpr size_t suffixLength = 9;
+    const auto options = std::filesystem::directory_options::skip_permission_denied;
+    std::filesystem::recursive_directory_iterator it(root, options, errorCode);
+    const std::filesystem::recursive_directory_iterator end;
+    while (it != end) {
+        if (errorCode) {
+            errorCode.clear();
+            it.increment(errorCode);
+            continue;
+        }
+
+        const auto path = it->path();
+        if (it->is_regular_file(errorCode)) {
+            std::string filename = path.filename().string();
+            std::string lowerFilename = filename;
+            std::transform(lowerFilename.begin(), lowerFilename.end(), lowerFilename.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (lowerFilename.size() >= suffixLength
+                && lowerFilename.compare(lowerFilename.size() - suffixLength,
+                                         suffixLength, suffix) == 0) {
+                SequenceAssetEntry entry;
+                entry.absolutePath = path.string();
+                std::error_code relativeError;
+                entry.relativePath = std::filesystem::relative(path, root, relativeError).generic_string();
+                if (relativeError) entry.relativePath = filename;
+
+                Sequence preview;
+                entry.valid = SequenceAssetLoader::loadSequence(entry.absolutePath, preview, &entry.error);
+                entry.displayName = entry.valid && !preview.name.empty()
+                    ? preview.name
+                    : filename.substr(0, filename.size() - suffixLength);
+                if (entry.valid) {
+                    entry.duration = preview.totalDuration > 0.0
+                        ? preview.totalDuration : preview.computeTotalDuration();
+                    entry.trackCount = preview.tracks.size();
+                }
+                sequenceAssets_.push_back(std::move(entry));
+            }
+        }
+        errorCode.clear();
+        it.increment(errorCode);
+    }
+
+    std::sort(sequenceAssets_.begin(), sequenceAssets_.end(),
+              [](const SequenceAssetEntry& lhs, const SequenceAssetEntry& rhs) {
+                  return lhs.relativePath < rhs.relativePath;
+              });
+}
+
 void UIManager::drawSequencerPanel()
 {
     ImGui::SetNextWindowSize(ImVec2(900, 500), ImGuiCond_FirstUseEver);
@@ -1324,11 +1388,9 @@ void UIManager::drawSequencerPanel()
     ImGui::SameLine();
 
     if (ImGui::Button("Load##seq")) {
-        std::string path = vulkanRender->getResRoot() + "/sequences/" + std::string(seqNameBuf) + ".seq.json";
-        if (SequenceAssetLoader::loadSequence(path, sequence)) {
-            seqPlayer.load(sequence);
-            snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_), "Loaded sequence: %s", seqNameBuf);
-        }
+        sequenceAssetSearch_[0] = '\0';
+        scanSequenceAssets();
+        ImGui::OpenPopup("Load Sequence");
     }
     ImGui::SameLine();
     if (ImGui::Button("Save##seq")) {
@@ -1338,6 +1400,191 @@ void UIManager::drawSequencerPanel()
         if (SequenceAssetLoader::saveSequence(path, sequence)) {
             snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_), "Saved sequence: %s", seqNameBuf);
         }
+    }
+
+    ImGui::SetNextWindowSize(ImVec2(680.f, 430.f), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("Load Sequence", nullptr, ImGuiWindowFlags_None)) {
+        ImGui::SetNextItemWidth(-90.f);
+        if (ImGui::InputTextWithHint("##sequenceSearch", "Search sequence name or path...",
+                                     sequenceAssetSearch_, sizeof(sequenceAssetSearch_))) {
+            sequenceAssetSelected_ = -1;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Refresh")) scanSequenceAssets();
+        ImGui::Separator();
+
+        std::string search = sequenceAssetSearch_;
+        std::transform(search.begin(), search.end(), search.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        bool requestLoad = false;
+        ImGui::BeginChild("##sequenceAssetList", ImVec2(0.f, -58.f), true);
+        if (sequenceAssets_.empty()) {
+            ImGui::TextDisabled("No .seq.json files found under res/sequences.");
+        }
+        for (int index = 0; index < static_cast<int>(sequenceAssets_.size()); ++index) {
+            auto& entry = sequenceAssets_[index];
+            std::string searchable = entry.displayName + " " + entry.relativePath;
+            std::transform(searchable.begin(), searchable.end(), searchable.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (!search.empty() && searchable.find(search) == std::string::npos) continue;
+
+            ImGui::PushID(index);
+            if (!entry.valid)
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.35f, 0.35f, 1.f));
+            const bool activated = ImGui::Selectable(
+                entry.displayName.c_str(), sequenceAssetSelected_ == index,
+                ImGuiSelectableFlags_AllowDoubleClick, ImVec2(220.f, 0.f));
+            if (!entry.valid) ImGui::PopStyleColor();
+            if (activated) {
+                sequenceAssetSelected_ = index;
+                requestLoad = entry.valid && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+            }
+            ImGui::SameLine();
+            if (entry.valid) {
+                ImGui::TextDisabled("%s   %.2fs   %zu tracks",
+                                    entry.relativePath.c_str(), entry.duration, entry.trackCount);
+            } else {
+                ImGui::TextDisabled("%s   invalid", entry.relativePath.c_str());
+            }
+            if (ImGui::IsItemHovered() && !entry.valid && !entry.error.empty()) {
+                ImGui::BeginTooltip();
+                ImGui::TextWrapped("%s", entry.error.c_str());
+                ImGui::EndTooltip();
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndChild();
+
+        const bool canLoad = sequenceAssetSelected_ >= 0
+            && sequenceAssetSelected_ < static_cast<int>(sequenceAssets_.size())
+            && sequenceAssets_[sequenceAssetSelected_].valid;
+        ImGui::BeginDisabled(!canLoad);
+        if (ImGui::Button("Load Selected")) requestLoad = true;
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+
+        if (requestLoad && canLoad) {
+            auto& entry = sequenceAssets_[sequenceAssetSelected_];
+            std::string loadError;
+            Application::SequenceBindingReport bindingReport;
+            if (vulkanRender->loadSequenceAsset(entry.absolutePath, &loadError,
+                                                &bindingReport)) {
+                const std::string loadedName = sequence.name.empty()
+                    ? entry.displayName : sequence.name;
+                snprintf(seqNameBuf, sizeof(seqNameBuf), "%s", loadedName.c_str());
+                selectedTrackIdx = -1;
+                selectedClipType = -1;
+                selectedClipIdx = -1;
+                selectedKeyframeIdx_ = -1;
+                sequencerEditTime_ = 0.0;
+                sequencerEditTimeSet_ = false;
+                seekTime_ = -1.0;
+                seqTimelineScrollY_ = 0.f;
+                loopPlayback = false;
+                sequenceRebindTrackIndices_ = std::move(bindingReport.unresolvedTrackIndices);
+                sequenceRebindEntityIds_.assign(sequenceRebindTrackIndices_.size(), uint64_t(0));
+                sequenceRebindPopupPending_ = !sequenceRebindTrackIndices_.empty();
+                if (sequenceRebindPopupPending_) {
+                    snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                             "Loaded %s: rebound %zu, %zu target(s) unresolved",
+                             entry.relativePath.c_str(), bindingReport.reboundTrackCount,
+                             sequenceRebindTrackIndices_.size());
+                } else {
+                    snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                             "Loaded %s: rebound %zu target(s)",
+                             entry.relativePath.c_str(), bindingReport.reboundTrackCount);
+                }
+                ImGui::CloseCurrentPopup();
+            } else {
+                entry.valid = false;
+                entry.error = loadError;
+                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                         "Load failed: %s", loadError.c_str());
+            }
+        }
+        ImGui::EndPopup();
+    }
+
+    if (sequenceRebindPopupPending_) {
+        ImGui::OpenPopup("Rebind Sequence Tracks");
+        sequenceRebindPopupPending_ = false;
+    }
+    ImGui::SetNextWindowSize(ImVec2(620.f, 360.f), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("Rebind Sequence Tracks", nullptr, ImGuiWindowFlags_None)) {
+        ImGui::TextWrapped("Some tracks no longer identify a unique scene entity. Select a target for each track.");
+        ImGui::Separator();
+
+        const auto& entities = vulkanRender->getSceneManager().getModelEntities();
+        bool allResolved = !sequenceRebindTrackIndices_.empty();
+        ImGui::BeginChild("##sequenceRebindList", ImVec2(0.f, -48.f), true);
+        for (size_t issueIndex = 0; issueIndex < sequenceRebindTrackIndices_.size(); ++issueIndex) {
+            const size_t trackIndex = sequenceRebindTrackIndices_[issueIndex];
+            if (trackIndex >= sequence.tracks.size()) {
+                allResolved = false;
+                continue;
+            }
+            ImGui::PushID(static_cast<int>(issueIndex));
+            ImGui::TextWrapped("%s", sequence.tracks[trackIndex].name.c_str());
+
+            const uint64_t selectedId = sequenceRebindEntityIds_[issueIndex];
+            const char* preview = "(select entity)";
+            for (const auto& entity : entities) {
+                if (entity.entityId == selectedId) {
+                    preview = entity.displayName.c_str();
+                    break;
+                }
+            }
+            ImGui::SetNextItemWidth(-1.f);
+            if (ImGui::BeginCombo("##targetEntity", preview)) {
+                for (const auto& entity : entities) {
+                    const bool selected = entity.entityId == selectedId;
+                    const std::string label = entity.displayName.empty()
+                        ? "Entity " + std::to_string(entity.entityId)
+                        : entity.displayName + "  [" + std::to_string(entity.entityId) + "]";
+                    if (ImGui::Selectable(label.c_str(), selected))
+                        sequenceRebindEntityIds_[issueIndex] = entity.entityId;
+                    if (selected) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            if (!vulkanRender->getSceneManager().getModelEntity(
+                    sequenceRebindEntityIds_[issueIndex])) {
+                allResolved = false;
+            }
+            ImGui::Separator();
+            ImGui::PopID();
+        }
+        ImGui::EndChild();
+
+        ImGui::BeginDisabled(!allResolved);
+        if (ImGui::Button("Apply Bindings")) {
+            bool applied = true;
+            for (size_t i = 0; i < sequenceRebindTrackIndices_.size(); ++i) {
+                applied = vulkanRender->bindSequenceTrack(sequenceRebindTrackIndices_[i],
+                                                           sequenceRebindEntityIds_[i]) && applied;
+            }
+            if (applied) {
+                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                         "Rebound %zu sequence track target(s)",
+                         sequenceRebindTrackIndices_.size());
+                sequenceRebindTrackIndices_.clear();
+                sequenceRebindEntityIds_.clear();
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Keep Unresolved")) {
+            snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                     "%zu sequence track target(s) remain unresolved",
+                     sequenceRebindTrackIndices_.size());
+            sequenceRebindTrackIndices_.clear();
+            sequenceRebindEntityIds_.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
     }
 
     ImGui::Separator();
@@ -1424,10 +1671,22 @@ void UIManager::drawSequencerPanel()
             // 在 Selectable 上叠加居中文字（保持原视觉风格）
             {
                 ImVec2 mn = ImGui::GetItemRectMin();
-                ImU32 txtCol = ImGui::ColorConvertFloat4ToU32(parent ? ImVec4(1, 1, 1, 0.6f) : trackColor);
+                bool targetMissing = false;
+                if (track.type == TrackType::TransformKeyframe)
+                    targetMissing = !vulkanRender->getSceneManager().getModelEntity(track.keyframeTrack.targetEntityId);
+                else if (track.type == TrackType::AnimatorKeyframe)
+                    targetMissing = !vulkanRender->getSceneManager().getModelEntity(track.animatorTrack.targetEntityId);
+                ImU32 txtCol = ImGui::ColorConvertFloat4ToU32(
+                    targetMissing ? ImVec4(1.f, 0.25f, 0.25f, 1.f)
+                                  : (parent ? ImVec4(1, 1, 1, 0.6f) : trackColor));
                 float tx = mn.x + 4.0f + (sub ? 12.0f : 0.0f);
-                float ty = mn.y + (rowH - ImGui::GetTextLineHeight()) * 0.5f;
+                float ty = targetMissing ? mn.y + 5.f
+                                         : mn.y + (rowH - ImGui::GetTextLineHeight()) * 0.5f;
                 lblDL->AddText(ImVec2(tx, ty), txtCol, track.name.c_str());
+                if (targetMissing) {
+                    lblDL->AddText(ImVec2(tx, ty + ImGui::GetTextLineHeight()), txtCol,
+                                   "Target Missing");
+                }
             }
             ImGui::PopID();
             lblRowCursorY += rowH;
@@ -1706,6 +1965,10 @@ void UIManager::drawSequencerPanel()
                      [&](SequenceTrack& t) {
                 t.keyframeTrack.name = t.name;
                 t.keyframeTrack.targetEntityId = targetId;
+                if (ent) {
+                    t.keyframeTrack.targetAstRelPath = ent->astRelPath;
+                    t.keyframeTrack.targetDisplayName = ent->displayName;
+                }
             });
 
             // 有 Animator 时额外创建 Animator 子轨道
@@ -1714,6 +1977,10 @@ void UIManager::drawSequencerPanel()
                          [&](SequenceTrack& t) {
                     t.animatorTrack.name = t.name;
                     t.animatorTrack.targetEntityId = targetId;
+                    if (ent) {
+                        t.animatorTrack.targetAstRelPath = ent->astRelPath;
+                        t.animatorTrack.targetDisplayName = ent->displayName;
+                    }
                 });
             }
 
@@ -1814,6 +2081,8 @@ void UIManager::drawSequencerPanel()
             auto& kft = track.keyframeTrack;
             ImGui::Text("Target Entity ID: %llu",
                         static_cast<unsigned long long>(kft.targetEntityId));
+            if (!vulkanRender->getSceneManager().getModelEntity(kft.targetEntityId))
+                ImGui::TextColored(ImVec4(1.f, 0.25f, 0.25f, 1.f), "Target Missing");
             ImGui::Text("Keyframes: %zu", kft.keyframes.size());
 
             if (selectedKeyframeIdx_ >= 0
@@ -1896,6 +2165,8 @@ void UIManager::drawSequencerPanel()
             auto& akt = track.animatorTrack;
             ImGui::Text("Target Entity ID: %llu",
                         static_cast<unsigned long long>(akt.targetEntityId));
+            if (!vulkanRender->getSceneManager().getModelEntity(akt.targetEntityId))
+                ImGui::TextColored(ImVec4(1.f, 0.25f, 0.25f, 1.f), "Target Missing");
 
             // 初始状态：从 Controller states 列表中选择，避免手动输入拼写错误
             // 通过 targetEntityId 查找实体以获取其 AnimatorController 的 states 列表

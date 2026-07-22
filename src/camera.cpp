@@ -162,16 +162,16 @@ glm::mat4 Camera::GetWorldTransform() const
  * causes horizontal drags to arc along a latitude line when pitch != 0.
  *
  * Fix: apply incremental rotations each frame:
- *   - yaw   delta: rotate around world Y axis  -> horizontal drag = horizontal screen motion
+ *   - yaw   delta: rotate around world Y axis
  *   - pitch delta: rotate around local Right   -> vertical drag   = vertical screen motion
  * After applying, back-solve yawAccum_/pitchAccum_ so SmoothFocus can still use RebuildOrientation.
  */
 void Camera::ProcessMouseMovement(float deltaX, float deltaY)
 {
-	// Incremental quaternions
-	// Use camera Up (screen-vertical axis) for yaw so horizontal drag = horizontal screen motion.
-	// Using WorldUp instead would cause the model to arc along a latitude line when pitch != 0.
-	const glm::quat deltaYaw   = glm::angleAxis(-deltaX * SensitivityYaw,   Up);
+	// Incremental quaternions: yaw is always world-up; pitch remains camera-local right.
+	const glm::vec3 yawAxis = glm::length(WorldUp) > 1e-6f
+		? glm::normalize(WorldUp) : glm::vec3(0.0f, 1.0f, 0.0f);
+	const glm::quat deltaYaw   = glm::angleAxis(-deltaX * SensitivityYaw,   yawAxis);
 	const glm::quat deltaPitch = glm::angleAxis(-deltaY * SensitivityPitch, Right);
 
 	// Apply pitch first in local space, then yaw around world Y
@@ -197,7 +197,9 @@ void Camera::ProcessMouseMovement(float deltaX, float deltaY)
  */
 void Camera::UpdataCameraPosition(float deltaTime)
 {
-	Position += (Forward * speedZ + Right * speedX + Up * speedY) * SPEED * deltaTime;
+	const glm::vec3 vertical = glm::length(WorldUp) > 1e-6f
+		? glm::normalize(WorldUp) : glm::vec3(0.0f, 1.0f, 0.0f);
+	Position += (Forward * speedZ + Right * speedX + vertical * speedY) * SPEED * deltaTime;
 	worldTransform_[3] = glm::vec4(Position, 1.0f);
 }
 

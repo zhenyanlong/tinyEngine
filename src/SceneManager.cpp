@@ -26,6 +26,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <glm/gtc/type_ptr.hpp>
 #include <stdexcept>
 #include <string>
@@ -204,8 +205,12 @@ bool SceneManager::applyCachedModelResource(ModelEntity& ent,
     ent.indexCount = res.indexCount;
     ent.subMeshes = res.subMeshes;
     ent.subMeshMaterials.assign(res.autoAstPaths.size(), 0u);
+    ent.subMeshSkinBindings.clear();
+    ent.skinBindingId = 0;
     ent.autoAstPaths = res.autoAstPaths;
     ent.hasSkin_ = res.hasSkin;
+    ent.localBoundsMin = res.boundsMin;
+    ent.localBoundsMax = res.boundsMax;
     ent.skeleton = res.skeleton;          // 共享 skeleton（shared_ptr 引用计数）
     ent.animationClips = res.animationClips; // 复制 clips（轻量）
     modelLocalBoundsMin_ = res.boundsMin;
@@ -231,8 +236,8 @@ void SceneManager::cacheModelResourceFromEntity(const std::string& key, ModelEnt
     res.hasSkin = ent.hasSkin_;
     res.skeleton = ent.skeleton;
     res.animationClips = ent.animationClips;
-    res.boundsMin = modelLocalBoundsMin_;
-    res.boundsMax = modelLocalBoundsMax_;
+    res.boundsMin = ent.localBoundsMin;
+    res.boundsMax = ent.localBoundsMax;
     modelResourceCache_[key] = std::move(res);
 
     ent.vertices.clear();
@@ -296,12 +301,12 @@ void SceneManager::loadModel(const std::string& path, const glm::vec3& position,
 uint64_t SceneManager::createModelEntity(const std::string& path,
                                           const glm::vec3& position,
                                           const BufferManager& bufMgr,
-                                          bool useResourceCache)
+                                          bool useResourceCache,
+                                          uint64_t preferredEntityId)
 {
     // 先创建一个空的 ModelEntity 并加入列表，再将数据填入
-    static uint64_t nextEntityId = 1000;
     ModelEntity ent;
-    ent.entityId    = nextEntityId++;
+    ent.entityId    = allocateEntityId(preferredEntityId);
     ent.transform.position = position;
     ent.displayName = std::filesystem::path(path).stem().string();
 
@@ -351,6 +356,8 @@ void SceneManager::loadModelFromObj(const std::string& path, const glm::vec3& po
     ent.indices.clear();
     ent.subMeshes.clear();
     ent.subMeshMaterials.clear();
+    ent.subMeshSkinBindings.clear();
+    ent.skinBindingId = 0;
     ent.autoAstPaths.clear();
     ent.ownsMeshBuffers = true;
     ent.meshResourceKey.clear();
@@ -395,6 +402,8 @@ void SceneManager::loadModelFromObj(const std::string& path, const glm::vec3& po
     bufMgr.createVertexBuffer(ent.vertices, ent.vertexBuffer, ent.vertexMemory);
     bufMgr.createIndexBuffer(ent.indices, ent.indexBuffer, ent.indexMemory);
     ent.indexCount = static_cast<uint32_t>(ent.indices.size());
+    ent.localBoundsMin = modelLocalBoundsMin_;
+    ent.localBoundsMax = modelLocalBoundsMax_;
 }
 
 void SceneManager::loadModelFromFbx(const std::string& path, const glm::vec3& position,
@@ -411,6 +420,8 @@ void SceneManager::loadModelFromFbx(const std::string& path, const glm::vec3& po
     ent.vertices = std::move(imported.vertices);
     ent.indices = std::move(imported.indices);
     ent.subMeshes.clear();
+    ent.subMeshSkinBindings.clear();
+    ent.skinBindingId = 0;
     ent.subMeshes.reserve(imported.subMeshes.size());
     for (const FbxImportedSubMesh& source : imported.subMeshes) {
         SubMesh subMesh;
@@ -432,6 +443,8 @@ void SceneManager::loadModelFromFbx(const std::string& path, const glm::vec3& po
 
     modelLocalBoundsMin_ = imported.boundsMin;
     modelLocalBoundsMax_ = imported.boundsMax;
+    ent.localBoundsMin = modelLocalBoundsMin_;
+    ent.localBoundsMax = modelLocalBoundsMax_;
     bufMgr.createVertexBuffer(ent.vertices, ent.vertexBuffer, ent.vertexMemory);
     bufMgr.createIndexBuffer(ent.indices, ent.indexBuffer, ent.indexMemory);
     ent.indexCount = static_cast<uint32_t>(ent.indices.size());
@@ -575,6 +588,8 @@ void SceneManager::loadModelFromGltf(const std::string& path, const glm::vec3& p
     ent.indices.clear();
     ent.subMeshes.clear();
     ent.subMeshMaterials.clear();
+    ent.subMeshSkinBindings.clear();
+    ent.skinBindingId = 0;
     ent.autoAstPaths.clear();
     ent.ownsMeshBuffers = true;
     ent.meshResourceKey.clear();
@@ -826,6 +841,8 @@ void SceneManager::loadModelFromGltf(const std::string& path, const glm::vec3& p
     bufMgr.createVertexBuffer(ent.vertices, ent.vertexBuffer, ent.vertexMemory);
     bufMgr.createIndexBuffer(ent.indices, ent.indexBuffer, ent.indexMemory);
     ent.indexCount = static_cast<uint32_t>(ent.indices.size());
+    ent.localBoundsMin = modelLocalBoundsMin_;
+    ent.localBoundsMax = modelLocalBoundsMax_;
 
     if (!ent.autoAstPaths.empty()) {
         std::cout << "[glTF] dumped " << ent.autoAstPaths.size()
@@ -1128,12 +1145,13 @@ void SceneManager::loadCameraModelOnce(const VulkanContext& ctx, const BufferMan
 uint64_t SceneManager::createCameraEntity(const glm::vec3& position,
                                             const glm::quat& orientation,
                                             const VulkanContext& ctx,
-                                            const BufferManager& bufMgr)
+                                            const BufferManager& bufMgr,
+                                            uint64_t preferredEntityId)
 {
     loadCameraModelOnce(ctx, bufMgr);
 
     ModelEntity entity;
-    entity.entityId = nextEntityId_++;
+    entity.entityId = allocateEntityId(preferredEntityId);
     entity.type = ModelEntity::Type::Camera;
     entity.displayName = "Camera_" + std::to_string(entity.entityId);
 
@@ -1164,6 +1182,28 @@ uint64_t SceneManager::createCameraEntity(const glm::vec3& position,
 
     modelEntities_.push_back(std::move(entity));
     return modelEntities_.back().entityId;
+}
+
+uint64_t SceneManager::allocateEntityId(uint64_t preferredEntityId)
+{
+    const auto isInUse = [&](uint64_t id) {
+        return std::any_of(modelEntities_.begin(), modelEntities_.end(),
+                           [id](const ModelEntity& entity) { return entity.entityId == id; });
+    };
+
+    if (preferredEntityId != 0) {
+        if (isInUse(preferredEntityId))
+            throw std::runtime_error("Duplicate scene entity ID: " + std::to_string(preferredEntityId));
+        if (preferredEntityId == std::numeric_limits<uint64_t>::max())
+            throw std::runtime_error("Scene entity ID is out of range");
+        if (preferredEntityId >= nextEntityId_)
+            nextEntityId_ = preferredEntityId + 1;
+        return preferredEntityId;
+    }
+
+    while (nextEntityId_ == 0 || isInUse(nextEntityId_))
+        ++nextEntityId_;
+    return nextEntityId_++;
 }
 
 void SceneManager::rebuildInstanceBuffer(const VulkanContext& ctx, const BufferManager& bufMgr)

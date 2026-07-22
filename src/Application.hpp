@@ -25,6 +25,7 @@
 #include "Mcp/IpcServer.hpp"
 #include <glm/glm.hpp>
 #include <unordered_map>
+#include <vector>
 
 class Application {
 public:
@@ -92,6 +93,16 @@ public:
     // ── Sequencer API ─────────────────────────────────────────────────────────
     SequencePlayer& getSequencePlayer() { return seqPlayer_; }
     Sequence&       getCurrentSequence() { return currentSequence_; }
+    struct SequenceBindingReport {
+        size_t reboundTrackCount = 0;
+        std::vector<size_t> unresolvedTrackIndices;
+    };
+    /** @brief 原子加载 Sequence；失败时保留当前编辑内容。 */
+    bool            loadSequenceAsset(const std::string& path,
+                                      std::string* error = nullptr,
+                                      SequenceBindingReport* bindingReport = nullptr);
+    /** @brief 将 Transform/Animator 轨道显式绑定到一个现有场景实体。 */
+    bool            bindSequenceTrack(size_t trackIndex, uint64_t entityId);
     bool            isSequencerPlaying() const { return seqPlayer_.isPlaying(); }
     void            requestSequencerPreview() { sequencerPreviewPending_ = true; }
 
@@ -233,13 +244,16 @@ private:
     void tryBeginCameraFocusOnPick();
     void cleanUp();
     void registerMcpHandlers();
+    uint64_t placeRegisteredModel(const std::string& astRelPath,
+                                  const ObjectTransform& transform);
     bool ensureAnimationAssetForMeshAst(const std::string& meshAstRelPath,
                                         const std::string& modelPathOrRel,
                                         bool refreshRegistryAfterWrite,
                                         uint64_t entityId = 0);
 
-    /** @brief 将含骨骼实体的所有槽位材质转换为蒙皮版本（保留原有纹理和参数） */
+    /** @brief 为每个实体的 (材质, skin) 创建独立运行时蒙皮绑定。 */
     void convertModelMaterialsToSkinned();
+    void destroyEntitySkinBindings(SceneManager::ModelEntity& entity);
 
     // Returns the first material ID that is actually rendered on the main model.
     // For glTF models with per-submesh materials, this is slot 0's material;

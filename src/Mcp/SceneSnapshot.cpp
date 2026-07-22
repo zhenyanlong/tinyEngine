@@ -4,6 +4,7 @@
 #include "camera.hpp"
 
 #include <algorithm>
+#include <cfloat>
 #include <vector>
 
 namespace {
@@ -25,6 +26,27 @@ nlohmann::json transformToJson(const ObjectTransform& transform)
         {"rotation", quatToJson(transform.rotation)},
         {"scale", vec3ToJson(transform.scale)}
     };
+}
+
+std::pair<glm::vec3, glm::vec3> worldBounds(const SceneManager::ModelEntity& entity)
+{
+    const glm::mat4 model = entity.transform.GetModelMatrix() * glm::mat4_cast(entity.modelRotationOffset);
+    glm::vec3 worldMin(FLT_MAX);
+    glm::vec3 worldMax(-FLT_MAX);
+    for (int x = 0; x < 2; ++x) {
+        for (int y = 0; y < 2; ++y) {
+            for (int z = 0; z < 2; ++z) {
+                const glm::vec3 corner(
+                    x ? entity.localBoundsMax.x : entity.localBoundsMin.x,
+                    y ? entity.localBoundsMax.y : entity.localBoundsMin.y,
+                    z ? entity.localBoundsMax.z : entity.localBoundsMin.z);
+                const glm::vec3 transformed = glm::vec3(model * glm::vec4(corner, 1.f));
+                worldMin = glm::min(worldMin, transformed);
+                worldMax = glm::max(worldMax, transformed);
+            }
+        }
+    }
+    return {worldMin, worldMax};
 }
 
 const char* animatorParamTypeName(AnimatorParam::Type type)
@@ -57,6 +79,7 @@ nlohmann::json SceneSnapshot::capture(const SceneManager& sceneManager,
 {
     nlohmann::json entities = nlohmann::json::array();
     for (const auto& entity : sceneManager.getModelEntities()) {
+        const auto [worldMin, worldMax] = worldBounds(entity);
         nlohmann::json materialSlots = nlohmann::json::array();
         for (uint32_t materialId : entity.subMeshMaterials) {
             materialSlots.push_back(materialId);
@@ -82,6 +105,12 @@ nlohmann::json SceneSnapshot::capture(const SceneManager& sceneManager,
             {"displayName", entity.displayName},
             {"astRelPath", entity.astRelPath},
             {"transform", transformToJson(entity.transform)},
+            {"bounds", {
+                {"localMin", vec3ToJson(entity.localBoundsMin)},
+                {"localMax", vec3ToJson(entity.localBoundsMax)},
+                {"worldMin", vec3ToJson(worldMin)},
+                {"worldMax", vec3ToJson(worldMax)}
+            }},
             {"visible", entity.visible},
             {"selected", entity.selected},
             {"materialId", entity.materialId},
@@ -125,7 +154,7 @@ nlohmann::json SceneSnapshot::capture(const SceneManager& sceneManager,
     }
 
     nlohmann::json result = {
-        {"schemaVersion", 1},
+        {"schemaVersion", 2},
         {"counts", {
             {"entities", entities.size()},
             {"boxes", boxes.size()}

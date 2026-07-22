@@ -215,16 +215,16 @@ void MaterialManager::createPool(const VulkanContext& ctx)
 {
     std::array<VkDescriptorPoolSize, 2> sizes{};
     sizes[0].type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    sizes[0].descriptorCount = 2000;
+    sizes[0].descriptorCount = 8000;
     sizes[1].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    sizes[1].descriptorCount = 1000;
+    sizes[1].descriptorCount = 10000;
 
     VkDescriptorPoolCreateInfo ci{};
     ci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     ci.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     ci.poolSizeCount = static_cast<uint32_t>(sizes.size());
     ci.pPoolSizes    = sizes.data();
-    ci.maxSets       = 1000;
+    ci.maxSets       = 4000;
     if (vkCreateDescriptorPool(ctx.getDevice(), &ci, nullptr, &pool_) != VK_SUCCESS)
         throw std::runtime_error("Failed to create MaterialManager descriptor pool!");
 }
@@ -263,6 +263,11 @@ void MaterialManager::onSwapchainRecreate(const VulkanContext& ctx, const Comman
         e.descSets.clear();
         e.pipDescSets.clear();
     }
+    for (auto& [id, binding] : skinBindings_) {
+        destroySkinBindingBuffers(binding, ctx);
+        binding.descSets.clear();
+        binding.pipDescSets.clear();
+    }
 
     if (pool_ != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(ctx.getDevice(), pool_, nullptr);
@@ -277,10 +282,20 @@ void MaterialManager::onSwapchainRecreate(const VulkanContext& ctx, const Comman
         writeDescSets(e, ctx, pipeMgr);
         createPipResources(e, ctx, bufMgr, pipeMgr);
     }
+    for (auto& [id, binding] : skinBindings_) {
+        createSkinBindingBuffers(binding, ctx, bufMgr);
+        allocateSkinBindingDescSets(binding, ctx, pipeMgr);
+        writeSkinBindingDescSets(binding, ctx);
+    }
 }
 
 void MaterialManager::destroy(const VulkanContext& ctx)
 {
+    for (auto& [id, binding] : skinBindings_)
+        destroySkinBindingBuffers(binding, ctx);
+    skinBindings_.clear();
+    nextSkinBindingId_ = 1;
+
     for (auto& [id, e] : materials_)
         destroyEntry(e, ctx);
     materials_.clear();
@@ -582,6 +597,161 @@ void MaterialManager::destroyEntry(MaterialEntry& e, const VulkanContext& ctx)
     if (!e.emissive.isDefault)          destroyTexture(e.emissive,          ctx);
 }
 
+void MaterialManager::createSkinBindingBuffers(SkinBinding& binding,
+                                                const VulkanContext& ctx,
+                                                const BufferManager& bufMgr)
+{
+    binding.boneUbos.resize(imageCount_);
+    binding.boneUboMemory.resize(imageCount_);
+    binding.boneUboMapped.resize(imageCount_, nullptr);
+
+    BoneMatricesUBO identity{};
+    for (int bone = 0; bone < kMaxBones; ++bone)
+        identity.bones[bone] = glm::mat4(1.f);
+
+    for (uint32_t i = 0; i < imageCount_; ++i) {
+        bufMgr.createBuffer(sizeof(BoneMatricesUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                            binding.boneUbos[i], binding.boneUboMemory[i]);
+        vkMapMemory(ctx.getDevice(), binding.boneUboMemory[i], 0,
+                    sizeof(BoneMatricesUBO), 0, &binding.boneUboMapped[i]);
+        memcpy(binding.boneUboMapped[i], &identity, sizeof(identity));
+    }
+}
+
+void MaterialManager::destroySkinBindingBuffers(SkinBinding& binding,
+                                                 const VulkanContext& ctx)
+{
+    const VkDevice device = ctx.getDevice();
+    for (size_t i = 0; i < binding.boneUbos.size(); ++i) {
+        if (i < binding.boneUboMapped.size() && binding.boneUboMapped[i]) {
+            vkUnmapMemory(device, binding.boneUboMemory[i]);
+            binding.boneUboMapped[i] = nullptr;
+        }
+        if (binding.boneUbos[i] != VK_NULL_HANDLE)
+            vkDestroyBuffer(device, binding.boneUbos[i], nullptr);
+        if (i < binding.boneUboMemory.size() && binding.boneUboMemory[i] != VK_NULL_HANDLE)
+            vkFreeMemory(device, binding.boneUboMemory[i], nullptr);
+    }
+    binding.boneUbos.clear();
+    binding.boneUboMemory.clear();
+    binding.boneUboMapped.clear();
+}
+
+void MaterialManager::allocateSkinBindingDescSets(SkinBinding& binding,
+                                                   const VulkanContext& ctx,
+                                                   const PipelineManager& pipeMgr)
+{
+    std::vector<VkDescriptorSetLayout> layouts(imageCount_, pipeMgr.getSkinnedDescSetLayout());
+    VkDescriptorSetAllocateInfo allocateInfo{};
+    allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocateInfo.descriptorPool = pool_;
+    allocateInfo.descriptorSetCount = imageCount_;
+    allocateInfo.pSetLayouts = layouts.data();
+
+    binding.descSets.resize(imageCount_);
+    if (vkAllocateDescriptorSets(ctx.getDevice(), &allocateInfo, binding.descSets.data()) != VK_SUCCESS)
+        throw std::runtime_error("Failed to allocate skin binding descriptor sets!");
+
+    binding.pipDescSets.resize(imageCount_);
+    if (vkAllocateDescriptorSets(ctx.getDevice(), &allocateInfo, binding.pipDescSets.data()) != VK_SUCCESS) {
+        vkFreeDescriptorSets(ctx.getDevice(), pool_,
+                             static_cast<uint32_t>(binding.descSets.size()),
+                             binding.descSets.data());
+        binding.descSets.clear();
+        binding.pipDescSets.clear();
+        throw std::runtime_error("Failed to allocate PiP skin binding descriptor sets!");
+    }
+}
+
+void MaterialManager::writeSkinBindingDescSets(SkinBinding& binding,
+                                                const VulkanContext& ctx)
+{
+    const auto sourceIt = materials_.find(binding.sourceMaterial);
+    if (sourceIt == materials_.end()) return;
+    const MaterialEntry& source = sourceIt->second;
+
+    auto imageInfo = [](const TextureGPU& texture,
+                        const TextureGPU& fallback) -> VkDescriptorImageInfo {
+        VkDescriptorImageInfo info{};
+        info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        info.imageView = texture.view != VK_NULL_HANDLE ? texture.view : fallback.view;
+        info.sampler = texture.sampler != VK_NULL_HANDLE ? texture.sampler : fallback.sampler;
+        return info;
+    };
+
+    for (uint32_t i = 0; i < imageCount_; ++i) {
+        if (i >= source.ubos.size() || i >= source.pipUbos.size()
+            || i >= binding.boneUbos.size()
+            || i >= binding.descSets.size() || i >= binding.pipDescSets.size()) {
+            continue;
+        }
+
+        const VkDescriptorImageInfo albedo = imageInfo(source.albedo, defaultAlbedo_);
+        const VkDescriptorImageInfo normal = imageInfo(source.normal, defaultNormal_);
+        const VkDescriptorImageInfo mr = imageInfo(source.metallicRoughness, defaultMR_);
+        const VkDescriptorImageInfo ao = imageInfo(source.ao, defaultAO_);
+        const VkDescriptorImageInfo emissive = imageInfo(source.emissive, defaultEmissive_);
+
+        auto writeSet = [&](VkDescriptorSet set, VkBuffer materialUbo) {
+            VkDescriptorBufferInfo materialInfo{};
+            materialInfo.buffer = materialUbo;
+            materialInfo.offset = 0;
+            materialInfo.range = sizeof(UniformBufferObject);
+
+            VkDescriptorBufferInfo boneInfo{};
+            boneInfo.buffer = binding.boneUbos[i];
+            boneInfo.offset = 0;
+            boneInfo.range = sizeof(BoneMatricesUBO);
+
+            std::array<VkWriteDescriptorSet, 7> writes{};
+            writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[0].dstSet = set;
+            writes[0].dstBinding = 0;
+            writes[0].descriptorCount = 1;
+            writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            writes[0].pBufferInfo = &materialInfo;
+
+            auto fillTexture = [&](size_t index, uint32_t bindingIndex,
+                                   const VkDescriptorImageInfo* info) {
+                writes[index].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[index].dstSet = set;
+                writes[index].dstBinding = bindingIndex;
+                writes[index].descriptorCount = 1;
+                writes[index].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                writes[index].pImageInfo = info;
+            };
+            fillTexture(1, 1, &albedo);
+            fillTexture(2, 2, &normal);
+            fillTexture(3, 3, &mr);
+            fillTexture(4, 4, &ao);
+            fillTexture(5, 5, &emissive);
+
+            writes[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[6].dstSet = set;
+            writes[6].dstBinding = 6;
+            writes[6].descriptorCount = 1;
+            writes[6].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            writes[6].pBufferInfo = &boneInfo;
+
+            vkUpdateDescriptorSets(ctx.getDevice(), static_cast<uint32_t>(writes.size()),
+                                   writes.data(), 0, nullptr);
+        };
+
+        writeSet(binding.descSets[i], source.ubos[i]);
+        writeSet(binding.pipDescSets[i], source.pipUbos[i]);
+    }
+}
+
+void MaterialManager::rewriteSkinBindingsForMaterial(MaterialId materialId,
+                                                      const VulkanContext& ctx)
+{
+    for (auto& [id, binding] : skinBindings_) {
+        if (binding.sourceMaterial == materialId)
+            writeSkinBindingDescSets(binding, ctx);
+    }
+}
+
 // ── Material creation ──────────────────────────────────────────────────────────
 
 MaterialId MaterialManager::createMeshMaterial(const std::string& name,
@@ -740,6 +910,15 @@ void MaterialManager::destroyMaterial(MaterialId id, const VulkanContext& ctx)
 {
     auto it = materials_.find(id);
     if (it == materials_.end() || !it->second.deletable) return;
+
+    std::vector<SkinBindingId> dependentBindings;
+    for (const auto& [bindingId, binding] : skinBindings_) {
+        if (binding.sourceMaterial == id)
+            dependentBindings.push_back(bindingId);
+    }
+    for (SkinBindingId bindingId : dependentBindings)
+        destroySkinBinding(bindingId, ctx);
+
     destroyEntry(it->second, ctx);
     materials_.erase(it);
     allIds_.erase(std::remove(allIds_.begin(), allIds_.end(), id), allIds_.end());
@@ -802,6 +981,8 @@ bool MaterialManager::setAlbedoPath(MaterialId id, const std::string& path,
         e.albedo.path.clear();
     }
     writeDescSets(e, ctx, pipeMgr);
+    writePipDescSets(e, ctx);
+    rewriteSkinBindingsForMaterial(id, ctx);
     return true;
 }
 
@@ -833,6 +1014,8 @@ bool MaterialManager::setNormalPath(MaterialId id, const std::string& path,
         e.normal.path.clear();
     }
     writeDescSets(e, ctx, pipeMgr);
+    writePipDescSets(e, ctx);
+    rewriteSkinBindingsForMaterial(id, ctx);
     return true;
 }
 
@@ -981,6 +1164,103 @@ void MaterialManager::updateBoneMatrices(MaterialId id,
     for (size_t i = count; i < static_cast<size_t>(kMaxBones); ++i)
         ubo.bones[i] = glm::mat4(1.f);
     memcpy(e.boneUboMapped[imageIndex], &ubo, sizeof(ubo));
+}
+
+SkinBindingId MaterialManager::createSkinBinding(MaterialId sourceMaterial,
+                                                 const VulkanContext& ctx,
+                                                 const BufferManager& bufMgr,
+                                                 const PipelineManager& pipeMgr)
+{
+    const auto sourceIt = materials_.find(sourceMaterial);
+    if (sourceIt == materials_.end()
+        || (sourceIt->second.type != MaterialType::Mesh
+            && sourceIt->second.type != MaterialType::Material)) {
+        return kInvalidSkinBindingId;
+    }
+
+    const SkinBindingId id = nextSkinBindingId_++;
+    SkinBinding binding;
+    binding.sourceMaterial = sourceMaterial;
+    createSkinBindingBuffers(binding, ctx, bufMgr);
+    try {
+        allocateSkinBindingDescSets(binding, ctx, pipeMgr);
+        writeSkinBindingDescSets(binding, ctx);
+    } catch (...) {
+        destroySkinBindingBuffers(binding, ctx);
+        throw;
+    }
+    skinBindings_.emplace(id, std::move(binding));
+    return id;
+}
+
+void MaterialManager::destroySkinBinding(SkinBindingId id, const VulkanContext& ctx)
+{
+    const auto it = skinBindings_.find(id);
+    if (it == skinBindings_.end()) return;
+
+    SkinBinding& binding = it->second;
+    if (pool_ != VK_NULL_HANDLE) {
+        if (!binding.descSets.empty()) {
+            vkFreeDescriptorSets(ctx.getDevice(), pool_,
+                                 static_cast<uint32_t>(binding.descSets.size()),
+                                 binding.descSets.data());
+        }
+        if (!binding.pipDescSets.empty()) {
+            vkFreeDescriptorSets(ctx.getDevice(), pool_,
+                                 static_cast<uint32_t>(binding.pipDescSets.size()),
+                                 binding.pipDescSets.data());
+        }
+    }
+    destroySkinBindingBuffers(binding, ctx);
+    skinBindings_.erase(it);
+}
+
+bool MaterialManager::isValidSkinBinding(SkinBindingId id) const
+{
+    return id != kInvalidSkinBindingId && skinBindings_.find(id) != skinBindings_.end();
+}
+
+MaterialId MaterialManager::getSkinBindingMaterial(SkinBindingId id) const
+{
+    const auto it = skinBindings_.find(id);
+    return it != skinBindings_.end() ? it->second.sourceMaterial : kInvalidMaterialId;
+}
+
+void MaterialManager::updateSkinBindingBones(SkinBindingId id,
+                                              uint32_t imageIndex,
+                                              const std::vector<glm::mat4>& bones)
+{
+    const auto it = skinBindings_.find(id);
+    if (it == skinBindings_.end()) return;
+    SkinBinding& binding = it->second;
+    if (imageIndex >= binding.boneUboMapped.size() || !binding.boneUboMapped[imageIndex])
+        return;
+
+    BoneMatricesUBO ubo{};
+    const size_t count = std::min(bones.size(), static_cast<size_t>(kMaxBones));
+    for (size_t i = 0; i < count; ++i)
+        ubo.bones[i] = bones[i];
+    for (size_t i = count; i < static_cast<size_t>(kMaxBones); ++i)
+        ubo.bones[i] = glm::mat4(1.f);
+    memcpy(binding.boneUboMapped[imageIndex], &ubo, sizeof(ubo));
+}
+
+VkDescriptorSet MaterialManager::getSkinDescriptorSet(SkinBindingId id,
+                                                       uint32_t imageIndex) const
+{
+    const auto it = skinBindings_.find(id);
+    if (it == skinBindings_.end() || imageIndex >= it->second.descSets.size())
+        return VK_NULL_HANDLE;
+    return it->second.descSets[imageIndex];
+}
+
+VkDescriptorSet MaterialManager::getSkinPipDescriptorSet(SkinBindingId id,
+                                                          uint32_t imageIndex) const
+{
+    const auto it = skinBindings_.find(id);
+    if (it == skinBindings_.end() || imageIndex >= it->second.pipDescSets.size())
+        return VK_NULL_HANDLE;
+    return it->second.pipDescSets[imageIndex];
 }
 
 // ── Reload default mesh textures ───────────────────────────────────────────────

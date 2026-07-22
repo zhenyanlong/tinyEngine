@@ -12,8 +12,9 @@ public:
                    const std::string& captureDirectory);
     void destroy(const VulkanContext& ctx);
 
-    nlohmann::json request(int currentFrameCount);
+    nlohmann::json request(int currentFrameCount, bool includeUi = true);
     nlohmann::json query(uint64_t jobId) const;
+    bool shouldRenderUi() const;
 
     bool record(VkCommandBuffer commandBuffer, VkImage swapChainImage,
                 int currentFrameCount);
@@ -43,6 +44,7 @@ private:
     uint64_t       jobId_ = 0;
     int            requestedFrame_ = 0;
     int            capturedFrame_ = 0;
+    bool           includeUi_ = true;
     std::string    outputPath_;
     uint64_t       outputBytes_ = 0;
     std::string    errorCode_;

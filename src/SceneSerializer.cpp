@@ -15,6 +15,7 @@
 #include <fstream>
 #include <iostream>
 #include <cstring>
+#include <unordered_set>
 
 using json = nlohmann::json;
 
@@ -135,6 +136,10 @@ bool SceneSerializer::save(const std::string& path,
         } else {
             continue;
         }
+
+        e["entityId"] = ent.entityId;
+        if (!ent.displayName.empty())
+            e["displayName"] = ent.displayName;
 
         e["position"]    = { ent.transform.position.x,
                              ent.transform.position.y,
@@ -259,14 +264,47 @@ bool SceneSerializer::load(const std::string& path,
     json j;
     if (!readJson(path, j)) return false;
 
+    if (j.contains("entities") && j["entities"].is_array()) {
+        std::unordered_set<uint64_t> persistedIds;
+        for (const auto& entityJson : j["entities"]) {
+            if (!entityJson.is_object()) {
+                std::cerr << "[SceneSerializer] Invalid entity entry in scene\n";
+                return false;
+            }
+            if (entityJson.contains("entityId")
+                && !entityJson["entityId"].is_number_unsigned()) {
+                std::cerr << "[SceneSerializer] Invalid entityId in scene\n";
+                return false;
+            }
+            const uint64_t entityId = entityJson.value("entityId", uint64_t(0));
+            if (entityId != 0 && !persistedIds.insert(entityId).second) {
+                std::cerr << "[SceneSerializer] Duplicate entityId in scene: "
+                          << entityId << "\n";
+                return false;
+            }
+        }
+    }
+
     // ── 清空现有场景 ────────────────────────────────────────────────────
     {
         // Collect ids first to avoid modifying while iterating
         std::vector<uint64_t> ids;
         for (const auto& ent : sceneMgr.getModelEntities())
             ids.push_back(ent.entityId);
-        for (uint64_t eid : ids)
+        for (uint64_t eid : ids) {
+            if (auto* ent = sceneMgr.getModelEntity(eid)) {
+                std::unordered_set<SkinBindingId> bindings;
+                if (ent->skinBindingId != kInvalidSkinBindingId)
+                    bindings.insert(ent->skinBindingId);
+                for (uint32_t rawId : ent->subMeshSkinBindings) {
+                    if (rawId != kInvalidSkinBindingId)
+                        bindings.insert(static_cast<SkinBindingId>(rawId));
+                }
+                for (SkinBindingId bindingId : bindings)
+                    matMgr.destroySkinBinding(bindingId, ctx);
+            }
             sceneMgr.removeModelEntity(eid, ctx);
+        }
     }
 
     // ── 加载实体 ────────────────────────────────────────────────────────
@@ -332,9 +370,14 @@ bool SceneSerializer::load(const std::string& path,
                         ej["position"][1].get<float>(),
                         ej["position"][2].get<float>() };
 
-            uint64_t eid = sceneMgr.createModelEntity(modelPath, pos, bufMgr);
+            const uint64_t preferredEntityId = ej.value("entityId", uint64_t(0));
+            uint64_t eid = sceneMgr.createModelEntity(modelPath, pos, bufMgr, true,
+                                                       preferredEntityId);
             auto* ent = sceneMgr.getModelEntity(eid);
             if (!ent) continue;
+
+            if (ej.contains("displayName") && ej["displayName"].is_string())
+                ent->displayName = ej["displayName"].get<std::string>();
 
             // 恢复 .ast 资产路径（使用迁移后的新路径，确保 save 时写新路径）
             if (ej.contains("astRelPath") && ej["astRelPath"].is_string())

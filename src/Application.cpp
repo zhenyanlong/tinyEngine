@@ -24,6 +24,8 @@
 #include <cstring>
 #include "cgltf.h"
 #include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // STB_IMAGE_IMPLEMENTATION defined globally; only TextureManager.cpp implements it
@@ -43,6 +45,83 @@ std::string sanitizeAssetName(std::string name)
         }
     }
     return name;
+}
+
+std::string normalizeSequenceBindingPath(std::string path)
+{
+    std::replace(path.begin(), path.end(), '\\', '/');
+    while (path.rfind("./", 0) == 0)
+        path.erase(0, 2);
+    std::transform(path.begin(), path.end(), path.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return path;
+}
+
+std::string inferLegacySequenceTargetName(const SequenceTrack& track)
+{
+    std::string name;
+    std::string prefix;
+    std::string suffix;
+    if (track.type == TrackType::TransformKeyframe) {
+        name = track.keyframeTrack.name.empty() ? track.name : track.keyframeTrack.name;
+        prefix = "[T] ";
+        suffix = " Transform";
+    } else if (track.type == TrackType::AnimatorKeyframe) {
+        name = track.animatorTrack.name.empty() ? track.name : track.animatorTrack.name;
+        prefix = "[A] ";
+        suffix = " Animator";
+    } else {
+        return {};
+    }
+
+    if (name.rfind(prefix, 0) != 0 || name.size() <= prefix.size() + suffix.size()
+        || name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) {
+        return {};
+    }
+    return name.substr(prefix.size(), name.size() - prefix.size() - suffix.size());
+}
+
+void getSequenceBindingMetadata(const SequenceTrack& track,
+                                uint64_t& entityId,
+                                const std::string*& astRelPath,
+                                const std::string*& displayName)
+{
+    if (track.type == TrackType::TransformKeyframe) {
+        entityId = track.keyframeTrack.targetEntityId;
+        astRelPath = &track.keyframeTrack.targetAstRelPath;
+        displayName = &track.keyframeTrack.targetDisplayName;
+    } else {
+        entityId = track.animatorTrack.targetEntityId;
+        astRelPath = &track.animatorTrack.targetAstRelPath;
+        displayName = &track.animatorTrack.targetDisplayName;
+    }
+}
+
+void setSequenceBindingMetadata(SequenceTrack& track,
+                                const SceneManager::ModelEntity& entity)
+{
+    if (track.type == TrackType::TransformKeyframe) {
+        track.keyframeTrack.targetEntityId = entity.entityId;
+        track.keyframeTrack.targetAstRelPath = entity.astRelPath;
+        track.keyframeTrack.targetDisplayName = entity.displayName;
+    } else if (track.type == TrackType::AnimatorKeyframe) {
+        track.animatorTrack.targetEntityId = entity.entityId;
+        track.animatorTrack.targetAstRelPath = entity.astRelPath;
+        track.animatorTrack.targetDisplayName = entity.displayName;
+    }
+}
+
+bool sequenceBindingMetadataMatches(const SceneManager::ModelEntity& entity,
+                                    const std::string& astRelPath,
+                                    const std::string& displayName)
+{
+    if (!astRelPath.empty()
+        && normalizeSequenceBindingPath(entity.astRelPath) != normalizeSequenceBindingPath(astRelPath)) {
+        return false;
+    }
+    if (!displayName.empty() && entity.displayName != displayName)
+        return false;
+    return !astRelPath.empty() || !displayName.empty();
 }
 
 std::filesystem::path makeUniquePath(const std::filesystem::path& desired)
@@ -108,6 +187,121 @@ std::string defaultAnimBaseName(const std::string& meshAstRelPath)
     if (endsWith(base, ".mesh"))
         base.resize(base.size() - 5);
     return sanitizeAssetName(base.empty() ? std::string("animation") : base);
+}
+
+json invalidParams(std::string message)
+{
+    return {{"error", {{"code", "invalid_params"}, {"message", std::move(message)}}}};
+}
+
+bool finiteVec3(const json& value, glm::vec3& result)
+{
+    if (!value.is_array() || value.size() != 3)
+        return false;
+    for (size_t i = 0; i < 3; ++i) {
+        if (!value[i].is_number()) return false;
+        const double component = value[i].get<double>();
+        if (!std::isfinite(component)) return false;
+        result[static_cast<int>(i)] = static_cast<float>(component);
+    }
+    return true;
+}
+
+bool finiteQuatXyzw(const json& value, glm::quat& result)
+{
+    if (!value.is_array() || value.size() != 4)
+        return false;
+    float components[4]{};
+    for (size_t i = 0; i < 4; ++i) {
+        if (!value[i].is_number()) return false;
+        const double component = value[i].get<double>();
+        if (!std::isfinite(component)) return false;
+        components[i] = static_cast<float>(component);
+    }
+    result = glm::quat(components[3], components[0], components[1], components[2]);
+    const float norm = glm::length(result);
+    if (!std::isfinite(norm) || norm < 1e-6f)
+        return false;
+    result = glm::normalize(result);
+    return true;
+}
+
+bool applyTransformParams(const json& params, ObjectTransform& transform,
+                          bool& changed, std::string& error)
+{
+    changed = false;
+    if (!params.is_object()) {
+        error = "params must be an object";
+        return false;
+    }
+
+    if (params.contains("position")) {
+        glm::vec3 position;
+        if (!finiteVec3(params["position"], position)) {
+            error = "position must be three finite numbers";
+            return false;
+        }
+        transform.position = position;
+        changed = true;
+    }
+
+    if (params.contains("scale")) {
+        glm::vec3 scale;
+        if (!finiteVec3(params["scale"], scale)
+            || glm::any(glm::lessThanEqual(scale, glm::vec3(1e-4f)))
+            || glm::any(glm::greaterThan(scale, glm::vec3(1000.f)))) {
+            error = "scale must contain three finite values in (0.0001, 1000]";
+            return false;
+        }
+        transform.scale = scale;
+        changed = true;
+    }
+
+    const bool hasQuaternion = params.contains("rotationQuaternion");
+    const bool hasEuler = params.contains("rotationEulerDeg");
+    if (hasQuaternion && hasEuler) {
+        error = "rotationQuaternion and rotationEulerDeg are mutually exclusive";
+        return false;
+    }
+    if (hasQuaternion) {
+        glm::quat rotation;
+        if (!finiteQuatXyzw(params["rotationQuaternion"], rotation)) {
+            error = "rotationQuaternion must be a non-zero finite [x, y, z, w] array";
+            return false;
+        }
+        transform.rotation = rotation;
+        changed = true;
+    } else if (hasEuler) {
+        glm::vec3 eulerDeg;
+        if (!finiteVec3(params["rotationEulerDeg"], eulerDeg)) {
+            error = "rotationEulerDeg must be three finite numbers";
+            return false;
+        }
+        transform.rotation = glm::normalize(glm::quat(glm::radians(eulerDeg)));
+        changed = true;
+    }
+    return true;
+}
+
+json transformJson(const ObjectTransform& transform)
+{
+    return {
+        {"position", {transform.position.x, transform.position.y, transform.position.z}},
+        {"rotation", {transform.rotation.x, transform.rotation.y,
+                      transform.rotation.z, transform.rotation.w}},
+        {"scale", {transform.scale.x, transform.scale.y, transform.scale.z}}
+    };
+}
+
+const char* modelTypeName(ModelType type)
+{
+    switch (type) {
+    case ModelType::OBJ: return "obj";
+    case ModelType::GLTF: return "gltf";
+    case ModelType::GLB: return "glb";
+    case ModelType::FBX: return "fbx";
+    default: return "unknown";
+    }
 }
 
 } // namespace
@@ -451,8 +645,127 @@ void Application::registerMcpHandlers()
         return SceneSnapshot::capture(sceneMgr_, camera_, pickedBoxEntityId);
     });
 
-    bridge.registerHandler("capture.frame", [this](const json&) -> json {
-        return frameCapture_.request(frameCount_);
+    bridge.registerHandler("asset.list", [this](const json& params) -> json {
+        if (!params.is_object()) return invalidParams("params must be an object");
+        if ((params.contains("keyword") && !params["keyword"].is_string())
+            || (params.contains("folder") && !params["folder"].is_string())) {
+            return invalidParams("keyword and folder must be strings");
+        }
+        const std::string keyword = params.value("keyword", std::string{});
+        const std::string folder = params.value("folder", std::string{});
+
+        const std::string lowerKeyword = toLowerCopy(keyword);
+        json assets = json::array();
+        for (const auto& asset : modelRegistry_.getAll()) {
+            if (asset.modelRelPath.empty() || asset.type == ModelType::Unknown
+                || asset.astType == "Material" || asset.astType == "Anim") {
+                continue;
+            }
+            if (!folder.empty() && asset.subFolder != folder) continue;
+            if (!lowerKeyword.empty()) {
+                const std::string haystack = toLowerCopy(asset.name + " " + asset.astRelPath);
+                if (haystack.find(lowerKeyword) == std::string::npos) continue;
+            }
+            assets.push_back({
+                {"name", asset.name},
+                {"astRelPath", asset.astRelPath},
+                {"modelRelPath", asset.modelRelPath},
+                {"folder", asset.subFolder},
+                {"format", modelTypeName(asset.type)},
+                {"hasThumbnail", asset.hasThumbnail}
+            });
+        }
+        return {{"count", assets.size()}, {"assets", std::move(assets)}};
+    });
+
+    bridge.registerHandler("entity.place", [this](const json& params) -> json {
+        if (!params.is_object() || !params.contains("astRelPath")
+            || !params["astRelPath"].is_string() || params["astRelPath"].get<std::string>().empty()) {
+            return invalidParams("astRelPath must be a non-empty registered asset path");
+        }
+        ObjectTransform transform;
+        bool changed = false;
+        std::string error;
+        if (!applyTransformParams(params, transform, changed, error))
+            return invalidParams(error);
+
+        const std::string astRelPath = stripResPrefix(params["astRelPath"].get<std::string>());
+        try {
+            const uint64_t entityId = placeRegisteredModel(astRelPath, transform);
+            return {
+                {"entityId", entityId},
+                {"astRelPath", astRelPath},
+                {"transform", transformJson(transform)}
+            };
+        } catch (const std::exception& e) {
+            return {{"error", {{"code", "asset_load_failed"}, {"message", e.what()}}}};
+        }
+    });
+
+    bridge.registerHandler("entity.getTransform", [this](const json& params) -> json {
+        if (!params.is_object() || !params.contains("entityId")
+            || !params["entityId"].is_number_integer()) {
+            return invalidParams("entityId must be a positive integer");
+        }
+        const int64_t rawId = params["entityId"].get<int64_t>();
+        if (rawId <= 0) return invalidParams("entityId must be a positive integer");
+        const auto* entity = sceneMgr_.getModelEntity(static_cast<uint64_t>(rawId));
+        if (!entity) {
+            return {{"error", {{"code", "entity_not_found"}, {"message", "entity does not exist"}}}};
+        }
+        return {{"entityId", entity->entityId}, {"transform", transformJson(entity->transform)}};
+    });
+
+    bridge.registerHandler("entity.setTransform", [this](const json& params) -> json {
+        if (!params.is_object() || !params.contains("entityId")
+            || !params["entityId"].is_number_integer()) {
+            return invalidParams("entityId must be a positive integer");
+        }
+        const int64_t rawId = params["entityId"].get<int64_t>();
+        if (rawId <= 0) return invalidParams("entityId must be a positive integer");
+        auto* entity = sceneMgr_.getModelEntity(static_cast<uint64_t>(rawId));
+        if (!entity) {
+            return {{"error", {{"code", "entity_not_found"}, {"message", "entity does not exist"}}}};
+        }
+
+        ObjectTransform transform = entity->transform;
+        bool changed = false;
+        std::string error;
+        if (!applyTransformParams(params, transform, changed, error))
+            return invalidParams(error);
+        if (!changed) return invalidParams("at least one transform field must be provided");
+
+        sceneMgr_.setEntityTransform(entity->entityId, transform);
+        const auto& entities = sceneMgr_.getModelEntities();
+        if (!entities.empty() && entities.front().entityId == entity->entityId)
+            mainModelTransform = transform;
+        return {{"entityId", entity->entityId}, {"transform", transformJson(transform)}};
+    });
+
+    bridge.registerHandler("entity.delete", [this](const json& params) -> json {
+        if (!params.is_object() || !params.contains("entityId")
+            || !params["entityId"].is_number_integer()) {
+            return invalidParams("entityId must be a positive integer");
+        }
+        const int64_t rawId = params["entityId"].get<int64_t>();
+        if (rawId <= 0) return invalidParams("entityId must be a positive integer");
+        const uint64_t entityId = static_cast<uint64_t>(rawId);
+        if (!sceneMgr_.getModelEntity(entityId)) {
+            return {{"error", {{"code", "entity_not_found"}, {"message", "entity does not exist"}}}};
+        }
+        vkDeviceWaitIdle(ctx_.getDevice());
+        destroyEntitySkinBindings(*sceneMgr_.getModelEntity(entityId));
+        const bool removed = sceneMgr_.removeModelEntity(entityId, ctx_);
+        if (ui_ && ui_->selectedEntityId_ == entityId) ui_->selectedEntityId_ = 0;
+        if (selectedCameraEntityId_ == entityId) selectedCameraEntityId_ = 0;
+        return {{"entityId", entityId}, {"deleted", removed}};
+    });
+
+    bridge.registerHandler("capture.frame", [this](const json& params) -> json {
+        if (!params.is_object()) return invalidParams("params must be an object");
+        if (params.contains("includeUi") && !params["includeUi"].is_boolean())
+            return invalidParams("includeUi must be a boolean");
+        return frameCapture_.request(frameCount_, params.value("includeUi", true));
     });
 
     bridge.registerHandler("capture.get", [this](const json& params) -> json {
@@ -501,35 +814,202 @@ void Application::endCameraPathRecording()
               << recordingTime_ << "s)\n";
 }
 
-void Application::convertModelMaterialsToSkinned()
+bool Application::loadSequenceAsset(const std::string& path,
+                                    std::string* error,
+                                    SequenceBindingReport* bindingReport)
 {
-    for (auto& ent : sceneMgr_.getModelEntities()) {
-        if (!ent.hasSkin_) continue;
+    Sequence loaded;
+    if (!SequenceAssetLoader::loadSequence(path, loaded, error))
+        return false;
 
-        auto convert = [&](MaterialId srcId) -> MaterialId {
-            if (srcId == kInvalidMaterialId || !matMgr_.isValid(srcId))
-                return kInvalidMaterialId;
-            if (matMgr_.hasSkinning(srcId)) return srcId;
-            return matMgr_.createSkinnedMaterialFrom(
-                srcId, ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_);
-        };
-
-        // 逐槽位克隆 — 保留每个 sub-mesh 的原始纹理和参数
-        for (size_t i = 0; i < ent.subMeshMaterials.size(); ++i) {
-            if (ent.subMeshMaterials[i] == 0u) continue;
-            const MaterialId newId = convert(ent.subMeshMaterials[i]);
-            if (newId != kInvalidMaterialId)
-                ent.subMeshMaterials[i] = newId;
+    SequenceBindingReport report;
+    const auto& entities = sceneMgr_.getModelEntities();
+    for (size_t trackIndex = 0; trackIndex < loaded.tracks.size(); ++trackIndex) {
+        auto& track = loaded.tracks[trackIndex];
+        if (track.type != TrackType::TransformKeyframe
+            && track.type != TrackType::AnimatorKeyframe) {
+            continue;
         }
 
-        // 实体回退材质也转换为蒙皮版本
-        const MaterialId newId = convert(ent.materialId);
-        if (newId != kInvalidMaterialId)
-            ent.materialId = newId;
+        uint64_t targetEntityId = 0;
+        const std::string* targetAstRelPath = nullptr;
+        const std::string* targetDisplayName = nullptr;
+        getSequenceBindingMetadata(track, targetEntityId,
+                                   targetAstRelPath, targetDisplayName);
+        const std::string inferredName = inferLegacySequenceTargetName(track);
 
-        std::cout << "[tinyEngine] converted materials to skinned for entity "
-                  << ent.entityId << " (" << ent.subMeshMaterials.size()
-                  << " slots)\n";
+        const SceneManager::ModelEntity* boundEntity = sceneMgr_.getModelEntity(targetEntityId);
+        if (boundEntity) {
+            // 持久化实体 ID 是首选身份；名称或路径可能被用户重命名，命中后刷新元数据。
+            setSequenceBindingMetadata(track, *boundEntity);
+            continue;
+        }
+
+        std::vector<const SceneManager::ModelEntity*> candidates;
+        for (const auto& entity : entities) {
+            bool matches = false;
+            if (!targetAstRelPath->empty() || !targetDisplayName->empty()) {
+                matches = sequenceBindingMetadataMatches(entity, *targetAstRelPath,
+                                                          *targetDisplayName);
+            } else if (!inferredName.empty()) {
+                matches = entity.displayName == inferredName;
+            }
+            if (matches)
+                candidates.push_back(&entity);
+        }
+
+        if (candidates.size() == 1) {
+            if (candidates.front()->entityId != targetEntityId)
+                ++report.reboundTrackCount;
+            setSequenceBindingMetadata(track, *candidates.front());
+        } else {
+            report.unresolvedTrackIndices.push_back(trackIndex);
+        }
+    }
+
+    currentSequence_ = std::move(loaded);
+    seqPlayer_.load(currentSequence_);
+    seqPlayer_.setSequenceRef(currentSequence_);
+    sequencerPreviewPending_ = false;
+    sequenceCameraActive_ = false;
+    cameraPathCache_.clear();
+
+    for (auto& entity : sceneMgr_.getModelEntities()) {
+        entity.previewClipIndex = -1;
+        entity.previewTime = 0.f;
+        entity.hasPendingSequencerBlend = false;
+        entity.rootMotionInitialized = false;
+    }
+    if (bindingReport)
+        *bindingReport = std::move(report);
+    return true;
+}
+
+bool Application::bindSequenceTrack(size_t trackIndex, uint64_t entityId)
+{
+    if (trackIndex >= currentSequence_.tracks.size())
+        return false;
+    auto& track = currentSequence_.tracks[trackIndex];
+    if (track.type != TrackType::TransformKeyframe
+        && track.type != TrackType::AnimatorKeyframe) {
+        return false;
+    }
+    auto* entity = sceneMgr_.getModelEntity(entityId);
+    if (!entity)
+        return false;
+    setSequenceBindingMetadata(track, *entity);
+    return true;
+}
+
+void Application::destroyEntitySkinBindings(SceneManager::ModelEntity& ent)
+{
+    std::unordered_set<SkinBindingId> uniqueBindings;
+    if (ent.skinBindingId != kInvalidSkinBindingId)
+        uniqueBindings.insert(ent.skinBindingId);
+    for (uint32_t rawId : ent.subMeshSkinBindings) {
+        if (rawId != kInvalidSkinBindingId)
+            uniqueBindings.insert(static_cast<SkinBindingId>(rawId));
+    }
+    for (SkinBindingId id : uniqueBindings)
+        matMgr_.destroySkinBinding(id, ctx_);
+    ent.skinBindingId = kInvalidSkinBindingId;
+    ent.subMeshSkinBindings.clear();
+}
+
+void Application::convertModelMaterialsToSkinned()
+{
+    bool hasSkinnedEntity = false;
+    for (const auto& ent : sceneMgr_.getModelEntities()) {
+        if (ent.hasSkin_) {
+            hasSkinnedEntity = true;
+            break;
+        }
+    }
+    if (hasSkinnedEntity)
+        vkDeviceWaitIdle(ctx_.getDevice());
+
+    for (auto& ent : sceneMgr_.getModelEntities()) {
+        if (!ent.hasSkin_) {
+            destroyEntitySkinBindings(ent);
+            continue;
+        }
+
+        auto resolveMaterial = [&](const SceneManager::SubMesh* subMesh) -> MaterialId {
+            MaterialId materialId = ent.materialId;
+            if (subMesh && subMesh->materialSlot >= 0
+                && subMesh->materialSlot < static_cast<int>(ent.subMeshMaterials.size())) {
+                const MaterialId slotMaterial = ent.subMeshMaterials[subMesh->materialSlot];
+                if (matMgr_.isValid(slotMaterial))
+                    materialId = slotMaterial;
+            }
+            if (!matMgr_.isValid(materialId))
+                materialId = matMgr_.getDefaultMeshMaterialId();
+            return materialId;
+        };
+
+        if (ent.subMeshes.empty()) {
+            const MaterialId materialId = resolveMaterial(nullptr);
+            if (!matMgr_.isValidSkinBinding(ent.skinBindingId)
+                || matMgr_.getSkinBindingMaterial(ent.skinBindingId) != materialId) {
+                if (matMgr_.isValidSkinBinding(ent.skinBindingId))
+                    matMgr_.destroySkinBinding(ent.skinBindingId, ctx_);
+                ent.skinBindingId = matMgr_.createSkinBinding(
+                    materialId, ctx_, bufMgr_, pipeMgr_);
+            }
+            ent.subMeshSkinBindings.clear();
+            continue;
+        }
+
+        std::unordered_map<uint64_t, SkinBindingId> bindingByMaterialAndSkin;
+        std::unordered_set<SkinBindingId> oldBindings;
+        std::unordered_set<SkinBindingId> usedBindings;
+        for (uint32_t rawId : ent.subMeshSkinBindings) {
+            const SkinBindingId id = static_cast<SkinBindingId>(rawId);
+            if (matMgr_.isValidSkinBinding(id)) oldBindings.insert(id);
+        }
+
+        std::vector<uint32_t> newBindings(ent.subMeshes.size(), kInvalidSkinBindingId);
+        for (size_t i = 0; i < ent.subMeshes.size(); ++i) {
+            const auto& subMesh = ent.subMeshes[i];
+            if (subMesh.skinIndex < 0) continue;
+
+            const MaterialId materialId = resolveMaterial(&subMesh);
+            const uint64_t key = (static_cast<uint64_t>(materialId) << 32)
+                               | static_cast<uint32_t>(subMesh.skinIndex);
+
+            SkinBindingId bindingId = kInvalidSkinBindingId;
+            const auto cached = bindingByMaterialAndSkin.find(key);
+            if (cached != bindingByMaterialAndSkin.end()) {
+                bindingId = cached->second;
+            } else if (i < ent.subMeshSkinBindings.size()) {
+                const SkinBindingId existing = ent.subMeshSkinBindings[i];
+                if (matMgr_.isValidSkinBinding(existing)
+                    && matMgr_.getSkinBindingMaterial(existing) == materialId) {
+                    bindingId = existing;
+                }
+            }
+
+            if (bindingId == kInvalidSkinBindingId) {
+                bindingId = matMgr_.createSkinBinding(
+                    materialId, ctx_, bufMgr_, pipeMgr_);
+            }
+            bindingByMaterialAndSkin[key] = bindingId;
+            newBindings[i] = bindingId;
+            if (bindingId != kInvalidSkinBindingId)
+                usedBindings.insert(bindingId);
+        }
+
+        for (SkinBindingId id : oldBindings) {
+            if (!usedBindings.count(id))
+                matMgr_.destroySkinBinding(id, ctx_);
+        }
+        if (matMgr_.isValidSkinBinding(ent.skinBindingId))
+            matMgr_.destroySkinBinding(ent.skinBindingId, ctx_);
+        ent.skinBindingId = kInvalidSkinBindingId;
+        ent.subMeshSkinBindings = std::move(newBindings);
+
+        std::cout << "[tinyEngine] created " << usedBindings.size()
+                  << " isolated skin binding(s) for entity " << ent.entityId << "\n";
     }
 }
 
@@ -570,6 +1050,7 @@ void Application::drawFrame(float dt)
             }
         }
 
+        const bool sequencerPreviewRequested = sequencerPreviewPending_;
         SequencePlayer::FrameCallbacks seqCallbacks;
         seqCallbacks.onAnimClipEval = [&](double localT, const std::string& clipName,
                                            double clipOffset, double playSpeed) {
@@ -622,14 +1103,13 @@ void Application::drawFrame(float dt)
 
         seqCallbacks.onTransformKeyframeEval = [&](double t, uint64_t entityId, const TransformKeyframeTrack::EvalResult& result) {
             if (!result.valid) return;
-            if (!seqPlayer_.isPlaying() && !sequencerPreviewPending_) return;
+            if (!seqPlayer_.isPlaying() && !sequencerPreviewRequested) return;
             auto* ent = sceneMgr_.getModelEntity(entityId);
             if (!ent) return;
             ent->transform.position = result.position;
             ent->transform.rotation = result.rotation;
             ent->transform.scale = result.scale;
             ent->syncCameraFromTransform();
-            if (sequencerPreviewPending_) sequencerPreviewPending_ = false;
         };
 
         seqCallbacks.onEvent = [&](const std::string& eventName) {
@@ -661,6 +1141,8 @@ void Application::drawFrame(float dt)
         };
 
         seqPlayer_.update(dt, seqCallbacks);
+        if (sequencerPreviewRequested)
+            sequencerPreviewPending_ = false;
     }
 
     // 当 Sequencer 正在播放但没有 AnimationClip 轨道时，
@@ -695,13 +1177,13 @@ void Application::drawFrame(float dt)
 
     // 逐实体动画采样与骨骼矩阵上传：每个实体使用自己的 skeleton/clips，
     // 不再依赖全局单例，支持多骨架动画实体同场景。
-    std::vector<MaterialId> updatedMaterials;
-    auto updateSkinMaterial = [&](MaterialId id, const std::vector<glm::mat4>& palette) {
-        if (id == kInvalidMaterialId || !matMgr_.isValid(id)) return;
-        if (std::find(updatedMaterials.begin(), updatedMaterials.end(), id) != updatedMaterials.end())
+    std::vector<SkinBindingId> updatedBindings;
+    auto updateSkinBinding = [&](SkinBindingId id, const std::vector<glm::mat4>& palette) {
+        if (!matMgr_.isValidSkinBinding(id)) return;
+        if (std::find(updatedBindings.begin(), updatedBindings.end(), id) != updatedBindings.end())
             return;
-        matMgr_.updateBoneMatrices(id, imageIndex, palette);
-        updatedMaterials.push_back(id);
+        matMgr_.updateSkinBindingBones(id, imageIndex, palette);
+        updatedBindings.push_back(id);
     };
 
     for (auto& ent : sceneMgr_.getModelEntities()) {
@@ -838,18 +1320,16 @@ void Application::drawFrame(float dt)
         };
 
         if (ent.subMeshes.empty()) {
-            updateSkinMaterial(ent.materialId, makeSkinPalette(0));
+            updateSkinBinding(ent.skinBindingId, makeSkinPalette(0));
             continue;
         }
 
-        for (const auto& sm : ent.subMeshes) {
-            MaterialId matId = ent.materialId;
-            if (sm.materialSlot >= 0
-                && sm.materialSlot < static_cast<int>(ent.subMeshMaterials.size())
-                && ent.subMeshMaterials[sm.materialSlot] != kInvalidMaterialId) {
-                matId = ent.subMeshMaterials[sm.materialSlot];
-            }
-            updateSkinMaterial(matId, makeSkinPalette(sm.skinIndex));
+        for (size_t subMeshIndex = 0; subMeshIndex < ent.subMeshes.size(); ++subMeshIndex) {
+            const auto& subMesh = ent.subMeshes[subMeshIndex];
+            const SkinBindingId bindingId = subMeshIndex < ent.subMeshSkinBindings.size()
+                ? static_cast<SkinBindingId>(ent.subMeshSkinBindings[subMeshIndex])
+                : kInvalidSkinBindingId;
+            updateSkinBinding(bindingId, makeSkinPalette(subMesh.skinIndex));
         }
     }
 
@@ -998,47 +1478,50 @@ void Application::recordCommandBuffer(VkCommandBuffer cb, uint32_t imageIndex)
             glm::mat4 entModel = ent.transform.GetModelMatrix();
             const glm::mat4 offsetRot = glm::mat4_cast(ent.modelRotationOffset);
             entModel = entModel * offsetRot;
-            PushConstants push = (ei == 0)
-                ? PushConstants{ mainModelTransform.GetModelMatrix(), mainModelTransform.GetNormalMatrix() }
-                : PushConstants{ entModel, glm::mat4(glm::transpose(glm::inverse(glm::mat3(entModel)))) };
+            PushConstants push{
+                entModel,
+                glm::mat4(glm::transpose(glm::inverse(glm::mat3(entModel))))
+            };
 
-            const MaterialId useMat = matMgr_.isValid(ent.materialId) ? ent.materialId : fallbackMat;
-            VkPipeline pipe = matMgr_.getPipeline(useMat, ctx_, pipeMgr_);
-            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
-            VkDescriptorSet ds = matMgr_.getPipDescriptorSet(useMat, imageIndex);
-            const bool isSkinned = (pipe == pipeMgr_.getSkinnedPipeline());
-            VkPipelineLayout pipeLayout = isSkinned
-                ? pipeMgr_.getSkinnedPipelineLayout()
-                : pipeMgr_.getMainPipelineLayout();
-            vkCmdPushConstants(cb, pipeLayout,
-                               VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &push);
-            vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    pipeLayout, 0, 1, &ds, 0, nullptr);
+            const MaterialId entityMaterial = matMgr_.isValid(ent.materialId)
+                ? ent.materialId : fallbackMat;
+            auto drawRange = [&](MaterialId materialId, SkinBindingId skinBinding,
+                                 uint32_t indexOffset, uint32_t indexCount) {
+                if (!matMgr_.isValid(materialId)) materialId = fallbackMat;
+                const bool skinned = matMgr_.isValidSkinBinding(skinBinding);
+                const VkPipeline pipeline = skinned
+                    ? pipeMgr_.getSkinnedPipeline()
+                    : matMgr_.getPipeline(materialId, ctx_, pipeMgr_);
+                const VkPipelineLayout layout = skinned
+                    ? pipeMgr_.getSkinnedPipelineLayout()
+                    : pipeMgr_.getMainPipelineLayout();
+                const VkDescriptorSet descriptorSet = skinned
+                    ? matMgr_.getSkinPipDescriptorSet(skinBinding, imageIndex)
+                    : matMgr_.getPipDescriptorSet(materialId, imageIndex);
+
+                vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+                vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_VERTEX_BIT,
+                                   0, sizeof(PushConstants), &push);
+                vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        layout, 0, 1, &descriptorSet, 0, nullptr);
+                vkCmdDrawIndexed(cb, indexCount, 1, indexOffset, 0, 0);
+            };
 
             if (ent.subMeshes.empty()) {
-                vkCmdDrawIndexed(cb, ent.indexCount, 1, 0, 0, 0);
+                drawRange(entityMaterial, ent.skinBindingId, 0, ent.indexCount);
             } else {
-                for (const auto& sm : ent.subMeshes) {
-                    MaterialId smMat = useMat;
-                    if (sm.materialSlot >= 0 && sm.materialSlot < (int)ent.subMeshMaterials.size()
-                        && ent.subMeshMaterials[sm.materialSlot] != 0u) {
-                        const MaterialId slotMat = ent.subMeshMaterials[sm.materialSlot];
-                        if (matMgr_.isValid(slotMat)) smMat = slotMat;
+                for (size_t subMeshIndex = 0; subMeshIndex < ent.subMeshes.size(); ++subMeshIndex) {
+                    const auto& subMesh = ent.subMeshes[subMeshIndex];
+                    MaterialId materialId = entityMaterial;
+                    if (subMesh.materialSlot >= 0
+                        && subMesh.materialSlot < static_cast<int>(ent.subMeshMaterials.size())) {
+                        const MaterialId slotMaterial = ent.subMeshMaterials[subMesh.materialSlot];
+                        if (matMgr_.isValid(slotMaterial)) materialId = slotMaterial;
                     }
-                    if (smMat != useMat) {
-                        pipe = matMgr_.getPipeline(smMat, ctx_, pipeMgr_);
-                        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
-                        ds = matMgr_.getPipDescriptorSet(smMat, imageIndex);
-                        const bool smIsSkinned = (pipe == pipeMgr_.getSkinnedPipeline());
-                        VkPipelineLayout smPipeLayout = smIsSkinned
-                            ? pipeMgr_.getSkinnedPipelineLayout()
-                            : pipeMgr_.getMainPipelineLayout();
-                        vkCmdPushConstants(cb, smPipeLayout,
-                                           VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &push);
-                        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                                smPipeLayout, 0, 1, &ds, 0, nullptr);
-                    }
-                    vkCmdDrawIndexed(cb, sm.indexCount, 1, sm.indexOffset, 0, 0);
+                    const SkinBindingId skinBinding = subMeshIndex < ent.subMeshSkinBindings.size()
+                        ? static_cast<SkinBindingId>(ent.subMeshSkinBindings[subMeshIndex])
+                        : kInvalidSkinBindingId;
+                    drawRange(materialId, skinBinding, subMesh.indexOffset, subMesh.indexCount);
                 }
             }
         }
@@ -1120,52 +1603,54 @@ void Application::recordCommandBuffer(VkCommandBuffer cb, uint32_t imageIndex)
                 vkCmdBindVertexBuffers(cb, 0, 1, &vb, &off);
                 vkCmdBindIndexBuffer(cb, ent.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
-                // Entity 0 使用 mainModelTransform，其他实体使用自身的 transform
                 // Camera 实体的模型几何体需要叠加 modelRotationOffset（如 Y -90°）使显示朝向与预览一致
                 glm::mat4 entModel = ent.transform.GetModelMatrix();
                 const glm::mat4 offsetRot = glm::mat4_cast(ent.modelRotationOffset);
                 entModel = entModel * offsetRot;
-                PushConstants push = (ei == 0)
-                    ? PushConstants{ mainModelTransform.GetModelMatrix(), mainModelTransform.GetNormalMatrix() }
-                    : PushConstants{ entModel, glm::mat4(glm::transpose(glm::inverse(glm::mat3(entModel)))) };
+                PushConstants push{
+                    entModel,
+                    glm::mat4(glm::transpose(glm::inverse(glm::mat3(entModel))))
+                };
 
-                const MaterialId useMat = matMgr_.isValid(ent.materialId) ? ent.materialId : fallbackMat;
-                VkPipeline pipe = matMgr_.getPipeline(useMat, ctx_, pipeMgr_);
-                vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
-                VkDescriptorSet ds = matMgr_.getDescriptorSet(useMat, imageIndex);
-                const bool isSkinned = (pipe == pipeMgr_.getSkinnedPipeline());
-                VkPipelineLayout pipeLayout = isSkinned
-                    ? pipeMgr_.getSkinnedPipelineLayout()
-                    : pipeMgr_.getMainPipelineLayout();
-                vkCmdPushConstants(cb, pipeLayout,
-                                   VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &push);
-                vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                        pipeLayout, 0, 1, &ds, 0, nullptr);
+                const MaterialId entityMaterial = matMgr_.isValid(ent.materialId)
+                    ? ent.materialId : fallbackMat;
+                auto drawRange = [&](MaterialId materialId, SkinBindingId skinBinding,
+                                     uint32_t indexOffset, uint32_t indexCount) {
+                    if (!matMgr_.isValid(materialId)) materialId = fallbackMat;
+                    const bool skinned = matMgr_.isValidSkinBinding(skinBinding);
+                    const VkPipeline pipeline = skinned
+                        ? pipeMgr_.getSkinnedPipeline()
+                        : matMgr_.getPipeline(materialId, ctx_, pipeMgr_);
+                    const VkPipelineLayout layout = skinned
+                        ? pipeMgr_.getSkinnedPipelineLayout()
+                        : pipeMgr_.getMainPipelineLayout();
+                    const VkDescriptorSet descriptorSet = skinned
+                        ? matMgr_.getSkinDescriptorSet(skinBinding, imageIndex)
+                        : matMgr_.getDescriptorSet(materialId, imageIndex);
+
+                    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+                    vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_VERTEX_BIT,
+                                       0, sizeof(PushConstants), &push);
+                    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                            layout, 0, 1, &descriptorSet, 0, nullptr);
+                    vkCmdDrawIndexed(cb, indexCount, 1, indexOffset, 0, 0);
+                };
 
                 if (ent.subMeshes.empty()) {
-                    vkCmdDrawIndexed(cb, ent.indexCount, 1, 0, 0, 0);
+                    drawRange(entityMaterial, ent.skinBindingId, 0, ent.indexCount);
                 } else {
-                    for (const auto& sm : ent.subMeshes) {
-                        MaterialId smMat = useMat;
+                    for (size_t subMeshIndex = 0; subMeshIndex < ent.subMeshes.size(); ++subMeshIndex) {
+                        const auto& sm = ent.subMeshes[subMeshIndex];
+                        MaterialId smMat = entityMaterial;
                         if (sm.materialSlot >= 0 && sm.materialSlot < (int)ent.subMeshMaterials.size()
                             && ent.subMeshMaterials[sm.materialSlot] != 0u) {
                             const MaterialId slotMat = ent.subMeshMaterials[sm.materialSlot];
                             if (matMgr_.isValid(slotMat)) smMat = slotMat;
                         }
-                        if (smMat != useMat) {
-                            pipe = matMgr_.getPipeline(smMat, ctx_, pipeMgr_);
-                            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
-                            ds = matMgr_.getDescriptorSet(smMat, imageIndex);
-                            const bool smIsSkinned = (pipe == pipeMgr_.getSkinnedPipeline());
-                            VkPipelineLayout smPipeLayout = smIsSkinned
-                                ? pipeMgr_.getSkinnedPipelineLayout()
-                                : pipeMgr_.getMainPipelineLayout();
-                            vkCmdPushConstants(cb, smPipeLayout,
-                                               VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &push);
-                            vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                                    smPipeLayout, 0, 1, &ds, 0, nullptr);
-                        }
-                        vkCmdDrawIndexed(cb, sm.indexCount, 1, sm.indexOffset, 0, 0);
+                        const SkinBindingId skinBinding = subMeshIndex < ent.subMeshSkinBindings.size()
+                            ? static_cast<SkinBindingId>(ent.subMeshSkinBindings[subMeshIndex])
+                            : kInvalidSkinBindingId;
+                        drawRange(smMat, skinBinding, sm.indexOffset, sm.indexCount);
                     }
                 }
             }
@@ -1189,7 +1674,7 @@ void Application::recordCommandBuffer(VkCommandBuffer cb, uint32_t imageIndex)
     }
 
     // ImGui
-    if (ImGui::GetCurrentContext()) {
+    if (frameCapture_.shouldRenderUi() && ImGui::GetCurrentContext()) {
         ImDrawData* dd = ImGui::GetDrawData();
         if (dd && dd->Valid) {
             TINYENGINE(cb, "ImGui Overlay");
@@ -1375,12 +1860,18 @@ void Application::tryBeginCameraFocusOnPick()
     glm::vec3 focus(0.f);
     float distance = 4.f;
     if (mainModelSelected) {
-        const glm::vec3 ext = sceneMgr_.getModelBoundsMax() - sceneMgr_.getModelBoundsMin();
-        if (glm::length(ext) < 1e-5f) { focus = mainModelTransform.position; distance = 5.f; }
-        else {
-            focus    = 0.5f * (sceneMgr_.getModelBoundsMin() + sceneMgr_.getModelBoundsMax())
-                       + mainModelTransform.position;
-            distance = glm::max(3.f, glm::length(ext) * 1.75f);
+        const auto& entities = sceneMgr_.getModelEntities();
+        if (entities.empty()) return;
+        const auto& entity = entities.front();
+        const glm::vec3 localExt = entity.localBoundsMax - entity.localBoundsMin;
+        if (glm::length(localExt) < 1e-5f) {
+            focus = entity.transform.position;
+            distance = 5.f;
+        } else {
+            const glm::vec3 localCenter = 0.5f * (entity.localBoundsMin + entity.localBoundsMax);
+            focus = glm::vec3(entity.transform.GetModelMatrix() * glm::vec4(localCenter, 1.f));
+            const glm::vec3 scaledExt = glm::abs(entity.transform.scale) * localExt;
+            distance = glm::max(3.f, glm::length(scaledExt) * 1.75f);
         }
     } else if (pickedBoxEntityId != 0) {
         focus    = sceneMgr_.getBoxPosition(pickedBoxEntityId);
@@ -1782,7 +2273,9 @@ MaterialId Application::createBoxMaterial(const std::string& name, const Materia
 
 void Application::destroyMaterial(MaterialId id)
 {
+    vkDeviceWaitIdle(ctx_.getDevice());
     matMgr_.destroyMaterial(id, ctx_);
+    convertModelMaterialsToSkinned();
 }
 
 bool Application::setMaterialAlbedo(MaterialId id, const std::string& path)
@@ -1827,6 +2320,71 @@ glm::vec3 Application::screenToWorld(float mx, float my, float distance) const
     return camera_.Position + rayDir * distance;
 }
 
+uint64_t Application::placeRegisteredModel(const std::string& requestedAstRelPath,
+                                            const ObjectTransform& transform)
+{
+    const std::string astRelPath = stripResPrefix(requestedAstRelPath);
+    const ModelAsset* asset = modelRegistry_.findByPath(astRelPath);
+    if (!asset)
+        throw std::runtime_error("asset is not registered: " + astRelPath);
+    if (asset->modelRelPath.empty() || asset->type == ModelType::Unknown
+        || asset->astType == "Material" || asset->astType == "Anim") {
+        throw std::runtime_error("asset is not a placeable model: " + astRelPath);
+    }
+
+    const std::filesystem::path fullPath =
+        std::filesystem::path(modelRegistry_.getResRoot()) / stripResPrefix(asset->modelRelPath);
+    if (!std::filesystem::is_regular_file(fullPath))
+        throw std::runtime_error("registered model file is missing: " + asset->modelRelPath);
+
+    const uint64_t entityId = sceneMgr_.createModelEntity(
+        fullPath.lexically_normal().string(), transform.position, bufMgr_);
+    auto* ent = sceneMgr_.getModelEntity(entityId);
+    if (!ent)
+        throw std::runtime_error("model loader did not create an entity");
+
+    ent->astRelPath = asset->astRelPath;
+    ent->displayName = asset->name;
+    ent->transform = transform;
+
+    MaterialAssetDesc entryDesc;
+    const bool hasEntryDesc = MaterialAssetLoader::load(asset->astRelPath, entryDesc, nullptr);
+    const auto& materialPaths = (hasEntryDesc && !entryDesc.subMaterialPaths.empty())
+        ? entryDesc.subMaterialPaths
+        : ent->autoAstPaths;
+
+    if (!materialPaths.empty()) {
+        if (ent->subMeshMaterials.size() < materialPaths.size())
+            ent->subMeshMaterials.resize(materialPaths.size(), 0u);
+        for (size_t slot = 0; slot < materialPaths.size(); ++slot) {
+            const MaterialId materialId = matMgr_.loadMaterialFromAsset(
+                materialPaths[slot], ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_);
+            if (materialId != kInvalidMaterialId && slot < ent->subMeshMaterials.size())
+                ent->subMeshMaterials[slot] = materialId;
+        }
+        if (!ent->subMeshMaterials.empty() && ent->subMeshMaterials[0] != 0u)
+            ent->materialId = ent->subMeshMaterials[0];
+    } else {
+        const MaterialId materialId = matMgr_.loadMaterialFromAsset(
+            asset->astRelPath, ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_);
+        if (materialId != kInvalidMaterialId) {
+            ent->materialId = materialId;
+            if (!ent->subMeshes.empty())
+                ent->subMeshMaterials.resize(ent->subMeshes.size(), materialId);
+        }
+    }
+
+    if (hasEntryDesc)
+        ensureAnimationAssetForMeshAst(asset->astRelPath, asset->modelRelPath, false, entityId);
+    if (ent->hasSkin_)
+        convertModelMaterialsToSkinned();
+
+    const auto& entities = sceneMgr_.getModelEntities();
+    if (!entities.empty() && entities.front().entityId == entityId)
+        mainModelTransform = transform;
+    return entityId;
+}
+
 void Application::beginDragPlace(uint64_t assetId)
 {
     const ModelAsset* asset = modelRegistry_.findById(assetId);
@@ -1839,56 +2397,8 @@ void Application::beginDragPlace(uint64_t assetId)
         return;
     }
 
-    // 使用 .ast 中的 modelRelPath 拼接模型文件完整路径
-    const std::string fullPath = modelRegistry_.getResRoot() + "/" + asset->modelRelPath;
-
     dragPlace.assetId  = assetId;
-    dragPlace.entityId = sceneMgr_.createModelEntity(fullPath, glm::vec3(0.f), bufMgr_);
-    auto* ent = sceneMgr_.getModelEntity(dragPlace.entityId);
-    if (!ent) { dragPlace.active = true; return; }
-
-    // 记录 .ast 资产路径，供 SceneSerializer 保存
-    ent->astRelPath = asset->astRelPath;
-
-    MaterialAssetDesc entryDesc;
-    const bool hasEntryDesc = MaterialAssetLoader::load(asset->astRelPath, entryDesc, nullptr);
-    const auto& materialPaths = (hasEntryDesc && !entryDesc.subMaterialPaths.empty())
-        ? entryDesc.subMaterialPaths
-        : ent->autoAstPaths;
-
-    // glTF 入口 .ast 可显式声明 subMaterials；否则回退到 loadModelFromGltf 自动生成的路径。
-    if (!materialPaths.empty()) {
-        if (ent->subMeshMaterials.size() < materialPaths.size())
-            ent->subMeshMaterials.resize(materialPaths.size(), 0u);
-        for (size_t slot = 0; slot < materialPaths.size(); ++slot) {
-            const MaterialId mid = matMgr_.loadMaterialFromAsset(
-                materialPaths[slot], ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_);
-            if (mid != kInvalidMaterialId && slot < ent->subMeshMaterials.size()) {
-                ent->subMeshMaterials[slot] = mid;
-            }
-        }
-        // 把 slot 0 的材质设为整个实体的回退材质
-        if (!ent->subMeshMaterials.empty() && ent->subMeshMaterials[0] != 0u)
-            ent->materialId = ent->subMeshMaterials[0];
-    } else {
-        // 无 auto-generated .ast（如 .obj 文件）：加载入口 .ast
-        const MaterialId mid = matMgr_.loadMaterialFromAsset(
-            asset->astRelPath, ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_);
-        if (mid != kInvalidMaterialId) {
-            ent->materialId = mid;
-            if (!ent->subMeshes.empty()) {
-                ent->subMeshMaterials.resize(ent->subMeshes.size(), mid);
-            }
-        }
-    }
-
-    // 若有骨骼数据，为实体的槽位材质创建蒙皮版本
-    if (hasEntryDesc)
-        ensureAnimationAssetForMeshAst(asset->astRelPath, asset->modelRelPath, false);
-
-    if (ent->hasSkin_)
-        convertModelMaterialsToSkinned();
-
+    dragPlace.entityId = placeRegisteredModel(asset->astRelPath, ObjectTransform{});
     dragPlace.active   = true;
 }
 
@@ -1909,6 +2419,8 @@ void Application::endDragPlace()
 void Application::deleteModelEntity(uint64_t entityId)
 {
     vkDeviceWaitIdle(ctx_.getDevice());
+    if (auto* entity = sceneMgr_.getModelEntity(entityId))
+        destroyEntitySkinBindings(*entity);
     sceneMgr_.removeModelEntity(entityId, ctx_);
 }
 
@@ -2835,10 +3347,20 @@ void Application::processInput(GLFWwindow* w)
         key1WasDown = k1; key2WasDown = k2; key3WasDown = k3; key4WasDown = k4;
     }
 
-    camera_.speedZ = (glfwGetKey(w, GLFW_KEY_W) == GLFW_PRESS)  ?  1.f
-                   : (glfwGetKey(w, GLFW_KEY_S) == GLFW_PRESS)  ? -1.f : 0.f;
-    camera_.speedX = (glfwGetKey(w, GLFW_KEY_A) == GLFW_PRESS)  ? -1.f
-                   : (glfwGetKey(w, GLFW_KEY_D) == GLFW_PRESS)  ?  1.f : 0.f;
+    const bool manualCameraInput = !imguiKb && !sequenceCameraActive_;
+    if (manualCameraInput) {
+        camera_.speedZ = static_cast<float>(glfwGetKey(w, GLFW_KEY_W) == GLFW_PRESS)
+                       - static_cast<float>(glfwGetKey(w, GLFW_KEY_S) == GLFW_PRESS);
+        camera_.speedX = static_cast<float>(glfwGetKey(w, GLFW_KEY_D) == GLFW_PRESS)
+                       - static_cast<float>(glfwGetKey(w, GLFW_KEY_A) == GLFW_PRESS);
+        // UE-style vertical flight: E rises and Q descends along world up.
+        camera_.speedY = static_cast<float>(glfwGetKey(w, GLFW_KEY_E) == GLFW_PRESS)
+                       - static_cast<float>(glfwGetKey(w, GLFW_KEY_Q) == GLFW_PRESS);
+    } else {
+        camera_.speedX = 0.f;
+        camera_.speedY = 0.f;
+        camera_.speedZ = 0.f;
+    }
 }
 
 // ─── UIManager delegation ─────────────────────────────────────────────────────

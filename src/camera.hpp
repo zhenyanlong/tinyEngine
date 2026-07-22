@@ -72,7 +72,7 @@ public:
 
 	/** @brief 沿 Right 方向的归一化速度输入 [-1,1]，由 A/D 键驱动 */
 	float speedX = 0.0f;
-	/** @brief 沿 Up 方向的归一化速度输入（Q/E 扩展用，默认 0） */
+	/** @brief 沿 WorldUp 的归一化升降输入：E=+1，Q=-1。 */
 	float speedY = 0.0f;
 	/** @brief 沿 Forward 方向的归一化速度输入 [-1,1]，由 W/S 键驱动 */
 	float speedZ = 0.0f;

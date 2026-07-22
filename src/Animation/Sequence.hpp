@@ -175,6 +175,8 @@ struct TransformKeyframe {
 struct TransformKeyframeTrack {
     std::string  name;
     uint64_t     targetEntityId = 0;  ///< 关联的场景实体 ID
+    std::string  targetAstRelPath;     ///< 稳定绑定：目标模型资产路径
+    std::string  targetDisplayName;    ///< 稳定绑定：目标实体显示名
     std::vector<TransformKeyframe> keyframes;  ///< 按 time 升序排列
 
     struct EvalResult {
@@ -220,6 +222,8 @@ struct AnimatorKeyframe {
 struct AnimatorKeyframeTrack {
     std::string  name;
     uint64_t     targetEntityId = 0;  ///< 关联的场景实体 ID
+    std::string  targetAstRelPath;     ///< 稳定绑定：目标模型资产路径
+    std::string  targetDisplayName;    ///< 稳定绑定：目标实体显示名
     std::string  initialState;        ///< 初始状态名称（空字符串 = 使用控制器默认）
 
     std::vector<AnimatorKeyframe> keyframes;  ///< 按 time 升序排列

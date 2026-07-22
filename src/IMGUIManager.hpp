@@ -144,6 +144,23 @@ public:
     // 双列布局垂直滚动同步：左列标签跟随右列时间线的滚动位置（1 帧延迟）
     float  seqTimelineScrollY_ = 0.0f;
 
+    struct SequenceAssetEntry {
+        std::string absolutePath;
+        std::string relativePath;
+        std::string displayName;
+        std::string error;
+        double duration = 0.0;
+        size_t trackCount = 0;
+        bool valid = false;
+    };
+    std::vector<SequenceAssetEntry> sequenceAssets_;
+    int sequenceAssetSelected_ = -1;
+    char sequenceAssetSearch_[128]{};
+    std::vector<size_t> sequenceRebindTrackIndices_;
+    std::vector<uint64_t> sequenceRebindEntityIds_;
+    bool sequenceRebindPopupPending_ = false;
+    void scanSequenceAssets();
+
 	int gizmoOperation_ = 7;  // ImGuizmo::TRANSLATE (bitmask: 7=TRANSLATE, 120=ROTATE, 896=SCALE)
 	bool gizmoLocal_ = false; // false=世界坐标(ImGuizmo::WORLD), true=本地坐标(ImGuizmo::LOCAL)，按 4 键切换
 

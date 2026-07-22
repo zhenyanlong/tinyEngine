@@ -40,6 +40,31 @@
 
 ---
 
+## 2026-07-19 场景搭建与截图模式增量
+
+### 已完成
+
+- [x] `tiny_capture_frame(include_ui, timeout_seconds)` 支持逐次选择是否包含编辑器 UI；`include_ui=false` 仅抑制捕获帧的 ImGui 合成，下一帧自动恢复。
+- [x] 新增 `tiny_asset_list(keyword, folder)`，只返回 `ModelRegistry` 中具有有效模型文件的可放置资产。
+- [x] 新增 `tiny_model_place`、`tiny_model_get_transform`、`tiny_model_set_transform`、`tiny_model_delete`。
+- [x] 放置只接受已注册的 `astRelPath`；禁止任意磁盘模型路径，且位置/旋转/缩放均进行有限数、四元数与缩放范围校验。
+- [x] 直接复用资产材质、子材质、动画资产与蒙皮材质绑定逻辑，不再通过鼠标坐标模拟拖拽。
+- [x] 修复首实体同时使用 `mainModelTransform` 和 `ModelEntity::transform` 的双数据源问题；渲染、Gizmo 与 MCP 统一使用实体 Transform。
+- [x] `scene.snapshot` 升级为 schema v2，为每个实体返回 local/world AABB。
+- [x] Debug 构建通过；Python/stdio 共 10 项测试通过。
+- [x] 真实引擎验收：列出 9 个可放置资产，创建实体 1006/1007，部分更新与回读 Transform 一致，双截图均为 1280×720 且 UI 模式肉眼确认正确；测试实体随后删除，场景恢复为 6 个实体。
+
+### 当前工具清单（10 个）
+
+`tiny_ping`、`tiny_engine_status`、`tiny_scene_snapshot`、`tiny_asset_list`、`tiny_model_place`、`tiny_model_get_transform`、`tiny_model_set_transform`、`tiny_model_delete`、`tiny_capture_frame`、`tiny_engine_shutdown`。
+
+### 仍需用户手动完成
+
+- [ ] 重载 Codex 任务，使工具发现缓存刷新到上述 10 个工具及 `tiny_capture_frame.include_ui` 新参数。
+- [ ] 后续构建新的引擎可执行文件后，需重新启动引擎实例；当前验收实例已优雅关闭。
+
+---
+
 ## 整体架构概览
 
 ```
@@ -239,7 +264,7 @@ struct SceneSnapshot {
 - [x] **M0C-2** 实现 `SceneSnapshot::capture(...)`：遍历模型实体、Box 和相机，读取 Transform、材质、clip 与 AnimatorController 状态
 - [x] **M0C-3** 注册 handler `scene.snapshot` → 返回完整快照 JSON
 - [ ] **M0C-4** 注册 handler `scene.getEntity`（params: `entityId`）→ 返回单个实体快照
-- [ ] **M0C-5** 注册 handler `scene.listAssets`（params: `subFolder?`, `typeFilter?`）→ 返回 `ModelRegistry` 扫描结果
+- [x] **M0C-5** 注册 handler `asset.list`（params: `keyword?`, `folder?`）→ 返回 `ModelRegistry` 中可放置模型资产
 
 **验收标准：** 场景中放置 2 个模型 + 1 个 Box，`scene.snapshot` 返回的 JSON 中实体数=2、Box 数=1，transform 与屏幕上 ImGuizmo 显示一致。
 
@@ -254,8 +279,8 @@ struct SceneSnapshot {
 **具体任务：**
 
 - [x] **M0D-1** 新建 `FrameCapture.hpp` / `.cpp`，维护可随 Swapchain 重建的 host-visible staging buffer 与单任务状态机（pending/submitted/ready/failed）
-- [x] **M0D-2** 在主 RenderPass（含 ImGui）结束后执行 `PRESENT_SRC → TRANSFER_SRC → PRESENT_SRC`，用 `vkCmdCopyImageToBuffer` 回读，并处理 BGRA/RGBA 格式与 PNG 编码
-- [x] **M0D-3** 注册 `capture.frame` / `capture.get` 异步 handler；输出到 `res/bin/verify/captures/`，并由 `tiny_capture_frame(timeout_seconds)` 返回 MCP `ImageContent` + 元数据
+- [x] **M0D-2** 在主 RenderPass 后执行 `PRESENT_SRC → TRANSFER_SRC → PRESENT_SRC`，用 `vkCmdCopyImageToBuffer` 回读，并按 `includeUi` 选择是否合成 ImGui，同时处理 BGRA/RGBA 与 PNG 编码
+- [x] **M0D-3** 注册 `capture.frame` / `capture.get` 异步 handler；输出到 `res/bin/verify/captures/`，并由 `tiny_capture_frame(include_ui, timeout_seconds)` 返回 MCP `ImageContent` + 元数据
 - [ ] **M0D-4** 注册 handler `capture.pick`（params: `x`, `y`）→ 调用 `PickSystem::runPick` 在屏幕坐标处拾取，返回 `{entityId, pickedBoxId}`
 - [ ] **M0D-5** 注册 handler `capture.sampleRect`（params: `x,y,w,h`）→ 回读指定矩形像素，返回 `{avgColor:[r,g,b,a], maxColor, pixelCount}`（用于验证清屏色/材质基色）
 - [ ] **M0D-6** 关键重构：把 `Application::recordCommandBuffer` 中"主模型 + Box + 拾取"的录制逻辑提取为 `recordSceneInto(...)`，使其可面向任意 framebuffer/extent，避免与 swapchain 耦合
@@ -296,7 +321,7 @@ mcp_server/
 
 - [x] **M1A-1** 新建 `mcp_server/` 目录与 `pyproject.toml`（MVP 仅依赖 `mcp>=1.27,<2`；`pillow`、`numpy` 延至 M4）
 - [x] **M1A-2** 实现 `ipc_client.py`：`IpcClient` 类，`connect()`、`call(method, params, timeout)` 同步返回 result 或抛 `IpcError`；自动管理递增 id
-- [x] **M1A-3** 实现 `server.py`：用官方 MCP SDK 创建 FastMCP stdio server，MVP 注册 5 个工具并映射到 IPC（含 `tiny_capture_frame`）
+- [x] **M1A-3** 实现 `server.py`：用官方 MCP SDK 创建 FastMCP stdio server，当前注册 10 个工具并映射到 IPC（含截图与场景编辑）
 - [x] **M1A-4** 工具错误模型：IPC `error` → 抛 `ToolError`；超时保留 `ipc_timeout` 错误码
 - [ ] **M1A-5** 提供 `mcp_server/README.md`（仅在用户要求文档时创建；本计划默认不生成）说明启动方式：`python -m mcp_server.server`
 
@@ -343,12 +368,12 @@ mcp_server/
 
 **具体任务：**
 
-- [ ] **M2A-1** `tiny.asset.scan`（params: `subFolder?`）→ `ModelRegistry::search` 结果
+- [x] **M2A-1** `tiny_asset_list`（params: `keyword?`, `folder?`）→ 可放置 `ModelRegistry` 资产结果
 - [ ] **M2A-2** `tiny.asset.importModel`（params: `sourcePath`, `subFolder?`）→ `Application::importModel`
 - [ ] **M2A-3** `tiny.asset.importAnimationFbx`（params: `fbxPath`, `targetMeshAstRelPath`）→ `Application::importAnimationFbx`
 - [ ] **M2A-4** `tiny.asset.applyMaterial`（params: `entityId?`, `astRelPath`）→ `loadAndApplyMaterialAsset`（对指定实体或主模型）
-- [ ] **M2A-5** `tiny.entity.place`（params: `astRelPath`, `position=[x,y,z]`, `distance?`）→ 模拟拖拽放置：`beginDragPlace` + `updateDragPlace` + `endDragPlace`，返回 `entityId`
-- [ ] **M2A-6** `tiny.entity.delete`（params: `entityId`）→ `deleteModelEntity`
+- [x] **M2A-5** `tiny_model_place`（params: `ast_rel_path`, TRS）→ 复用直接资产放置核心并返回 `entityId`
+- [x] **M2A-6** `tiny_model_delete`（params: `entity_id`）→ 安全删除实体
 - [ ] **M2A-7** `tiny.scene.save` / `tiny.scene.load`（params: `path`）→ `saveScene` / `loadScene`
 
 **验收标准：** agent 通过 `scan` 找到 `viking_room` → `place` 到 (0,0,0) → `scene.snapshot` 确认实体存在且位置正确 → `save` → 重启 `load` 后实体一致。
@@ -360,8 +385,8 @@ mcp_server/
 **具体任务：**
 
 - [ ] **M2B-1** `tiny.entity.select`（params: `entityId`）→ 设置 `selectedEntityId_` 并同步 `entity.selected`
-- [ ] **M2B-2** `tiny.entity.setTransform`（params: `entityId`, `position?`, `rotation?`, `scale?`）→ `SceneManager::setEntityTransform`
-- [ ] **M2B-3** `tiny.entity.getTransform`（params: `entityId`）→ 读取实体 ObjectTransform
+- [x] **M2B-2** `tiny_model_set_transform`（params: `entity_id`, `position?`, `rotation_euler_deg?|rotation_quaternion?`, `scale?`）→ 部分更新 `ObjectTransform`
+- [x] **M2B-3** `tiny_model_get_transform`（params: `entity_id`）→ 读取实体 `ObjectTransform`
 - [ ] **M2B-4** `tiny.entity.setVisible`（params: `entityId`, `visible`）
 - [ ] **M2B-5** `tiny.entity.focusCamera`（params: `entityId`）→ 复用相机 SmoothFocus 逻辑
 
@@ -631,8 +656,8 @@ mcp_server/
 | 引擎功能 | 控制工具 | 验证手段 | 状态 |
 |---|---|---|---|
 | 多模型导入 | M2A | M4A 截图 + M4B 断言 | 待实现 |
-| 拖拽放置 | M2A-5 | M4B position 断言 | 待实现 |
-| 实体变换 | M2B | M4B transform 断言 | 待实现 |
+| 注册资产直接放置/删除 | M2A-5/M2A-6 | snapshot + 真实截图 | MVP 已实现 |
+| 实体变换 | M2B-2/M2B-3 | 回读 + snapshot world bounds | MVP 已实现 |
 | 材质系统 | M2C | M4E 基色采样 | 待实现 |
 | 场景持久化 | M2A-7 | load 后 M4B 全场景断言 | 待实现 |
 | 相机 | M2D | M4A 视角截图 | 待实现 |

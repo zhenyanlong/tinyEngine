@@ -42,6 +42,8 @@ public:
         bool selected = false;
         std::string displayName;
         std::string astRelPath;
+        glm::vec3 localBoundsMin{};
+        glm::vec3 localBoundsMax{};
         std::vector<Vertex> vertices;
         std::vector<uint32_t> indices;
         VkBuffer vertexBuffer{};
@@ -53,6 +55,10 @@ public:
         uint32_t indexCount = 0;
         std::vector<SubMesh> subMeshes;
         std::vector<uint32_t> subMeshMaterials;
+        // 运行时蒙皮绑定：与 subMeshes 一一对应，仅保存 descriptor/bone UBO 句柄，
+        // 不参与资产或场景序列化。相同材质但不同 skin 必须使用不同 binding。
+        std::vector<uint32_t> subMeshSkinBindings;
+        uint32_t skinBindingId = 0; ///< 无 submesh 实体的运行时蒙皮绑定。
         std::vector<std::string> autoAstPaths;
         bool hasSkin_ = false;
         // 每实体独立的动画状态（下沉自 SceneManager 全局单例）
@@ -98,7 +104,8 @@ public:
     uint64_t createModelEntity(const std::string& path,
                                const glm::vec3& position,
                                const BufferManager& bufMgr,
-                               bool useResourceCache = true);
+                               bool useResourceCache = true,
+                               uint64_t preferredEntityId = 0);
     bool removeModelEntity(uint64_t entityId, const VulkanContext& ctx);
     void destroyModelBuffers(const VulkanContext& ctx);
     void destroy(const VulkanContext& ctx);
@@ -107,7 +114,8 @@ public:
     uint64_t createCameraEntity(const glm::vec3& position,
                                  const glm::quat& orientation,
                                  const VulkanContext& ctx,
-                                 const BufferManager& bufMgr);
+                                 const BufferManager& bufMgr,
+                                 uint64_t preferredEntityId = 0);
     
     /** @brief 判断 entityId 是否为 Camera 类型 */
     bool isCameraEntity(uint64_t entityId) const;
@@ -224,7 +232,9 @@ private:
     uint32_t cameraModelIndexCount_ = 0;
     std::vector<SubMesh> cameraModelSubMeshes_;
     bool cameraModelLoaded_ = false;
-    uint64_t nextEntityId_ = 1;
+    uint64_t nextEntityId_ = 1000;
+
+    uint64_t allocateEntityId(uint64_t preferredEntityId = 0);
     
     void loadCameraModelOnce(const VulkanContext& ctx, const BufferManager& bufMgr);
 };

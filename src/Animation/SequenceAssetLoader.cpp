@@ -243,6 +243,10 @@ bool SequenceAssetLoader::saveSequence(const std::string& jsonRelPath,
             auto& jkf = jt["keyframeTrack"];
             jkf["name"] = track.keyframeTrack.name;
             jkf["targetEntityId"] = track.keyframeTrack.targetEntityId;
+            if (!track.keyframeTrack.targetAstRelPath.empty())
+                jkf["targetAstRelPath"] = track.keyframeTrack.targetAstRelPath;
+            if (!track.keyframeTrack.targetDisplayName.empty())
+                jkf["targetDisplayName"] = track.keyframeTrack.targetDisplayName;
 
             auto& jKeys = jkf["keyframes"];
             for (const auto& kf : track.keyframeTrack.keyframes) {
@@ -260,6 +264,10 @@ bool SequenceAssetLoader::saveSequence(const std::string& jsonRelPath,
             auto& jat = jt["animatorTrack"];
             jat["name"] = track.animatorTrack.name;
             jat["targetEntityId"] = track.animatorTrack.targetEntityId;
+            if (!track.animatorTrack.targetAstRelPath.empty())
+                jat["targetAstRelPath"] = track.animatorTrack.targetAstRelPath;
+            if (!track.animatorTrack.targetDisplayName.empty())
+                jat["targetDisplayName"] = track.animatorTrack.targetDisplayName;
             jat["initialState"] = track.animatorTrack.initialState;
 
             auto& jKeys = jat["keyframes"];
@@ -339,9 +347,10 @@ bool SequenceAssetLoader::loadSequence(const std::string& jsonRelPath,
         return false;
     }
 
-    out.name = j.value("name", std::string{});
-    out.totalDuration = j.value("totalDuration", 0.0);
-    out.tracks.clear();
+    Sequence parsed;
+    try {
+    parsed.name = j.value("name", std::string{});
+    parsed.totalDuration = j.value("totalDuration", 0.0);
 
     if (j.contains("tracks") && j["tracks"].is_array()) {
         for (const auto& jt : j["tracks"]) {
@@ -425,6 +434,8 @@ bool SequenceAssetLoader::loadSequence(const std::string& jsonRelPath,
                 const auto& jkf = jt["keyframeTrack"];
                 track.keyframeTrack.name = jkf.value("name", std::string{});
                 track.keyframeTrack.targetEntityId = jkf.value("targetEntityId", uint64_t(0));
+                track.keyframeTrack.targetAstRelPath = jkf.value("targetAstRelPath", std::string{});
+                track.keyframeTrack.targetDisplayName = jkf.value("targetDisplayName", std::string{});
 
                 if (jkf.contains("keyframes") && jkf["keyframes"].is_array()) {
                     for (const auto& jk : jkf["keyframes"]) {
@@ -448,6 +459,8 @@ bool SequenceAssetLoader::loadSequence(const std::string& jsonRelPath,
                 const auto& jat = jt["animatorTrack"];
                 track.animatorTrack.name = jat.value("name", std::string{});
                 track.animatorTrack.targetEntityId = jat.value("targetEntityId", uint64_t(0));
+                track.animatorTrack.targetAstRelPath = jat.value("targetAstRelPath", std::string{});
+                track.animatorTrack.targetDisplayName = jat.value("targetDisplayName", std::string{});
                 track.animatorTrack.initialState = jat.value("initialState", std::string{});
 
                 if (jat.contains("keyframes") && jat["keyframes"].is_array()) {
@@ -490,10 +503,16 @@ bool SequenceAssetLoader::loadSequence(const std::string& jsonRelPath,
                           });
             }
 
-            out.tracks.push_back(std::move(track));
+            parsed.tracks.push_back(std::move(track));
         }
     }
 
+    } catch (const json::exception& e) {
+        if (err) *err = "Invalid sequence data in " + fullPath + ": " + e.what();
+        return false;
+    }
+
+    out = std::move(parsed);
     return true;
 }
 

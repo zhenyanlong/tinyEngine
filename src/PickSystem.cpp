@@ -116,9 +116,9 @@ uint32_t PickSystem::runPick(const VulkanContext& ctx,
         const uint32_t oid = static_cast<uint32_t>(ent.entityId);
         std::memcpy(bytes.data() + sizeof(glm::mat4), &oid, sizeof(uint32_t));
 
-        auto drawRange = [&](MaterialId materialId, uint32_t indexOffset, uint32_t indexCount) {
-            const bool skinned = ent.hasSkin_ && materialMgr.isValid(materialId)
-                && materialMgr.hasSkinning(materialId);
+        auto drawRange = [&](MaterialId materialId, SkinBindingId skinBinding,
+                             uint32_t indexOffset, uint32_t indexCount) {
+            const bool skinned = ent.hasSkin_ && materialMgr.isValidSkinBinding(skinBinding);
             const VkPipeline pipeline = skinned
                 ? pipelineMgr.getSkinnedPickPipeline()
                 : pipelineMgr.getPickPipeline();
@@ -128,7 +128,7 @@ uint32_t PickSystem::runPick(const VulkanContext& ctx,
 
             vkCmdBindPipeline(pickCmdBuf_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
             VkDescriptorSet descriptorSet = skinned
-                ? materialMgr.getDescriptorSet(materialId, materialImageIndex)
+                ? materialMgr.getSkinDescriptorSet(skinBinding, materialImageIndex)
                 : boxDescSet0;
             vkCmdBindDescriptorSets(pickCmdBuf_, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                     layout, 0, 1, &descriptorSet, 0, nullptr);
@@ -139,16 +139,20 @@ uint32_t PickSystem::runPick(const VulkanContext& ctx,
         };
 
         if (ent.subMeshes.empty()) {
-            drawRange(ent.materialId, 0, ent.indexCount);
+            drawRange(ent.materialId, ent.skinBindingId, 0, ent.indexCount);
         } else {
-            for (const auto& subMesh : ent.subMeshes) {
+            for (size_t subMeshIndex = 0; subMeshIndex < ent.subMeshes.size(); ++subMeshIndex) {
+                const auto& subMesh = ent.subMeshes[subMeshIndex];
                 MaterialId materialId = ent.materialId;
                 if (subMesh.materialSlot >= 0
                     && subMesh.materialSlot < static_cast<int>(ent.subMeshMaterials.size())) {
                     const MaterialId slotMaterial = ent.subMeshMaterials[subMesh.materialSlot];
                     if (materialMgr.isValid(slotMaterial)) materialId = slotMaterial;
                 }
-                drawRange(materialId, subMesh.indexOffset, subMesh.indexCount);
+                const SkinBindingId skinBinding = subMeshIndex < ent.subMeshSkinBindings.size()
+                    ? static_cast<SkinBindingId>(ent.subMeshSkinBindings[subMeshIndex])
+                    : kInvalidSkinBindingId;
+                drawRange(materialId, skinBinding, subMesh.indexOffset, subMesh.indexCount);
             }
         }
     }

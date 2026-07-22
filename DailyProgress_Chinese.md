@@ -1,3 +1,36 @@
+## 2026-07-22
+
+- [ ] 修复 Mixamo 多 skin 角色眼球漂移：将运行时骨骼 UBO/DescriptorSet 从共享 MaterialId 中拆分为按实体/材质/skinIndex 独立的 SkinBinding；主视口、PiP、GPU Pick、资源缓存复用、场景重载与清理均使用匹配绑定（MaterialManager.hpp/.cpp、SceneManager.hpp/.cpp、Application.cpp、PickSystem.cpp、SceneSerializer.cpp）
+- [ ] 新增递归 Sequence 资产选择弹窗，支持搜索、刷新、元数据/错误展示、双击加载；加载采用原子替换，解析失败时保留当前编辑内容（IMGUIManager.hpp/.cpp、Application.hpp/.cpp、SequenceAssetLoader.cpp）
+- [ ] 主摄像机 yaw 改为绕世界 WorldUp 旋转，新增 Q/E 沿世界轴下降/上升，并在 ImGui 捕获键盘或鼠标时阻止相机输入（camera.hpp/.cpp、Application.cpp）
+- [ ] 修复程序重启后 Sequence 轨道无法驱动原模型：场景持久化 entityId/displayName，模型与 Camera 共用统一 ID 分配器，Transform/Animator 轨道持久化 targetEntityId + targetAstRelPath + targetDisplayName（SceneManager.hpp/.cpp、SceneSerializer.cpp、Sequence.hpp、SequenceAssetLoader.cpp）
+- [ ] Sequence 加载新增向后兼容目标恢复：依次尝试现有 ID、唯一稳定元数据、旧 `[T]/[A]` 轨道名称推断；无法唯一匹配时弹出 Rebind Sequence Tracks 手动重绑定窗口，并以红色 Target Missing 标记（Application.hpp/.cpp、IMGUIManager.hpp/.cpp）
+- [ ] 修复多 Transform 轨道单次预览只有第一条生效：全部轨道求值后再清除 sequencerPreviewPending_；修复 setSequenceRef() 每帧清空 EventClip 去重状态（Application.cpp、SequencePlayer.cpp）
+- [ ] New Camera 改为直接复制当前主摄像机的世界位置与朝向，不再生成在视线前方 5 个单位处（IMGUIManager.cpp）
+- [ ] 更新 TDD.md：同步本次蒙皮、Sequencer、相机控制和 Camera Actor 的架构、兼容性、当前状态、迁移方式与验证记录
+- [ ] 验证通过：x64-debug 构建、Python MCP/stdio 测试 10/10、Sequence 绑定元数据 C++ 往返测试、Camera/Sequence 专项 smoke test 与 git diff 检查
+
+## 2026-07-19
+
+- [ ] 扩展帧捕获的逐请求 `include_ui` 选择：`include_ui=false` 仅跳过被捕获帧的 ImGui 合成，下一帧自动恢复 UI（FrameCapture.hpp/.cpp、Application.cpp、mcp_server/server.py）
+- [ ] 新增 `tiny_asset_list` 注册资产查询；结果仅包含 ModelRegistry 中具有有效 OBJ/glTF/GLB/FBX payload 的可放置资产（Application.cpp、mcp_server/server.py）
+- [ ] 新增 Agent 场景搭建工具 `tiny_model_place`、`tiny_model_get_transform`、`tiny_model_set_transform`、`tiny_model_delete`，支持部分 TRS 更新、欧拉角/四元数旋转输入、有限数检查、缩放范围限制和结构化错误（Application.hpp/.cpp、mcp_server/server.py）
+- [ ] 抽取 `Application::placeRegisteredModel()`，使 MCP 与 Content Browser 拖放复用同一套模型、材质、子材质、动画资产和蒙皮材质初始化流程，不再模拟鼠标输入（Application.hpp/.cpp）
+- [ ] 修复首模型实体 Transform 双数据源问题：主渲染、PiP 渲染和旧 ImGuizmo 路径统一使用 `ModelEntity::transform`；`mainModelTransform` 仅保留为兼容镜像（Application.cpp、IMGUIManager.cpp）
+- [ ] 为每个实体保存局部包围盒，并在 schema v2 场景快照中计算世界 AABB，计算包含实体 TRS 与 Camera 模型旋转偏移（SceneManager.hpp/.cpp、Mcp/SceneSnapshot.cpp）
+- [ ] FastMCP Server 扩展至 10 个工具并新增场景工具协议测试；x64-debug 构建通过，Python/stdio 测试 10/10 通过（mcp_server/tests）
+- [ ] 完成真实引擎验收：列出 9 个可放置资产，创建两个模型，更新并回读 Transform，确认世界包围盒非零，人工检查带 UI/无 UI 的 1280x720 截图；随后删除验收实体并优雅关闭引擎
+- [ ] 将 MCP 实现状态、剩余手动重载步骤、架构、协议与验证证据同步到 mcp-control-plan.md 和 TDD.md
+
+## 2026-07-18
+
+- [ ] 审查现有 MCP Agent 计划并划定一晚可完成的 MVP 边界，区分 Codex 可实现部分与需要手动启动引擎/重载 Codex 的步骤（mcp-control-plan.md）
+- [ ] 评估动画降帧导出与曲线拟合/优化方案，定义平移、旋转、缩放误差指标与分阶段交付预期，并保存到 animation-compression-plan.md
+- [ ] 实现 tinyEngine MCP 基础设施：主线程 CommandBridge 队列、跨平台 localhost NDJSON IpcServer、结构化错误处理、可重连生命周期以及 `--mcp/--port/--exit-after` 启动参数（src/Mcp、Application.cpp）
+- [ ] 新增 `tiny_ping`、`tiny_engine_status`、`tiny_scene_snapshot`、`tiny_engine_shutdown`，并在包含 6 个实体的真实引擎场景中完成验证（mcp_server/server.py、Mcp/SceneSnapshot.cpp）
+- [ ] 实现异步 Swapchain 帧捕获：Vulkan layout transition、GPU→CPU 回读、BGRA/RGBA 转换、PNG 编码、截图根目录路径校验与 MCP ImageContent 直接输出（Mcp/FrameCapture.cpp、mcp_server/server.py）
+- [ ] 新增项目级 Codex MCP 配置、Python 包配置与测试；初始 x64-debug 构建通过，MCP/IPC/截图测试 6/6 通过（.codex/config.toml、pyproject.toml、mcp_server/tests）
+
 ## 2026-07-15
 
 - [ ] 重构 Sequencer 面板为双列布局：固定左标签列（##seqLabels，无滚动）+ 可滚动右时间线列（##seqTimeline，水平滚动），通过 seqTimelineScrollY_ 实现垂直滚动同步（IMGUIManager.hpp/.cpp, TDD.md）

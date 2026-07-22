@@ -12,6 +12,8 @@
 
 using MaterialId = uint32_t;
 constexpr MaterialId kInvalidMaterialId = 0;
+using SkinBindingId = uint32_t;
+constexpr SkinBindingId kInvalidSkinBindingId = 0;
 
 enum class MaterialType { Mesh, Box, Material };
 
@@ -99,6 +101,26 @@ public:
     void updateBoneMatrices(MaterialId id,
                             uint32_t imageIndex,
                             const std::vector<glm::mat4>& bones);
+
+    /**
+     * @brief 为一次独立的蒙皮绘制创建 bone palette 绑定。
+     *
+     * 材质纹理、参数 UBO 与 PiP UBO 继续引用 sourceMaterial；只有
+     * BoneMatricesUBO 和 descriptor sets 独立，避免同材质的不同 skin
+     * 或不同实体在同一帧互相覆盖骨骼矩阵。
+     */
+    SkinBindingId createSkinBinding(MaterialId sourceMaterial,
+                                    const VulkanContext& ctx,
+                                    const BufferManager& bufMgr,
+                                    const PipelineManager& pipeMgr);
+    void destroySkinBinding(SkinBindingId id, const VulkanContext& ctx);
+    bool isValidSkinBinding(SkinBindingId id) const;
+    MaterialId getSkinBindingMaterial(SkinBindingId id) const;
+    void updateSkinBindingBones(SkinBindingId id,
+                                uint32_t imageIndex,
+                                const std::vector<glm::mat4>& bones);
+    VkDescriptorSet getSkinDescriptorSet(SkinBindingId id, uint32_t imageIndex) const;
+    VkDescriptorSet getSkinPipDescriptorSet(SkinBindingId id, uint32_t imageIndex) const;
 
     void destroyMaterial(MaterialId id, const VulkanContext& ctx);
 
@@ -190,6 +212,15 @@ private:
         std::string fragSpvPath;
     };
 
+    struct SkinBinding {
+        MaterialId sourceMaterial = kInvalidMaterialId;
+        std::vector<VkBuffer>        boneUbos;
+        std::vector<VkDeviceMemory>  boneUboMemory;
+        std::vector<void*>           boneUboMapped;
+        std::vector<VkDescriptorSet> descSets;
+        std::vector<VkDescriptorSet> pipDescSets;
+    };
+
     std::unordered_map<MaterialId, MaterialEntry> materials_;
     std::vector<MaterialId> allIds_;
     MaterialId nextId_        = 1;
@@ -200,6 +231,8 @@ private:
     // 资产缓存：已加载的 .ast → MaterialId，避免重复创建
     std::unordered_map<std::string, MaterialId> assetCache_;
     std::unordered_map<MaterialId, MaterialId> skinnedCache_;
+    std::unordered_map<SkinBindingId, SkinBinding> skinBindings_;
+    SkinBindingId nextSkinBindingId_ = 1;
 
     // Shared 1x1 fallback textures
     TextureGPU defaultAlbedo_, defaultNormal_;
@@ -225,6 +258,13 @@ private:
     void writePipDescSets(MaterialEntry& e, const VulkanContext& ctx);
     void destroyPipUBOs(MaterialEntry& e, const VulkanContext& ctx);
     void destroyEntry(MaterialEntry& e, const VulkanContext& ctx);
+    void createSkinBindingBuffers(SkinBinding& binding, const VulkanContext& ctx,
+                                  const BufferManager& bufMgr);
+    void destroySkinBindingBuffers(SkinBinding& binding, const VulkanContext& ctx);
+    void allocateSkinBindingDescSets(SkinBinding& binding, const VulkanContext& ctx,
+                                     const PipelineManager& pipeMgr);
+    void writeSkinBindingDescSets(SkinBinding& binding, const VulkanContext& ctx);
+    void rewriteSkinBindingsForMaterial(MaterialId materialId, const VulkanContext& ctx);
 
     static void loadTexture(TextureGPU& tex, const std::string& path,
                             const VulkanContext& ctx, const CommandManager& cmdMgr,

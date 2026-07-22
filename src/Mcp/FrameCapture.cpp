@@ -78,7 +78,7 @@ void FrameCapture::destroy(const VulkanContext& ctx)
     available_ = false;
 }
 
-nlohmann::json FrameCapture::request(int currentFrameCount)
+nlohmann::json FrameCapture::request(int currentFrameCount, bool includeUi)
 {
     if (status_ == Status::Pending || status_ == Status::Submitted) {
         return {{"error", {{"code", "capture_busy"},
@@ -92,6 +92,7 @@ nlohmann::json FrameCapture::request(int currentFrameCount)
     jobId_ = nextJobId_++;
     requestedFrame_ = currentFrameCount;
     capturedFrame_ = 0;
+    includeUi_ = includeUi;
     outputPath_.clear();
     outputBytes_ = 0;
     errorCode_.clear();
@@ -101,7 +102,8 @@ nlohmann::json FrameCapture::request(int currentFrameCount)
     return {
         {"jobId", jobId_},
         {"status", statusName(status_)},
-        {"requestedFrame", requestedFrame_}
+        {"requestedFrame", requestedFrame_},
+        {"includeUi", includeUi_}
     };
 }
 
@@ -117,6 +119,7 @@ nlohmann::json FrameCapture::query(uint64_t jobId) const
         {"status", statusName(status_)},
         {"requestedFrame", requestedFrame_},
         {"capturedFrame", capturedFrame_},
+        {"includeUi", includeUi_},
         {"width", extent_.width},
         {"height", extent_.height}
     };
@@ -131,6 +134,11 @@ nlohmann::json FrameCapture::query(uint64_t jobId) const
         };
     }
     return result;
+}
+
+bool FrameCapture::shouldRenderUi() const
+{
+    return status_ != Status::Pending || includeUi_;
 }
 
 bool FrameCapture::record(VkCommandBuffer commandBuffer, VkImage swapChainImage,

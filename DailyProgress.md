@@ -1,3 +1,36 @@
+## 2026-07-22
+
+- [ ] Fixed Mixamo multi-skin eye drift by separating runtime bone UBO/descriptor ownership from shared MaterialId into per-entity/material/skinIndex SkinBinding resources; main view, PiP, GPU pick, cache reuse, scene reload, and cleanup now use the matching binding (MaterialManager.hpp/.cpp, SceneManager.hpp/.cpp, Application.cpp, PickSystem.cpp, SceneSerializer.cpp)
+- [ ] Added a recursive Sequence asset picker with search, refresh, metadata/error display, double-click loading, and atomic load semantics that preserve the current edit on parse failure (IMGUIManager.hpp/.cpp, Application.hpp/.cpp, SequenceAssetLoader.cpp)
+- [ ] Changed main-camera yaw to rotate around world WorldUp, added Q/E world-axis descent/ascent, and gated camera input while ImGui captures keyboard or mouse (camera.hpp/.cpp, Application.cpp)
+- [ ] Fixed Sequence tracks losing their model after restart: scene files now persist entityId/displayName, model and Camera IDs share one allocator, and Transform/Animator tracks persist targetEntityId + targetAstRelPath + targetDisplayName (SceneManager.hpp/.cpp, SceneSerializer.cpp, Sequence.hpp, SequenceAssetLoader.cpp)
+- [ ] Added backward-compatible target recovery in Sequence loading: existing ID, unique stable metadata, then legacy `[T]/[A]` track-name inference; unresolved or ambiguous tracks open a manual Rebind Sequence Tracks modal and show red Target Missing state (Application.hpp/.cpp, IMGUIManager.hpp/.cpp)
+- [ ] Fixed single-shot preview with multiple Transform tracks by clearing sequencerPreviewPending_ after all track evaluation; fixed EventClip deduplication by making setSequenceRef() retain state when the referenced Sequence is unchanged (Application.cpp, SequencePlayer.cpp)
+- [ ] Changed New Camera to spawn exactly at the current main-camera world position and orientation instead of five units in front (IMGUIManager.cpp)
+- [ ] Updated TDD.md architecture, compatibility, known-status, migration, and validation sections for the session's skinning, Sequencer, camera-control, and Camera Actor changes
+- [ ] Validation passed: x64-debug builds, 10/10 Python MCP/stdio tests, Sequence binding metadata C++ round-trip, camera/Sequence smoke tests, and git diff checks
+
+## 2026-07-19
+
+- [ ] Extended frame capture with per-request `include_ui` selection: `include_ui=false` skips ImGui composition only for the captured frame and restores UI automatically on the next frame (FrameCapture.hpp/.cpp, Application.cpp, mcp_server/server.py)
+- [ ] Added registered-asset discovery through `tiny_asset_list`; results are restricted to placeable ModelRegistry entries with valid OBJ/glTF/GLB/FBX payloads (Application.cpp, mcp_server/server.py)
+- [ ] Added Agent scene-building tools `tiny_model_place`, `tiny_model_get_transform`, `tiny_model_set_transform`, and `tiny_model_delete`, including partial TRS updates, Euler/quaternion rotation input, finite-number checks, scale bounds, and structured errors (Application.hpp/.cpp, mcp_server/server.py)
+- [ ] Extracted `Application::placeRegisteredModel()` so MCP and Content Browser drag-place reuse the same model, material, sub-material, animation-asset, and skinned-material setup path without simulating mouse input (Application.hpp/.cpp)
+- [ ] Fixed the first model entity Transform double-source bug: main and PiP rendering plus the legacy ImGuizmo path now use `ModelEntity::transform`; `mainModelTransform` remains only as a compatibility mirror (Application.cpp, IMGUIManager.cpp)
+- [ ] Added per-entity local bounds and schema-v2 world AABB calculation to scene snapshots, including entity TRS and camera model rotation offset (SceneManager.hpp/.cpp, Mcp/SceneSnapshot.cpp)
+- [ ] Expanded the FastMCP server to 10 tools and added scene-tool protocol tests; x64-debug build and all 10 Python/stdio tests passed (mcp_server/tests)
+- [ ] Completed live-engine validation: listed 9 placeable assets, placed two models, updated/read back Transform, verified non-zero world bounds, and visually checked 1280x720 screenshots with and without UI; removed validation entities and gracefully shut down the engine
+- [ ] Synchronized MCP implementation status, remaining manual reload step, architecture, protocol, and validation evidence across mcp-control-plan.md and TDD.md
+
+## 2026-07-18
+
+- [ ] Reviewed the existing MCP Agent plan and produced an achievable one-night MVP boundary, separating Codex implementation work from manual engine/Codex reload steps (mcp-control-plan.md)
+- [ ] Assessed animation frame-rate compression with curve fitting/optimization, defined translation/rotation/scale error metrics and staged delivery expectations, and saved the proposal in animation-compression-plan.md
+- [ ] Implemented the tinyEngine MCP foundation: main-thread CommandBridge queue, cross-platform localhost NDJSON IpcServer, structured error handling, reconnect-safe lifecycle, and `--mcp/--port/--exit-after` startup controls (src/Mcp, Application.cpp)
+- [ ] Added `tiny_ping`, `tiny_engine_status`, `tiny_scene_snapshot`, and `tiny_engine_shutdown`, then verified them against a running engine with a six-entity scene (mcp_server/server.py, Mcp/SceneSnapshot.cpp)
+- [ ] Implemented asynchronous Swapchain frame capture with Vulkan layout transitions, GPU-to-CPU readback, BGRA/RGBA conversion, PNG encoding, capture-root path validation, and direct MCP ImageContent output (Mcp/FrameCapture.cpp, mcp_server/server.py)
+- [ ] Added project-local Codex MCP configuration and Python packaging/tests; initial x64-debug build and six MCP/IPC/capture tests passed (.codex/config.toml, pyproject.toml, mcp_server/tests)
+
 ## 2026-07-15
 
 - [ ] Refactored Sequencer panel from single-column to dual-column layout: fixed left label column (##seqLabels, NoScrollbar) + scrollable right timeline column (##seqTimeline, HorizontalScrollbar), with vertical scroll sync via seqTimelineScrollY_ (IMGUIManager.hpp/.cpp, TDD.md)
