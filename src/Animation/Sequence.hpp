@@ -5,6 +5,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <cmath>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -266,11 +267,26 @@ struct SequenceTrack {
     double totalDuration() const;
 };
 
+/** @brief A hard-cut key on the sequence-global Camera/Shot track. */
+struct CameraShotKeyframe {
+    double      time = 0.0;
+    uint64_t    cameraEntityId = 0;
+    std::string targetDisplayName;
+};
+
+struct CameraShotTrack {
+    std::vector<CameraShotKeyframe> keyframes;
+
+    const CameraShotKeyframe* evaluate(double t) const;
+    double totalDuration() const;
+};
+
 /** @brief 完整的时间轴 Sequence */
 struct Sequence {
     std::string name;
     double      totalDuration = 0.0;  ///< 可覆盖，否则自动计算
     std::vector<SequenceTrack> tracks;
+    std::optional<CameraShotTrack> cameraShotTrack;
 
     double computeTotalDuration() const;
 };

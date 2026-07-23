@@ -482,17 +482,16 @@ struct BoneMapping {
 - 状态序列化支持：`.animctrl.json` 保存/加载 `rootMotion` 和 `rootBoneName` 字段
 - UI 支持：State Properties 区域增加 Root Motion 模式下拉选择和根骨骼名称下拉选择
 
-**Phase B5-9 — Animator Preview Mode（2026-07-13）：**
-- `Application::animatorPreviewMode_` 开关
-- **ON（默认）**：状态机驱动动画，保持现有行为
-- **OFF**：Sequencer 驱动动画，`onAnimClipEval` 回调跳过（由 `animatorPreviewMode_` 守卫）；`drawFrame` 中跳过 `animatorController.update()`，骨骼由 `previewClipIndex` 驱动或走 bind pose
-- Animator 面板变为只读（`ImGui::BeginDisabled`），所有编辑操作和按钮被禁用
-- 切换 OFF 时自动清空 `previewClipIndex` 残留
+**Phase B5-9 — 动画控制权仲裁（2026-07-13 初版，2026-07-23 替换）：**
+- 旧 `animatorPreviewMode_` 二元开关已移除，避免把整个 Animator 面板误设为只读并让无轨道实体停止播放
+- 当前使用默认关闭的 `sequencerControlEnabled_`；只有开启后且实体存在 AnimatorKeyframe 轨道时，Sequencer 才接管该实体
+- Clip Preview 使用独立的 `previewClipIndex` 请求；未被 Sequencer 拥有的实体继续执行 `animatorController.update()`
+- 控制源切换会清除残留预览和 Root Motion 采样历史，防止 live/preview/sequencer 三种来源相互污染
 
 **Phase B5-6 — 事件驱动系统：**
 - `AnimatorEvent` 结构体（Type: SetFloat/SetInt/SetBool/SetTrigger + paramName + 值）
 - `AnimatorController::dispatchEvent(event)` / `dispatchEvents(events)` 将事件转发到对应 `set*` 方法
-- 为未来 Sequence 系统预留标准接口：Sequence 可在 clip 开始/结束或特定时间点触发 `dispatchEvent` 改变参数，从而驱动状态机过渡
+- Sequencer 编辑入口固定为 AnimatorKeyframe 内的参数事件；独立 Event 轨道已废弃，运行时按 0..t 的 Setter/Trigger 时间流确定性计算状态机姿势
 
 **逐骨骼混合：** `Application::drawFrame(dt)` 先在每个 State 内对最多两个 BlendSpace Sample 做 TRS 混合，再在当前/目标 State 之间做第二层 TRS cross-fade；Translation/Scale 使用 `glm::mix`，Rotation 使用 `glm::slerp`，之后计算最终骨骼 palette。
 - **Root Motion**：每帧骨骼求值后、`computeFinalMatrices` 前按 Clip 分别计算 root delta，正放/倒放跨循环边界时分成两个区间累计，再按 BlendSpace 与 Transition 权重混合。seek、反向拖动和状态拓扑变化会清空每实体 `rootMotionClipHistory`，避免复用不连续历史。
@@ -510,24 +509,27 @@ Phase C 提供时间轴驱动的多轨道动画系统；状态机事件统一存
 
 **C1 — SequenceTrack / SequenceClip 数据结构（`src/Animation/Sequence.hpp`）**
 - `SequenceClipBase`：所有片段基类（startTime / duration）
-- 有效 `TrackType`：Group / CameraPath / TransformTween / TransformKeyframe / AnimatorKeyframe；AnimationClip / Event 仅作为旧 JSON 的禁用兼容类型
+- 有效实体轨道 `TrackType`：Group / TransformTween / TransformKeyframe / AnimatorKeyframe；CameraPath 仅作旧资产兼容，AnimationClip / Event 仅作为旧 JSON 的禁用兼容类型
 - 各 Clip 派生类型：`AnimTrackClip`（clipName / clipOffset / playSpeed）、`CameraPathClip`（pathAssetPath）、`TransformTweenClip`（start/end TRS + ease）、`EventClip`（完整 `AnimatorEvent`）
 - `SequenceTrack`：name、type、每条轨道存同类型片段的 vector + `keyframeTrack` / `animatorTrack`
-- `Sequence`：name、tracks、totalDuration
+- `Sequence`：name、tracks、totalDuration，以及至多一条可选的全局 `CameraShotTrack`
+- `CameraShotTrack`：按时间排序的 `CameraShotKeyframe[]`；每个关键帧保存 time / cameraEntityId / targetDisplayName，控制该时刻起使用的 Camera Actor
 
 **C2 — SequencePlayer 播放控制器（`src/Animation/SequencePlayer.hpp/.cpp`）**
 - play / pause / stop / seek 接口
 - `setSequenceRef(Sequence& seq)`：引用外部 Sequence（不拷贝），使 UI 修改实时生效
-- `update(dt, FrameCallbacks)`：推进时间并求值 CameraPath、Transform 和 AnimatorKeyframe；旧 AnimationClip/Event 类型不会进入运行时执行
+- `update(dt, FrameCallbacks)`：推进时间并求值 Transform、AnimatorKeyframe 和全局 Camera/Shot；旧 AnimationClip/Event 类型不会进入运行时执行
 - `FrameCallbacks` 通过 lambda 连接相机路径、变换和 Animator 时间流求值
+- 求值顺序为实体 Transform → Animator → Camera/Shot；镜头切换发生在 `updateAllUBOs()` 前，保证 Camera Actor 同帧变换已生效且无一帧延迟
 - Sequencer 播放期间屏蔽右键拖拽（camera track 存在时）
 - `totalDur <= 0` 但有关键帧轨道时，仍执行关键帧求值（支持空序列预览）
 
-**C3 — CameraPath 相机路径轨道（`src/Animation/CameraPath.hpp/.cpp`）**
+**C3 — CameraPath 相机路径轨道（旧资产兼容，`src/Animation/CameraPath.hpp/.cpp`）**
 - `CameraKeyframe`：time / position / orientation / fovDeg
 - `CameraPath`：keyframes 数组 + CatmullRom（默认）/ Linear 插值
 - `evaluate(t)` 返回位置、朝向、FOV 的 EvalResult
-- 录制功能：每 0.1s 自动抓取当前相机状态插入关键帧
+- 新建 CameraPath 与旧“每 0.1s 采样相机 Transform”录制入口已移除；旧 CameraPath 仅在 Sequence 不含 Camera/Shot 轨道时继续加载和播放
+- 新工作流由 Camera Actor 的 Transform 轨道负责移动，由唯一全局 Camera/Shot 轨道负责硬切镜头
 
 **C4 — TransformTween 轨道 + TransformKeyframe 关键帧轨道**
 - TransformTween（旧版，已废弃）：对场景对象做 start→end TRS 关键帧补间。UI 中标记为 "(Deprecated)"
@@ -553,9 +555,10 @@ Phase C 提供时间轴驱动的多轨道动画系统；状态机事件统一存
 - **Animator 事件编辑自动预览**（2026-07-15）：Animator 关键帧编辑器中所有 event 变更点（参数名选择/输入、值编辑、插值模式、事件添加/删除、关键帧删除）均自动触发 `seek(editTime) + requestSequencerPreview()`，无需手动点击 Preview 按钮
 
 **C5 — 序列化（`src/Animation/SequenceAssetLoader.hpp/.cpp`）**
-- `.seq.json`：Sequence 完整保存（tracks / clips / keyframeTrack / 所有参数）
+- `.seq.json` version 2：Sequence 完整保存（tracks / clips / keyframeTrack / 所有参数 / 可选 cameraShotTrack）
 - `.campath.json`：CameraPath 单独保存（keyframes / interpolation）
 - TransformKeyframeTrack / AnimatorKeyframeTrack 完整 JSON 读写，包含稳定目标元数据，加载后按 time 排序
+- Camera/Shot 关键帧保存稳定 Camera Actor ID 与显示名；加载后去重并排序，重绑定时按现有 ID → 唯一显示名恢复
 - `Application::loadSequenceAsset()` 使用临时对象解析，失败时保留当前编辑中的 Sequence，成功后才原子替换
 - nlohmann/json 实现
 
@@ -565,18 +568,36 @@ Phase C 提供时间轴驱动的多轨道动画系统；状态机事件统一存
 - 双列布局（2026-07-15 重构）：左标签列（`##seqLabels`，无水平滚动）+ 右时间线列（`##seqTimeline`，水平滚动+垂直滚动主控），两列通过 `seqTimelineScrollY_` 垂直滚动同步
 - 左列轨道标签用 `ImGui::Selectable` 提供可靠 hover/click，不再混用 InvisibleButton+Dummy；两列行 Y 均通过独立累加 `rowCursorY` 推进，绕过 ImGui ItemSpacing，确保任意轨道数量下左右像素对齐
 - 父轨道使用显式 `TrackType::Group`，不再借用空 AnimationClip 作为占位；旧空 AnimationClip 父轨道在加载时自动迁移
-- 时间线刻度尺：基于 duration 自适应显示秒数刻度 + 数字标签；刻度尺、clip、keyframe 的 X 坐标通过统一 lambda `timeToX(t)` 计算，根除水平滚动对齐漂移
+- 时间线刻度尺：只显示 0..duration；整数秒标记加精确小数终点标记，刻度尺、clip、keyframe 的 X 坐标通过统一 lambda `timeToX(t)` 计算，根除水平滚动对齐漂移
 - 红色播放指示线（当前时间）+ 黄色编辑指示线（sequencerEditTime_），线高度从硬编码 2000 改为精确的 `timelineHeight + tracksContentHeight`
 - 时间尺支持按住左键连续拖动：激活时暂停播放，持续 `seek + requestSequencerPreview`，拖出区域后保持捕获并限制在有效时长内
+- 唯一全局 `Camera / Shots [Global]` 行固定显示在实体轨道之前；通过关键帧新增、编辑、删除、预览和手动 Rebind 选择接下来使用的 Camera Actor
 - UE 风格层级轨道：选中实体点击 "Add Selected to Track" 自动创建父轨道 + Transform 子轨道 + Animator 子轨道（有 AnimatorController 时）
 - 重复轨道检测（2026-07-15）：同一实体已存在时不再重复添加，状态栏提示 "Entity 'xxx' already has tracks in this sequence"
 - 轨道命名使用实体 displayName，回退到 Entity_ID
 - "Add Keyframe" 按钮根据当前选中轨道类型自动判断添加 Transform 或 Animator 关键帧
 - 关键帧编辑：time / position / rotation / scale / easeToNext（Transform）/ 事件列表（Animator）
 - Animator 事件编辑：事件类型下拉 / 参数名输入 / 值控件 / 插值模式下拉；这是状态切换参数事件的唯一 Sequencer 编辑入口
+- `Track Actions` 只处理显式 Group/子轨道选择和带确认的级联删除；轨道类型创建后不可变，避免破坏层级与序列化不变量
+- 下方参数编辑区默认约占 Sequencer 高度的 45%，通过水平分隔条调整，并保留时间线与参数区的最小可用高度
+- `Sequence Recording` 可配置开始/结束时间、FPS、Take 名称和是否包含 UI，显示录制进度并提供 Stop/Cancel
 - TransformTween 轨道类型在 UI 中标记为 "(Deprecated)"，颜色改为灰色
 - 已移除 Mute/Solo 按钮（功能未实现，简化代码）
 - Sequence 加载后按“现有持久化 ID → 唯一 astRelPath/displayName → 旧 `[T]/[A]` 轨道名称”顺序恢复目标；无法唯一匹配时弹出 `Rebind Sequence Tracks` 手动绑定，未绑定轨道以红色 `Target Missing` 标记
+
+**C8 — Sequencer Control 与 Animator 所有权仲裁**
+- 原 Animator Preview Mode 已移除，替换为默认关闭的全局 `Sequencer Control`
+- 关闭时 Sequencer 仅提供 transport/edit time，不向场景输出 Transform、Animator 或 Camera/Shot；Animator 与普通场景编辑继续实时运行
+- 开启时只有存在对应 Sequencer 轨道的实体被接管；没有 AnimatorKeyframe 轨道的 Animator 继续 live update
+- 轨道控制权切换、非连续 seek 与录制恢复会重置逐实体 Root Motion/clip 历史，避免旧采样跨控制源污染
+- Clip Preview 使用独立预览请求恢复正常工作，不再被 Sequencer 每帧覆盖
+
+**C9 — 固定步长 Sequence 录制**
+- 录制输出为 `res/bin/sequence_captures/<take>/frame_%06d.png`，并写入含状态、范围、FPS、分辨率、帧数和中止原因的 `capture.json`
+- 每个输出帧严格求值于 `startTime + frameIndex / fps`；非零起点先从 0 固定步长预滚至开始时间，以累积状态机、Trigger 与 Root Motion
+- 复用 `FrameCapture` 的顺序 GPU readback；Sequence 录制与 MCP 单帧截图互斥，防止共享 readback 状态冲突
+- 录制期间暂停不受 Sequencer 管理的实时 Animator 时间，并在完成/停止/取消后恢复原播放头、播放/循环状态、主摄像机及所有实体 Transform
+- 窗口 resize、应用关闭或捕获失败会安全结束录制、保留已完成 PNG，并将原因写入 manifest
 
 **已知 Bug（待新会话修复）**：
 - **Animator Panel 入口不直观**：绑定 Controller 的入口隐藏在 Animator 面板内部的资产列表 Selectable 中，需要在 `tinyEngineOperationWindow` 先勾选 "Animator" 打开面板，再在左侧侧边栏的 "Animator Controllers" 区点击资产项。没有独立的"绑定"或"加载"按钮。
@@ -915,6 +936,8 @@ struct PushConstants {
 - **Scene Outliner：** 场景实体列表，单选/多选
 - **Properties：** 选中实体的 Transform 编辑 + Material 材质参数/纹理内联编辑；纹理路径输入在切换材质时同步，Load 支持绝对路径和相对 `res/` 路径并显示成功/失败状态
 - **Box 面板：** 添加/删除 Box、选中 Box 属性
+- **Sequencer：** 上方轨道区与下方参数/录制区使用可拖动水平分隔条；参数区默认获得更大的编辑空间，并在窗口缩放时维持两侧最小高度
+- **Animator：** 左侧 Controller/Clip 资源区与右侧 State/Transition 编辑区使用可拖动垂直分隔条；左侧 `New AnimController` / `Save Current` / `Clear Controller` 操作会按当前资源区宽度自动换行
 - **ImGuizmo 集成：** 对选中实体施加 TRS 变换手柄，支持平移/旋转/缩放，通过键盘 1/2/3 切换模式
 
 **关键流程：**
@@ -1009,9 +1032,9 @@ TINYOBJLOADER_IMPLEMENTATION # tinyobjloader 实现编译
 | 蒙皮模型 GPU 拾取 | 已完成 | skinned pick pipeline 复用材质 bone UBO，按 submesh/当前动画姿势写入 Entity ID |
 | 重复蒙皮模型独立动画状态 | 已完成 | Controller 逐实体独立；SkinBinding 将 bone UBO/descriptor 从 MaterialId 中解耦，并按实体/材质/skinIndex 分配，主视口、PiP、Pick 三条路径一致使用 |
 | 多 .anim.ast 合并加载 | **已修复** | 2026-07-02：根因是 `loadAndApplyMaterialAsset` 传入的 `astRelPath` 可能是 `.material.ast` 路径，不含 `animations` 数组。修复：(1) `ensureAnimationAssetForMeshAst` 增加回退逻辑；(2) `loadAndApplyMaterialAsset` 中记录实体 `astRelPath` 供回退使用。<br>2026-07-13：修复同名 clip 跨文件问题，加载时自动 `_1`、`_2` 后缀去重。|
-| Sequencer | 已完成（Phase C1-C7） | AnimatorKeyframe 是唯一状态机驱动入口；支持确定性 Setter/Trigger 时间流、点击/连续拖动 seek、显式 Group 父轨道、旧 Event/AnimationClip 禁用兼容、递归资产选择、原子加载、稳定目标重绑定和 Target Missing 状态 |
+| Sequencer | 已完成（Phase C1-C9） | AnimatorKeyframe 是唯一状态机驱动入口；默认关闭的 Sequencer Control 按轨道仲裁场景输出；支持确定性 Setter/Trigger 时间流、连续拖动 seek、显式 Group、稳定目标重绑定、唯一全局 Camera/Shot 硬切轨道与固定步长 PNG 序列录制 |
 | Content Browser 离屏缩略图 | **修复中** | 使用离屏渲染（128×128）生成 mesh 缩略图，当前三个待修复问题：<br>1. **材质未显示**：glTF 材质已加载但渲染结果仍偏灰；OBJ/FBX 无 .ast 路径全用默认材质 — 需排查 UBO 更新或 descriptor set 绑定时机<br>2. **相机角度错误**：当前从 (1,1,1) 方向观察，用户反馈方向是反的，需调整摄像机朝向<br>3. **Remy skinned 模型全灰**：FBX 带动画蒙皮模型渲染结果为纯色，非蒙皮 pipeline 未正确处理其顶点数据 |
-| Sequencer Camera + PiP | 已完成 | SequencerCamera 独立保存 position/orientation/fov，场景中可添加可视化 Camera Actor 并通过 PiP 预览；New Camera 直接复制主摄像机当前 Transform。历史 PiP、坐标约定、模型朝向与 Gizmo 问题均已修复，详见 §16 |
+| Sequencer Camera + PiP | 已完成 | Camera Actor 可视化并通过 PiP 预览；New Camera 复制主摄像机当前 Transform。每个 Sequence 可选一条全局 Camera/Shot 轨道，以硬切关键帧选择录制镜头；旧 CameraPath 仅作无 Shot 轨道资产兼容，详见 §16、§19 |
 | 资产系统扩充 | 待实现 | Phase D1-D3：AnimationAssetRegistry 资产注册、.ast 文件扩展（animationAssetPath/animControllerPath）、ImGui Assets 浏览器面板（TabBar 重构） |
 | PBR 管线 | 基础支持（metallic/roughness/ao） | 已有 |
 | 阴影 | 不支持 | 未规划 |
@@ -1188,3 +1211,45 @@ TINYOBJLOADER_IMPLEMENTATION # tinyobjloader 实现编译
 - Sequence 绑定元数据 C++ 往返测试：Transform/Animator 的 ID、资产路径和显示名保存/加载一致。
 - Camera 世界轴 yaw、Q/E 升降与 Sequence 原子加载专项 smoke test：通过。
 - `git diff --check`：通过；测试生成的临时源码、可执行文件、JSON 和 OBJ 已清理。
+
+---
+
+## 19. Animator/Sequencer 工作流、Camera/Shot 与录制（2026-07-23）
+
+### 19.1 Animator 播放与混合空间
+
+- State 播放方向从带符号 speed 拆分为 `Forward/Reverse + 非负 Play Rate`，负速旧资产在 version 1 → 2 加载时自动迁移。
+- `State Motion` 支持 SingleClip 与 BlendSpace1D。BlendSpace Sample 保存 clip 与轴位置；Float 参数选择相邻两个 Sample 并做线性姿势混合，范围外钳制到端点。
+- 不同时长 Clip 共享归一化 phase，各自用 `phase * clipDuration` 采样；因此短 Clip 与长 Clip 保持语义进度同步，而不是按绝对秒对齐。
+- Root Motion 按 Clip 独立提取方向/循环安全 delta，再在 BlendSpace Sample 与 State Transition 两层按相同权重混合。
+- Clip Preview 修复为独立预览通道；Animator 资源区与编辑区新增可拖动垂直分隔条，顶部 Controller 操作按可用宽度自动换行。
+
+### 19.2 Sequencer 控制边界与轨道管理
+
+- `Sequencer Control` 默认关闭。只有开启后，Sequencer 才能把 Transform、Animator 和 Camera/Shot 结果输出到场景。
+- 控制粒度为实体/轨道：被轨道拥有的 Animator 使用确定性时间流；未被轨道拥有的 Animator 保持正常实时播放。
+- AnimatorKeyframe 内的 SetFloat/SetInt/SetBool/SetTrigger 是状态切换事件的唯一编辑与执行入口；独立 Event/AnimationClip 轨道不再创建或运行。
+- Track Management 收敛为 `Track Actions`：选择全局 Camera/Shot、创建显式 Group、按层级级联删除；不允许事后修改轨道类型。
+
+### 19.3 全局 Camera/Shot 轨道
+
+- 每个 `.seq.json` 至多一条顶层 `cameraShotTrack`；它不属于任何实体 Group，并固定显示在时间线首行。
+- 关键帧使用“当前时刻之前最后一个关键帧”规则进行硬切，选中的 Camera Actor 持续生效直到下一个 Shot。
+- Camera Actor 的运动仍由其 Transform 子轨道负责；Shot 只决定观察/录制使用哪颗摄像机，职责不重叠。
+- 关键帧绑定按 Camera Entity ID 优先、唯一 displayName 回退；丢失或歧义时显示 `Target Missing` 并允许手动重绑定。
+- SequencePlayer 在实体 Transform 之后求值 Shot，Application 在更新主视图 UBO 前应用摄像机，保证切镜与相机运动同帧生效。
+
+### 19.4 固定步长逐帧录制
+
+- `Sequence Recording` 以指定 FPS 离线推进 Sequencer，并逐帧写出 PNG；输出目录同时包含 `capture.json`，可区分 completed/stopped/cancelled/failed。
+- 非零起始时间执行从 0 到 start 的固定步长预滚，保证 Animator 参数、Trigger、Transition 与 Root Motion 的累积结果一致。
+- 录制快照并恢复播放头、播放/循环状态、主摄像机和所有实体 Transform；停止或取消保留已经成功写出的帧。
+- 单帧 MCP Capture、Swapchain 重建和应用关闭均与录制生命周期互锁；resize/关闭会中止本次录制并生成保留部分结果的 manifest。
+
+### 19.5 编辑器布局与验证
+
+- 时间尺严格覆盖 0..duration：显示整数秒刻度，非整数 duration 额外显示精确终点，不再保留固定 10 秒或尾部 2 秒空白。
+- Sequencer 轨道区/参数区增加水平分隔条；Animator 资源区/编辑区增加垂直分隔条；按钮行根据实际资源区宽度自动换行。
+- CameraShot 专项 smoke test 通过：硬切求值、Transform 先于 Shot callback、存在 Shot 时抑制旧 CameraPath、JSON version 2 往返均正确。
+- 本轮完整功能构建曾通过 x64-debug；最后的 Animator 按钮自动换行改动通过 `ClCompile`（0 error）。完整重链接因正在运行的 `tinyEngine.exe` 锁定输出文件而返回 LNK1168，未强制终止用户进程。
+- `git diff --check` 通过（仅 Git 的 LF→CRLF 工作区提示）。

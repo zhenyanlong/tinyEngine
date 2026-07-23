@@ -36,7 +36,27 @@ double Sequence::computeTotalDuration() const
     double maxEnd = 0.0;
     for (const auto& track : tracks)
         maxEnd = std::max(maxEnd, track.totalDuration());
+    if (cameraShotTrack)
+        maxEnd = std::max(maxEnd, cameraShotTrack->totalDuration());
     return maxEnd > 0.0 ? maxEnd : 0.0;
+}
+
+const CameraShotKeyframe* CameraShotTrack::evaluate(double t) const
+{
+    if (keyframes.empty() || t < keyframes.front().time)
+        return nullptr;
+
+    const auto next = std::upper_bound(
+        keyframes.begin(), keyframes.end(), t,
+        [](double value, const CameraShotKeyframe& key) {
+            return value < key.time;
+        });
+    return next == keyframes.begin() ? nullptr : &*std::prev(next);
+}
+
+double CameraShotTrack::totalDuration() const
+{
+    return keyframes.empty() ? 0.0 : keyframes.back().time;
 }
 
 TransformTweenClip::EvalResult TransformTweenClip::evaluate(double localT) const

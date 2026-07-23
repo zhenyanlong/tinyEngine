@@ -3,6 +3,7 @@
 #include "nlohmann/json.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -163,9 +164,23 @@ bool SequenceAssetLoader::saveSequence(const std::string& jsonRelPath,
     const std::string fullPath = resolveResPath(jsonRelPath);
 
     json j;
-    j["version"] = 1;
+    j["version"] = 2;
     j["name"] = seq.name;
     j["totalDuration"] = seq.totalDuration;
+
+    if (seq.cameraShotTrack) {
+        json jShot;
+        jShot["keyframes"] = json::array();
+        for (const auto& key : seq.cameraShotTrack->keyframes) {
+            json jKey;
+            jKey["time"] = key.time;
+            jKey["cameraEntityId"] = key.cameraEntityId;
+            if (!key.targetDisplayName.empty())
+                jKey["targetDisplayName"] = key.targetDisplayName;
+            jShot["keyframes"].push_back(std::move(jKey));
+        }
+        j["cameraShotTrack"] = std::move(jShot);
+    }
 
     auto& jTracks = j["tracks"];
     for (const auto& track : seq.tracks) {
@@ -353,6 +368,37 @@ bool SequenceAssetLoader::loadSequence(const std::string& jsonRelPath,
     try {
     parsed.name = j.value("name", std::string{});
     parsed.totalDuration = j.value("totalDuration", 0.0);
+
+    if (j.contains("cameraShotTrack") && j["cameraShotTrack"].is_object()) {
+        CameraShotTrack shotTrack;
+        const auto& jShot = j["cameraShotTrack"];
+        if (jShot.contains("keyframes") && jShot["keyframes"].is_array()) {
+            for (const auto& jKey : jShot["keyframes"]) {
+                CameraShotKeyframe key;
+                key.time = std::max(0.0, jKey.value("time", 0.0));
+                key.cameraEntityId = jKey.value("cameraEntityId", uint64_t(0));
+                key.targetDisplayName = jKey.value("targetDisplayName", std::string{});
+                shotTrack.keyframes.push_back(std::move(key));
+            }
+        }
+        std::stable_sort(
+            shotTrack.keyframes.begin(), shotTrack.keyframes.end(),
+            [](const CameraShotKeyframe& a, const CameraShotKeyframe& b) {
+                return a.time < b.time;
+            });
+        constexpr double kShotTimeEpsilon = 1e-6;
+        std::vector<CameraShotKeyframe> uniqueKeys;
+        for (auto& key : shotTrack.keyframes) {
+            if (!uniqueKeys.empty()
+                && std::abs(uniqueKeys.back().time - key.time) <= kShotTimeEpsilon) {
+                uniqueKeys.back() = std::move(key);
+            } else {
+                uniqueKeys.push_back(std::move(key));
+            }
+        }
+        shotTrack.keyframes = std::move(uniqueKeys);
+        parsed.cameraShotTrack = std::move(shotTrack);
+    }
 
     if (j.contains("tracks") && j["tracks"].is_array()) {
         for (const auto& jt : j["tracks"]) {

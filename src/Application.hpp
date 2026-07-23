@@ -95,7 +95,9 @@ public:
     Sequence&       getCurrentSequence() { return currentSequence_; }
     struct SequenceBindingReport {
         size_t reboundTrackCount = 0;
+        size_t reboundCameraShotKeyCount = 0;
         std::vector<size_t> unresolvedTrackIndices;
+        std::vector<size_t> unresolvedCameraShotKeyIndices;
     };
     /** @brief 原子加载 Sequence；失败时保留当前编辑内容。 */
     bool            loadSequenceAsset(const std::string& path,
@@ -103,20 +105,34 @@ public:
                                       SequenceBindingReport* bindingReport = nullptr);
     /** @brief 将 Transform/Animator 轨道显式绑定到一个现有场景实体。 */
     bool            bindSequenceTrack(size_t trackIndex, uint64_t entityId);
+    bool            bindCameraShotKey(size_t keyIndex, uint64_t cameraEntityId);
     bool            isSequencerPlaying() const { return seqPlayer_.isPlaying(); }
     void            requestSequencerPreview() { sequencerPreviewPending_ = true; }
 
-    // ── Animator Preview Mode API ─────────────────────────────────────────────
-    bool            isAnimatorPreviewMode() const { return animatorPreviewMode_; }
-    void            setAnimatorPreviewMode(bool on) { animatorPreviewMode_ = on; }
+    // ── Sequencer scene-control API ───────────────────────────────────────────
+    bool            isSequencerControlEnabled() const { return sequencerControlEnabled_; }
+    void            setSequencerControlEnabled(bool enabled);
+    bool            isEntitySequencerAnimatorControlled(uint64_t entityId) const;
 
-    // ── Camera Path recording API ────────────────────────────────────────────
-    void beginCameraPathRecording(const std::string& pathName);
-    void endCameraPathRecording();
-    bool isRecordingCameraPath() const { return recordingCameraPath_; }
-    const CameraPath& getRecordingPath() const { return recordingPath_; }
-    double getRecordingTime() const { return recordingTime_; }
-    void setRecordInterval(double sec) { recordInterval_ = std::max(0.05, sec); }
+    struct SequenceCaptureSettings {
+        double startTime = 0.0;
+        double endTime = 0.0;
+        int fps = 30;
+        bool includeUi = false;
+        std::string takeName;
+    };
+    bool beginSequenceCapture(const SequenceCaptureSettings& settings,
+                              std::string* error = nullptr);
+    void stopSequenceCapture();
+    void cancelSequenceCapture();
+    bool isSequenceCaptureActive() const { return sequenceCaptureActive_; }
+    uint32_t getSequenceCaptureFrameCount() const { return sequenceCaptureFrameCount_; }
+    uint32_t getSequenceCaptureTotalFrames() const { return sequenceCaptureTotalFrames_; }
+    const std::string& getSequenceCaptureStatus() const { return sequenceCaptureStatus_; }
+    const std::string& getSequenceCaptureOutputDirectory() const {
+        return sequenceCaptureOutputDirectory_;
+    }
+
 
     // ── PiP (Picture-in-Picture) API ─────────────────────────────────────────
     ImTextureID getPipTextureId() const { return pipTextureId_; }
@@ -199,21 +215,44 @@ private:
     bool               sequencerPreviewPending_ = false;
     bool               sequenceCameraActive_ = false;
 
-    // ── Animator Preview Mode ─────────────────────────────────────────────────
-    // ON (default)：Animator 面板自由驱动状态机
-    // OFF：动画由 Sequencer 时间轴控制，状态机不自动推进
-    bool               animatorPreviewMode_ = true;
+    // Sequencer transport is independent from scene authority. When disabled,
+    // the playhead may still move but no camera/transform/animator output is applied.
+    bool               sequencerControlEnabled_ = false;
     double             lastSequencerAnimatorEvalTime_ = -1.0;
+
+    bool               sequenceCaptureActive_ = false;
+    bool               sequenceCaptureStopRequested_ = false;
+    bool               sequenceCaptureCancelRequested_ = false;
+    bool               sequenceCaptureFramePending_ = false;
+    bool               sequenceCaptureWarmupFramePending_ = false;
+    bool               sequenceCaptureIncludeUi_ = false;
+    uint64_t           sequenceCaptureJobId_ = 0;
+    uint32_t           sequenceCaptureFrameCount_ = 0;
+    uint32_t           sequenceCaptureTotalFrames_ = 0;
+    uint32_t           sequenceCaptureWarmupFrameCount_ = 0;
+    uint32_t           sequenceCaptureWarmupTotalFrames_ = 0;
+    uint32_t           sequenceCaptureWidth_ = 0;
+    uint32_t           sequenceCaptureHeight_ = 0;
+    int                sequenceCaptureFps_ = 30;
+    double             sequenceCaptureStartTime_ = 0.0;
+    double             sequenceCaptureEndTime_ = 0.0;
+    std::string        sequenceCaptureOutputDirectory_;
+    std::string        sequenceCaptureStatus_ = "Idle";
+    double             sequenceCaptureSavedTime_ = 0.0;
+    bool               sequenceCaptureSavedPlaying_ = false;
+    bool               sequenceCaptureSavedLooping_ = false;
+    glm::vec3          sequenceCaptureSavedCameraPosition_{0.f};
+    glm::quat          sequenceCaptureSavedCameraOrientation_{1.f, 0.f, 0.f, 0.f};
+    float              sequenceCaptureSavedCameraFov_ = 45.f;
+    struct SequenceCaptureSavedEntity {
+        uint64_t entityId = 0;
+        ObjectTransform transform;
+    };
+    std::vector<SequenceCaptureSavedEntity> sequenceCaptureSavedEntities_;
 
     // ── Camera Path cache ──────────────────────────────────────────────────
     std::unordered_map<std::string, CameraPath> cameraPathCache_;
 
-    // ── Camera Path recording ────────────────────────────────────────────────
-    bool               recordingCameraPath_ = false;
-    CameraPath         recordingPath_;
-    double             recordingTime_  = 0.0;
-    double             recordInterval_ = 0.1;
-    double             recordTimer_    = 0.0;
 
     // ── PiP state ─────────────────────────────────────────────────────────────
     SequencerCamera    pipCamera_;
@@ -245,6 +284,10 @@ private:
     void tryBeginCameraFocusOnPick();
     void cleanUp();
     void registerMcpHandlers();
+    void prepareSequenceCaptureFrame();
+    void finishSequenceCaptureFrame();
+    void finishSequenceCapture(const std::string& outcome,
+                               const std::string& message = {});
     uint64_t placeRegisteredModel(const std::string& astRelPath,
                                   const ObjectTransform& transform);
     bool ensureAnimationAssetForMeshAst(const std::string& meshAstRelPath,

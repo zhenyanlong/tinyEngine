@@ -1,11 +1,16 @@
 ## 2026-07-23
 
+- [ ] Replaced Animator Preview Mode with default-off Sequencer Control: only explicitly tracked Transform/Animator/Camera outputs are owned by the Sequencer, while untracked animators continue live; fixed Clip Preview and reset root-motion history across ownership/seek changes
+- [ ] Consolidated Sequencer state-machine events into AnimatorKeyframe SetFloat/SetInt/SetBool/SetTrigger evaluation, and replaced Track Management with invariant-safe Track Actions for Group selection/creation and confirmed cascade deletion
+- [ ] Added a sequence-scoped, unique global Camera/Shot track with hard-cut keyframes, stable Camera Actor rebinding, same-frame Transform-before-Shot evaluation, pinned timeline editing, and version-2 JSON round trips; retained CameraPath only for legacy sequences without a Shot track
+- [ ] Implemented fixed-step PNG sequence recording with start/end/FPS/Take/include-UI settings, nonzero-start pre-roll, exact frame-time evaluation, sequential GPU readback, capture manifests, partial-result Stop/Cancel/resize handling, and restoration of playhead/camera/entity state
+- [ ] Improved editor layout: the timeline ruler now ends exactly at Duration, the Sequencer parameter area uses a larger resizable horizontal split, the Animator resource/editor columns use a resizable vertical split, and Controller action buttons wrap to the resource-panel width
 - [ ] Added explicit Forward/Reverse Animator state playback with non-negative Play Rate and normalized progress; version-1 negative speed assets migrate automatically to Reverse + absolute rate
 - [ ] Added SingleClip/BlendSpace1D State Motion with Float-driven positioned samples, endpoint clamping, normalized-time synchronization, and two-layer BlendSpace/State-transition TRS pose blending
 - [ ] Made Root Motion direction- and loop-aware by extracting per-clip deltas and blending them across BlendSpace samples and State transitions; discontinuous Sequencer seeks reset per-entity clip history
 - [ ] Upgraded `.animctrl.json` to version 2 while retaining v1 loading; expanded Animator UI, compatible-controller filtering, save validation, Clip rename, parameter rename propagation, referenced-parameter deletion protection, and current-Sequence event updates
 - [ ] Updated TDD.md and animation-system-plan.md for Phase B6 architecture, migration, compatibility, data flow, UI, Root Motion, and acceptance criteria
-- [ ] Validation passed: x64-debug build, Animator v1/v2/reverse/BlendSpace/transition C++ smoke test, 10/10 Python MCP tests, and git diff checks
+- [ ] Validation: x64-debug builds and Animator/CameraShot smoke tests passed; the final auto-wrap-only edit passed ClCompile with 0 errors, while full relink was blocked by the running tinyEngine.exe (LNK1168); git diff checks passed
 
 ## 2026-07-22
 

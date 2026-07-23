@@ -18,6 +18,7 @@ public:
 
     bool record(VkCommandBuffer commandBuffer, VkImage swapChainImage,
                 int currentFrameCount);
+    bool isBusy() const;
     bool isSubmitted() const;
     void complete(const VulkanContext& ctx);
 

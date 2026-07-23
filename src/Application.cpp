@@ -20,7 +20,9 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <cstring>
 #include "cgltf.h"
 #include <stdexcept>
@@ -350,7 +352,8 @@ void Application::mouseButtonCallback(GLFWwindow* w, int button, int action, int
 void Application::mouseCallback(GLFWwindow* w, double xpos, double ypos)
 {
     auto* app = reinterpret_cast<Application*>(glfwGetWindowUserPointer(w));
-    if (!app || !app->rightMouseDown_ || app->sequenceCameraActive_) return;
+    if (!app || !app->rightMouseDown_ || app->sequenceCameraActive_
+        || app->sequenceCaptureActive_) return;
     if (ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse) return;
 
     if (app->firstMouse_) {
@@ -582,29 +585,19 @@ void Application::gameLoop()
             endDragPlace();
         }
 
-        if (!camera_.IsSmoothFocusActive())
+        if (!sequenceCaptureActive_ && !camera_.IsSmoothFocusActive())
             camera_.UpdataCameraPosition(dt > 0.f ? dt : 1.f / 240.f);
-        camera_.UpdateSmoothFocus(dt > 0.f ? dt : 1.f / 240.f);
+        if (!sequenceCaptureActive_)
+            camera_.UpdateSmoothFocus(dt > 0.f ? dt : 1.f / 240.f);
 
-        // ── Camera Path 录制 ──────────────────────────────────────────────────
-        if (recordingCameraPath_) {
-            const double realDt = dt > 0.0 ? static_cast<double>(dt) : (1.0 / 240.0);
-            recordTimer_ += realDt;
-            recordingTime_ += realDt;
-
-            if (recordTimer_ >= recordInterval_) {
-                CameraKeyframe kf;
-                kf.time = recordingTime_;
-                kf.position = camera_.Position;
-                kf.orientation = camera_.GetOrientation();
-                kf.fovDeg = camera_.FovDeg;
-                recordingPath_.keyframes.push_back(std::move(kf));
-                recordTimer_ = 0.0;
-            }
-        }
 
         ui_->prepareFrame();
-        drawFrame(dt);
+        prepareSequenceCaptureFrame();
+        const float renderDt = sequenceCaptureActive_
+            ? 1.f / static_cast<float>(sequenceCaptureFps_)
+            : dt;
+        drawFrame(renderDt);
+        finishSequenceCaptureFrame();
 
         if (mcpShutdownRequested_) {
             glfwSetWindowShouldClose(window_, GLFW_TRUE);
@@ -616,6 +609,11 @@ void Application::gameLoop()
         ui_->setRefreshVulkanStatus(false);
     }
 
+    if (sequenceCaptureActive_) {
+        finishSequenceCapture(
+            "Cancelled",
+            "Application closed before sequence recording completed");
+    }
     ui_->cleanUp();
     cleanUp();
 }
@@ -765,6 +763,10 @@ void Application::registerMcpHandlers()
         if (!params.is_object()) return invalidParams("params must be an object");
         if (params.contains("includeUi") && !params["includeUi"].is_boolean())
             return invalidParams("includeUi must be a boolean");
+        if (sequenceCaptureActive_) {
+            return {{"error", {{"code", "sequence_capture_active"},
+                                {"message", "Single-frame capture is unavailable while sequence recording is active"}}}};
+        }
         return frameCapture_.request(frameCount_, params.value("includeUi", true));
     });
 
@@ -782,37 +784,7 @@ void Application::registerMcpHandlers()
     });
 }
 
-// ─── Skinned material conversion ──────────────────────────────────────────────
-
-void Application::beginCameraPathRecording(const std::string& pathName)
-{
-    recordingCameraPath_ = true;
-    recordingPath_ = CameraPath{};
-    recordingPath_.name = pathName;
-    recordingPath_.interpolation = 0; // CatmullRom
-    recordingTime_ = 0.0;
-    recordTimer_ = 0.0;
-}
-
-void Application::endCameraPathRecording()
-{
-    recordingCameraPath_ = false;
-    // 确保最后一个关键帧也记录了
-    CameraKeyframe kf;
-    kf.time = recordingTime_;
-    kf.position = camera_.Position;
-    kf.orientation = camera_.GetOrientation();
-    kf.fovDeg = camera_.FovDeg;
-
-    if (recordingPath_.keyframes.empty() ||
-        recordingPath_.keyframes.back().time < kf.time - 0.001) {
-        recordingPath_.keyframes.push_back(std::move(kf));
-    }
-
-    std::cout << "[CameraPath] Recording finished: " << recordingPath_.name
-              << " (" << recordingPath_.keyframes.size() << " keyframes, "
-              << recordingTime_ << "s)\n";
-}
+// ─── Sequencer asset binding and capture ─────────────────────────────────────
 
 bool Application::loadSequenceAsset(const std::string& path,
                                     std::string* error,
@@ -867,19 +839,57 @@ bool Application::loadSequenceAsset(const std::string& path,
         }
     }
 
+    if (loaded.cameraShotTrack) {
+        for (size_t keyIndex = 0;
+             keyIndex < loaded.cameraShotTrack->keyframes.size();
+             ++keyIndex) {
+            auto& key = loaded.cameraShotTrack->keyframes[keyIndex];
+            const auto* bound = sceneMgr_.getModelEntity(key.cameraEntityId);
+            if (bound && bound->isCamera()) {
+                key.targetDisplayName = bound->displayName;
+                continue;
+            }
+
+            std::vector<const SceneManager::ModelEntity*> candidates;
+            if (!key.targetDisplayName.empty()) {
+                for (const auto& entity : entities) {
+                    if (entity.isCamera()
+                        && entity.displayName == key.targetDisplayName) {
+                        candidates.push_back(&entity);
+                    }
+                }
+            }
+            if (candidates.size() == 1) {
+                key.cameraEntityId = candidates.front()->entityId;
+                key.targetDisplayName = candidates.front()->displayName;
+                ++report.reboundCameraShotKeyCount;
+            } else {
+                key.cameraEntityId = 0;
+                report.unresolvedCameraShotKeyIndices.push_back(keyIndex);
+            }
+        }
+    }
+
     currentSequence_ = std::move(loaded);
     seqPlayer_.load(currentSequence_);
     seqPlayer_.setSequenceRef(currentSequence_);
-    sequencerPreviewPending_ = true;
+    sequencerPreviewPending_ = sequencerControlEnabled_;
     lastSequencerAnimatorEvalTime_ = -1.0;
     sequenceCameraActive_ = false;
     cameraPathCache_.clear();
 
     for (auto& entity : sceneMgr_.getModelEntities()) {
-        entity.previewClipIndex = -1;
-        entity.previewTime = 0.f;
+        const bool wasSequencerDriven = entity.sequencerAnimatorActive;
         entity.hasPendingSequencerBlend = false;
-        entity.rootMotionInitialized = false;
+        entity.sequencerAnimatorActive = false;
+        if (wasSequencerDriven
+            || isEntitySequencerAnimatorControlled(entity.entityId)) {
+            entity.rootMotionInitialized = false;
+        }
+        if (isEntitySequencerAnimatorControlled(entity.entityId)) {
+            entity.previewClipIndex = -1;
+            entity.previewTime = 0.f;
+        }
     }
     if (bindingReport)
         *bindingReport = std::move(report);
@@ -899,7 +909,432 @@ bool Application::bindSequenceTrack(size_t trackIndex, uint64_t entityId)
     if (!entity)
         return false;
     setSequenceBindingMetadata(track, *entity);
+    for (auto& sceneEntity : sceneMgr_.getModelEntities()) {
+        const bool wasSequencerDriven = sceneEntity.sequencerAnimatorActive;
+        sceneEntity.hasPendingSequencerBlend = false;
+        sceneEntity.sequencerAnimatorActive = false;
+        if (wasSequencerDriven
+            || isEntitySequencerAnimatorControlled(sceneEntity.entityId)) {
+            sceneEntity.rootMotionInitialized = false;
+        }
+    }
+    lastSequencerAnimatorEvalTime_ = -1.0;
+    sequencerPreviewPending_ = sequencerControlEnabled_;
     return true;
+}
+
+bool Application::bindCameraShotKey(size_t keyIndex, uint64_t cameraEntityId)
+{
+    if (!currentSequence_.cameraShotTrack
+        || keyIndex >= currentSequence_.cameraShotTrack->keyframes.size()) {
+        return false;
+    }
+    const auto* entity = sceneMgr_.getModelEntity(cameraEntityId);
+    if (!entity || !entity->isCamera())
+        return false;
+
+    auto& key = currentSequence_.cameraShotTrack->keyframes[keyIndex];
+    key.cameraEntityId = entity->entityId;
+    key.targetDisplayName = entity->displayName;
+    sequencerPreviewPending_ = sequencerControlEnabled_;
+    return true;
+}
+
+bool Application::beginSequenceCapture(const SequenceCaptureSettings& settings,
+                                       std::string* error)
+{
+    auto fail = [&](const std::string& message) {
+        if (error) *error = message;
+        sequenceCaptureStatus_ = "Failed: " + message;
+        return false;
+    };
+
+    if (sequenceCaptureActive_)
+        return fail("A sequence capture is already active");
+    if (!sequencerControlEnabled_)
+        return fail("Enable Sequencer Control before recording");
+    if (!currentSequence_.cameraShotTrack
+        || currentSequence_.cameraShotTrack->keyframes.empty()) {
+        return fail("The sequence has no Camera/Shot keyframes");
+    }
+    if (settings.fps < 1 || settings.fps > 240)
+        return fail("Capture FPS must be in the range 1..240");
+    if (!(settings.endTime > settings.startTime))
+        return fail("Capture end time must be greater than start time");
+    if (settings.startTime < 0.0)
+        return fail("Capture start time cannot be negative");
+    const double sequenceDuration = currentSequence_.totalDuration > 0.0
+        ? currentSequence_.totalDuration
+        : currentSequence_.computeTotalDuration();
+    if (sequenceDuration <= 0.0)
+        return fail("The sequence duration must be greater than zero");
+    if (settings.endTime > sequenceDuration + 1e-6)
+        return fail("Capture end time exceeds the sequence duration");
+    if (frameCapture_.isBusy())
+        return fail("A screenshot capture is already in progress");
+
+    const auto* firstShot =
+        currentSequence_.cameraShotTrack->evaluate(settings.startTime);
+    if (!firstShot)
+        return fail("No Camera/Shot keyframe is active at the capture start time");
+    {
+        const auto* cameraEntity =
+            sceneMgr_.getModelEntity(firstShot->cameraEntityId);
+        if (!cameraEntity || !cameraEntity->isCamera()) {
+            return fail("The Camera/Shot key active at the capture start time "
+                        "is not bound to a valid Camera Actor");
+        }
+    }
+
+    for (const auto& key : currentSequence_.cameraShotTrack->keyframes) {
+        const bool affectsRange =
+            key.time > settings.startTime && key.time < settings.endTime;
+        if (!affectsRange)
+            continue;
+        const auto* cameraEntity = sceneMgr_.getModelEntity(key.cameraEntityId);
+        if (!cameraEntity || !cameraEntity->isCamera()) {
+            return fail("Camera/Shot key at "
+                        + std::to_string(key.time)
+                        + "s is not bound to a valid Camera Actor");
+        }
+    }
+
+    const double frameCountExact =
+        (settings.endTime - settings.startTime)
+        * static_cast<double>(settings.fps);
+    const uint32_t totalFrames = static_cast<uint32_t>(
+        std::max(1.0, std::ceil(frameCountExact - 1e-9)));
+
+    std::string takeName = settings.takeName.empty()
+        ? currentSequence_.name
+        : settings.takeName;
+    takeName = sanitizeAssetName(takeName);
+    if (takeName.empty())
+        takeName = "SequenceTake";
+
+    const std::filesystem::path root =
+        std::filesystem::path(modelRegistry_.getResRoot())
+        / "bin" / "sequence_captures";
+    std::error_code ec;
+    std::filesystem::create_directories(root, ec);
+    if (ec)
+        return fail("Cannot create capture directory: " + ec.message());
+
+    std::filesystem::path output = root / takeName;
+    for (int suffix = 2; std::filesystem::exists(output) && suffix < 10000; ++suffix) {
+        std::ostringstream numbered;
+        numbered << takeName << '_' << std::setw(3) << std::setfill('0') << suffix;
+        output = root / numbered.str();
+    }
+    std::filesystem::create_directories(output, ec);
+    if (ec)
+        return fail("Cannot create take directory: " + ec.message());
+
+    sequenceCaptureSavedTime_ = seqPlayer_.currentTime();
+    sequenceCaptureSavedPlaying_ = seqPlayer_.isPlaying();
+    sequenceCaptureSavedLooping_ = seqPlayer_.isLooping();
+    sequenceCaptureSavedCameraPosition_ = camera_.Position;
+    sequenceCaptureSavedCameraOrientation_ = camera_.GetOrientation();
+    sequenceCaptureSavedCameraFov_ = camera_.FovDeg;
+    sequenceCaptureSavedEntities_.clear();
+    sequenceCaptureSavedEntities_.reserve(
+        sceneMgr_.getModelEntities().size());
+    for (const auto& entity : sceneMgr_.getModelEntities()) {
+        sequenceCaptureSavedEntities_.push_back(
+            {entity.entityId, entity.transform});
+    }
+
+    seqPlayer_.pause();
+    sequenceCaptureStartTime_ = settings.startTime;
+    sequenceCaptureEndTime_ = settings.endTime;
+    sequenceCaptureFps_ = settings.fps;
+    sequenceCaptureIncludeUi_ = settings.includeUi;
+    sequenceCaptureTotalFrames_ = totalFrames;
+    sequenceCaptureFrameCount_ = 0;
+    sequenceCaptureWarmupTotalFrames_ = static_cast<uint32_t>(
+        std::max(0.0, std::ceil(
+            settings.startTime * static_cast<double>(settings.fps) - 1e-9)));
+    sequenceCaptureWarmupFrameCount_ = 0;
+    sequenceCaptureWidth_ = swapChain_.getExtent().width;
+    sequenceCaptureHeight_ = swapChain_.getExtent().height;
+    sequenceCaptureOutputDirectory_ = std::filesystem::absolute(output).string();
+    sequenceCaptureStatus_ = sequenceCaptureWarmupTotalFrames_ > 0
+        ? "Pre-rolling"
+        : "Recording";
+    sequenceCaptureStopRequested_ = false;
+    sequenceCaptureCancelRequested_ = false;
+    sequenceCaptureFramePending_ = false;
+    sequenceCaptureWarmupFramePending_ = false;
+    sequenceCaptureJobId_ = 0;
+    sequenceCaptureActive_ = true;
+    lastSequencerAnimatorEvalTime_ = -1.0;
+    for (auto& entity : sceneMgr_.getModelEntities()) {
+        entity.rootMotionInitialized = false;
+        entity.rootMotionClipHistory.clear();
+    }
+    return true;
+}
+
+void Application::stopSequenceCapture()
+{
+    if (sequenceCaptureActive_)
+        sequenceCaptureStopRequested_ = true;
+}
+
+void Application::cancelSequenceCapture()
+{
+    if (sequenceCaptureActive_)
+        sequenceCaptureCancelRequested_ = true;
+}
+
+void Application::prepareSequenceCaptureFrame()
+{
+    if (!sequenceCaptureActive_
+        || sequenceCaptureFramePending_
+        || sequenceCaptureWarmupFramePending_) {
+        return;
+    }
+    if (sequenceCaptureCancelRequested_) {
+        finishSequenceCapture("Cancelled", "Partial frames were kept");
+        return;
+    }
+    if (sequenceCaptureStopRequested_) {
+        finishSequenceCapture("Stopped", "Partial frames were kept");
+        return;
+    }
+    if (sequenceCaptureFrameCount_ >= sequenceCaptureTotalFrames_) {
+        finishSequenceCapture("Completed");
+        return;
+    }
+    seqPlayer_.pause();
+
+    if (sequenceCaptureWarmupFrameCount_
+        < sequenceCaptureWarmupTotalFrames_) {
+        const double warmupTime =
+            static_cast<double>(sequenceCaptureWarmupFrameCount_)
+            / static_cast<double>(sequenceCaptureFps_);
+        seqPlayer_.seek(warmupTime);
+        sequencerPreviewPending_ = true;
+        sequenceCaptureWarmupFramePending_ = true;
+        sequenceCaptureStatus_ = "Pre-rolling";
+        return;
+    }
+
+    const double captureTime =
+        sequenceCaptureStartTime_
+        + static_cast<double>(sequenceCaptureFrameCount_)
+          / static_cast<double>(sequenceCaptureFps_);
+    seqPlayer_.seek(captureTime);
+    sequencerPreviewPending_ = true;
+
+    const json request =
+        frameCapture_.request(frameCount_, sequenceCaptureIncludeUi_);
+    if (request.contains("error")) {
+        finishSequenceCapture(
+            "Failed",
+            request["error"].value("message", std::string{"Frame capture request failed"}));
+        return;
+    }
+    sequenceCaptureJobId_ = request.value("jobId", uint64_t(0));
+    if (sequenceCaptureJobId_ == 0) {
+        finishSequenceCapture("Failed", "Frame capture returned an invalid job id");
+        return;
+    }
+    sequenceCaptureFramePending_ = true;
+}
+
+void Application::finishSequenceCaptureFrame()
+{
+    if (!sequenceCaptureActive_)
+        return;
+    if (sequenceCaptureWarmupFramePending_) {
+        ++sequenceCaptureWarmupFrameCount_;
+        sequenceCaptureWarmupFramePending_ = false;
+        if (sequenceCaptureWarmupFrameCount_
+            >= sequenceCaptureWarmupTotalFrames_) {
+            sequenceCaptureStatus_ = "Recording";
+        }
+        return;
+    }
+    if (!sequenceCaptureFramePending_)
+        return;
+
+    const json result = frameCapture_.query(sequenceCaptureJobId_);
+    if (result.contains("error")) {
+        finishSequenceCapture(
+            "Failed",
+            result["error"].value("message", std::string{"Frame capture failed"}));
+        return;
+    }
+    const std::string status = result.value("status", std::string{});
+    if (status == "pending" || status == "submitted")
+        return;
+    if (status != "ready") {
+        finishSequenceCapture("Failed", "Frame capture did not complete successfully");
+        return;
+    }
+
+    const std::filesystem::path source = result.value("path", std::string{});
+    std::ostringstream fileName;
+    fileName << "frame_" << std::setw(6) << std::setfill('0')
+             << sequenceCaptureFrameCount_ << ".png";
+    const std::filesystem::path destination =
+        std::filesystem::path(sequenceCaptureOutputDirectory_) / fileName.str();
+
+    std::error_code ec;
+    std::filesystem::rename(source, destination, ec);
+    if (ec) {
+        ec.clear();
+        std::filesystem::copy_file(
+            source, destination,
+            std::filesystem::copy_options::overwrite_existing, ec);
+        if (!ec) {
+            std::error_code removeError;
+            std::filesystem::remove(source, removeError);
+        }
+    }
+    if (ec) {
+        finishSequenceCapture("Failed", "Cannot store captured frame: " + ec.message());
+        return;
+    }
+
+    ++sequenceCaptureFrameCount_;
+    sequenceCaptureFramePending_ = false;
+    sequenceCaptureJobId_ = 0;
+
+    if (sequenceCaptureCancelRequested_) {
+        finishSequenceCapture("Cancelled", "Partial frames were kept");
+    } else if (sequenceCaptureStopRequested_) {
+        finishSequenceCapture("Stopped", "Partial frames were kept");
+    } else if (sequenceCaptureFrameCount_ >= sequenceCaptureTotalFrames_) {
+        finishSequenceCapture("Completed");
+    }
+}
+
+void Application::finishSequenceCapture(const std::string& outcome,
+                                        const std::string& message)
+{
+    if (!sequenceCaptureActive_)
+        return;
+
+    sequenceCaptureActive_ = false;
+    sequenceCaptureFramePending_ = false;
+    sequenceCaptureWarmupFramePending_ = false;
+    sequenceCaptureStopRequested_ = false;
+    sequenceCaptureCancelRequested_ = false;
+
+    json manifest = {
+        {"version", 1},
+        {"sequence", currentSequence_.name},
+        {"status", outcome},
+        {"message", message},
+        {"fps", sequenceCaptureFps_},
+        {"startTime", sequenceCaptureStartTime_},
+        {"endTime", sequenceCaptureEndTime_},
+        {"capturedFrames", sequenceCaptureFrameCount_},
+        {"plannedFrames", sequenceCaptureTotalFrames_},
+        {"preRollFrames", sequenceCaptureWarmupFrameCount_},
+        {"width", sequenceCaptureWidth_},
+        {"height", sequenceCaptureHeight_},
+        {"includeUi", sequenceCaptureIncludeUi_},
+        {"framePattern", "frame_%06d.png"}
+    };
+    if (currentSequence_.cameraShotTrack) {
+        manifest["cameraShots"] = json::array();
+        for (const auto& key : currentSequence_.cameraShotTrack->keyframes) {
+            manifest["cameraShots"].push_back({
+                {"time", key.time},
+                {"cameraEntityId", key.cameraEntityId},
+                {"targetDisplayName", key.targetDisplayName}
+            });
+        }
+    }
+
+    if (!sequenceCaptureOutputDirectory_.empty()) {
+        std::ofstream out(
+            std::filesystem::path(sequenceCaptureOutputDirectory_) / "capture.json");
+        if (out.is_open())
+            out << manifest.dump(2) << '\n';
+    }
+
+    sequenceCaptureStatus_ = outcome;
+    if (!message.empty())
+        sequenceCaptureStatus_ += ": " + message;
+
+    seqPlayer_.seek(sequenceCaptureSavedTime_);
+    if (sequenceCaptureSavedPlaying_)
+        seqPlayer_.play(sequenceCaptureSavedLooping_);
+    else
+        seqPlayer_.pause();
+    camera_.Position = sequenceCaptureSavedCameraPosition_;
+    camera_.SetOrientation(sequenceCaptureSavedCameraOrientation_);
+    camera_.FovDeg = sequenceCaptureSavedCameraFov_;
+    for (const auto& saved : sequenceCaptureSavedEntities_) {
+        if (auto* entity = sceneMgr_.getModelEntity(saved.entityId)) {
+            entity->transform = saved.transform;
+            entity->syncCameraFromTransform();
+        }
+    }
+    sequenceCaptureSavedEntities_.clear();
+    sequenceCameraActive_ = false;
+    sequencerPreviewPending_ = sequencerControlEnabled_;
+    lastSequencerAnimatorEvalTime_ = -1.0;
+    for (auto& entity : sceneMgr_.getModelEntities()) {
+        entity.rootMotionInitialized = false;
+        entity.rootMotionClipHistory.clear();
+    }
+}
+
+bool Application::isEntitySequencerAnimatorControlled(uint64_t entityId) const
+{
+    if (!sequencerControlEnabled_ || entityId == 0)
+        return false;
+    for (const auto& track : currentSequence_.tracks) {
+        if (track.type == TrackType::AnimatorKeyframe
+            && track.animatorTrack.targetEntityId == entityId
+            && !track.animatorTrack.keyframes.empty()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void Application::setSequencerControlEnabled(bool enabled)
+{
+    if (sequencerControlEnabled_ == enabled)
+        return;
+
+    auto hasAnimatorTrack = [&](uint64_t entityId) {
+        for (const auto& track : currentSequence_.tracks) {
+            if (track.type == TrackType::AnimatorKeyframe
+                && track.animatorTrack.targetEntityId == entityId
+                && !track.animatorTrack.keyframes.empty()) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    sequencerControlEnabled_ = enabled;
+    sequencerPreviewPending_ = enabled;
+    sequenceCameraActive_ = false;
+    lastSequencerAnimatorEvalTime_ = -1.0;
+
+    for (auto& entity : sceneMgr_.getModelEntities()) {
+        const bool wasSequencerDriven = entity.sequencerAnimatorActive;
+        entity.hasPendingSequencerBlend = false;
+        entity.sequencerAnimatorActive = false;
+        if (!wasSequencerDriven && !hasAnimatorTrack(entity.entityId))
+            continue;
+
+        // Changing animation authority invalidates Root Motion history. When
+        // Sequencer takes ownership, remove any competing manual clip preview.
+        entity.rootMotionInitialized = false;
+        if (enabled) {
+            entity.previewClipIndex = -1;
+            entity.previewTime = 0.f;
+        }
+    }
 }
 
 void Application::destroyEntitySkinBindings(SceneManager::ModelEntity& ent)
@@ -916,6 +1351,8 @@ void Application::destroyEntitySkinBindings(SceneManager::ModelEntity& ent)
     ent.skinBindingId = kInvalidSkinBindingId;
     ent.subMeshSkinBindings.clear();
 }
+
+// ─── Skinned material conversion ──────────────────────────────────────────────
 
 void Application::convertModelMaterialsToSkinned()
 {
@@ -1029,122 +1466,102 @@ void Application::drawFrame(float dt)
     if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
         throw std::runtime_error("Failed to acquire swap chain image!");
 
-    const glm::mat4 view = camera_.GetViewMatrix();
-    const glm::mat4 proj = camera_.GetProjectionMatrix();
-    matMgr_.updateAllUBOs(imageIndex, view, proj);
-
     // ── Sequencer 驱动 ───────────────────────────────────────────────────────
     sequenceCameraActive_ = false;
     {
         seqPlayer_.setSequenceRef(currentSequence_);
-        const auto* seq = &currentSequence_;
-        bool hasCameraTrack = false;
-        if (seq) {
-            for (const auto& t : seq->tracks) {
-                if (t.type == TrackType::CameraPath) { hasCameraTrack = true; break; }
-            }
-        }
-
-        const bool sequencerPreviewRequested = sequencerPreviewPending_;
+        const bool sequencerPreviewRequested =
+            sequencerControlEnabled_ && sequencerPreviewPending_;
         const double previousAnimatorEvalTime = lastSequencerAnimatorEvalTime_;
         double evaluatedAnimatorTime = -1.0;
         SequencePlayer::FrameCallbacks seqCallbacks;
-        seqCallbacks.onCameraPathEval = [&](double localT, const std::string& pathAssetRelPath) {
-            // Cache camera paths to avoid reloading from disk every frame
-            auto it = cameraPathCache_.find(pathAssetRelPath);
-            if (it == cameraPathCache_.end()) {
-                CameraPath path;
-                std::string err;
-                if (!SequenceAssetLoader::loadCameraPath(pathAssetRelPath, path, &err)) {
-                    std::cerr << "[Sequencer] Failed to load camera path: " << err << "\n";
-                    return;
+        if (sequencerControlEnabled_) {
+            seqCallbacks.onCameraPathEval = [&](double localT, const std::string& pathAssetRelPath) {
+                // Cache camera paths to avoid reloading from disk every frame
+                auto it = cameraPathCache_.find(pathAssetRelPath);
+                if (it == cameraPathCache_.end()) {
+                    CameraPath path;
+                    std::string err;
+                    if (!SequenceAssetLoader::loadCameraPath(pathAssetRelPath, path, &err)) {
+                        std::cerr << "[Sequencer] Failed to load camera path: " << err << "\n";
+                        return;
+                    }
+                    it = cameraPathCache_.emplace(pathAssetRelPath, std::move(path)).first;
                 }
-                it = cameraPathCache_.emplace(pathAssetRelPath, std::move(path)).first;
-            }
-            auto result = it->second.evaluate(localT);
-            camera_.Position = result.position;
-            camera_.SetOrientation(result.orientation);
-            camera_.FovDeg = result.fovDeg;
-            sequenceCameraActive_ = true;
-        };
+                auto result = it->second.evaluate(localT);
+                camera_.Position = result.position;
+                camera_.SetOrientation(result.orientation);
+                camera_.FovDeg = result.fovDeg;
+                sequenceCameraActive_ = true;
+            };
 
-        seqCallbacks.onTransformTweenEval = [&](double localT, const TransformTweenClip& clip) {
-            auto result = clip.evaluate(localT);
-            if (sceneMgr_.getModelEntities().empty()) return;
-            auto& ent = sceneMgr_.getModelEntities()[0];
-            ent.transform.position = result.position;
-            ent.transform.rotation = result.rotation;
-            ent.transform.scale = result.scale;
-        };
+            seqCallbacks.onTransformTweenEval = [&](double localT, const TransformTweenClip& clip) {
+                auto result = clip.evaluate(localT);
+                if (sceneMgr_.getModelEntities().empty()) return;
+                auto& ent = sceneMgr_.getModelEntities()[0];
+                ent.transform.position = result.position;
+                ent.transform.rotation = result.rotation;
+                ent.transform.scale = result.scale;
+            };
 
-        seqCallbacks.onTransformKeyframeEval = [&](double t, uint64_t entityId, const TransformKeyframeTrack::EvalResult& result) {
-            if (!result.valid) return;
-            if (!seqPlayer_.isPlaying() && !sequencerPreviewRequested) return;
-            auto* ent = sceneMgr_.getModelEntity(entityId);
-            if (!ent) return;
-            ent->transform.position = result.position;
-            ent->transform.rotation = result.rotation;
-            ent->transform.scale = result.scale;
-            ent->syncCameraFromTransform();
-        };
+            seqCallbacks.onTransformKeyframeEval = [&](double t, uint64_t entityId, const TransformKeyframeTrack::EvalResult& result) {
+                if (!result.valid) return;
+                if (!seqPlayer_.isPlaying() && !sequencerPreviewRequested) return;
+                auto* ent = sceneMgr_.getModelEntity(entityId);
+                if (!ent) return;
+                ent->transform.position = result.position;
+                ent->transform.rotation = result.rotation;
+                ent->transform.scale = result.scale;
+                ent->syncCameraFromTransform();
+            };
 
-        seqCallbacks.onAnimatorKeyframeEval = [&](double t, uint64_t entityId,
-                                                   const AnimatorKeyframeTrack::EvalResult& result) {
-            auto* ent = sceneMgr_.getModelEntity(entityId);
-            if (!ent || !ent->animatorController.hasStates()) return;
+            seqCallbacks.onAnimatorKeyframeEval = [&](double t, uint64_t entityId,
+                                                       const AnimatorKeyframeTrack::EvalResult& result) {
+                auto* ent = sceneMgr_.getModelEntity(entityId);
+                if (!ent || !ent->animatorController.hasStates()) return;
 
-            // seek、拖动、循环回绕属于时间不连续点，禁止复用上一姿势的 Root Motion delta。
-            if (sequencerPreviewRequested
-                || (previousAnimatorEvalTime >= 0.0 && t + 1e-6 < previousAnimatorEvalTime)) {
-                ent->rootMotionInitialized = false;
-            }
+                // seek、拖动、循环回绕属于时间不连续点，禁止复用上一姿势的 Root Motion delta。
+                if ((sequencerPreviewRequested && !sequenceCaptureActive_)
+                    || (previousAnimatorEvalTime >= 0.0 && t + 1e-6 < previousAnimatorEvalTime)) {
+                    ent->rootMotionInitialized = false;
+                }
 
-            // 从 0 到 t 按事件时间顺序求值；Setter 持续，Trigger 只在关键帧边界脉冲一次。
-            ent->pendingSequencerBlend = ent->animatorController.computeBlendAtTime(
-                static_cast<float>(t), ent->animationClips,
-                result.timeline, result.initialState);
-            ent->hasPendingSequencerBlend = true;
-            evaluatedAnimatorTime = t;
-        };
+                // 从 0 到 t 按事件时间顺序求值；Setter 持续，Trigger 只在关键帧边界脉冲一次。
+                ent->pendingSequencerBlend = ent->animatorController.computeBlendAtTime(
+                    static_cast<float>(t), ent->animationClips,
+                    result.timeline, result.initialState);
+                ent->hasPendingSequencerBlend = true;
+                evaluatedAnimatorTime = t;
+            };
+
+            seqCallbacks.onCameraShotEval =
+                [&](double, const CameraShotKeyframe& keyframe) {
+                    auto* cameraEntity =
+                        sceneMgr_.getModelEntity(keyframe.cameraEntityId);
+                    if (!cameraEntity || !cameraEntity->isCamera())
+                        return;
+                    cameraEntity->syncCameraFromTransform();
+                    camera_.Position = cameraEntity->cameraData.position;
+                    camera_.SetOrientation(cameraEntity->cameraData.orientation);
+                    camera_.FovDeg = cameraEntity->cameraData.fovDeg;
+                    sequenceCameraActive_ = true;
+                };
+        }
 
         seqPlayer_.update(dt, seqCallbacks);
         if (evaluatedAnimatorTime >= 0.0)
             lastSequencerAnimatorEvalTime_ = evaluatedAnimatorTime;
-        if (sequencerPreviewRequested)
+        if (sequencerPreviewPending_)
             sequencerPreviewPending_ = false;
-    }
-
-    // Sequencer 不再直接执行 AnimationClip 轨道；AnimatorKeyframe 是唯一动画驱动入口。
-    bool seqHasAnimKeyframe = false;
-    {
-        const auto* seq = &currentSequence_;
-        if (seq) {
-            for (const auto& t : seq->tracks) {
-                if (t.type == TrackType::AnimatorKeyframe && !t.animatorTrack.keyframes.empty()) {
-                    seqHasAnimKeyframe = true; break;
-                }
-            }
-        }
-    }
-
-    if (seqPlayer_.isPlaying() && !seqHasAnimKeyframe) {
-        for (auto& ent : sceneMgr_.getModelEntities()) {
-            ent.previewClipIndex = -1;
-        }
-    }
-
-    // Animator Preview Mode ON 时，清除所有 Sequencer 设置的 previewClipIndex，
-    // 确保动画由状态机驱动而非 Sequencer 的 clip 直接播放。
-    // 否则点击时间轴后 previewClipIndex 残留，导致骨骼走 clip 预览而非状态机。
-    if (animatorPreviewMode_) {
-        for (auto& ent : sceneMgr_.getModelEntities()) {
-            ent.previewClipIndex = -1;
-        }
     }
 
     // 逐实体动画采样与骨骼矩阵上传：每个实体使用自己的 skeleton/clips，
     // 不再依赖全局单例，支持多骨架动画实体同场景。
     std::vector<SkinBindingId> updatedBindings;
+    const glm::mat4 view = camera_.GetViewMatrix();
+    const glm::mat4 proj = camera_.GetProjectionMatrix();
+    matMgr_.updateAllUBOs(imageIndex, view, proj);
+
     auto updateSkinBinding = [&](SkinBindingId id, const std::vector<glm::mat4>& palette) {
         if (!matMgr_.isValidSkinBinding(id)) return;
         if (std::find(updatedBindings.begin(), updatedBindings.end(), id) != updatedBindings.end())
@@ -1161,31 +1578,38 @@ void Application::drawFrame(float dt)
         const auto& clips = ent.animationClips;
 
         AnimatorController::BlendCommand blendCommand;
-        if (ent.previewClipIndex >= 0 && ent.previewClipIndex < static_cast<int>(clips.size())) {
-            // ── 预览模式（Animator Preview 按钮或 Sequencer 直接驱动）：绕开状态机 ──
+        const bool useSequencerAnimator =
+            sequencerControlEnabled_ && ent.hasPendingSequencerBlend;
+        if (useSequencerAnimator != ent.sequencerAnimatorActive) {
+            // Source changes must not reuse Root Motion samples from the other
+            // time domain (live state machine vs. Sequencer absolute time).
+            ent.rootMotionInitialized = false;
+            ent.sequencerAnimatorActive = useSequencerAnimator;
+        }
+
+        if (useSequencerAnimator) {
+            // Sequencer owns only entities whose AnimatorKeyframe callback produced
+            // a pose. Other entities continue running their live state machines.
+            blendCommand = ent.pendingSequencerBlend;
+            ent.hasPendingSequencerBlend = false;
+        } else if (ent.previewClipIndex >= 0 && ent.previewClipIndex < static_cast<int>(clips.size())) {
+            // ── Animator Clip Preview：绕开状态机 ──
             const AnimationClip* clip = &clips[ent.previewClipIndex];
-            ent.previewTime += dt * ent.previewSpeed;
+            ent.previewTime += (sequenceCaptureActive_ ? 0.f : dt)
+                             * ent.previewSpeed;
             if (clip->duration > 0.f)
                 ent.previewTime = std::fmod(ent.previewTime, clip->duration);
             blendCommand.poseA.samples[0] = {
                 clip, ent.previewTime, 1.f
             };
             blendCommand.poseA.sampleCount = 1;
-        } else if (ent.hasPendingSequencerBlend) {
-            // ── Sequencer AnimatorKeyframe 求值缓存：使用 computeBlendAtTime 已计算好的
-            //     BlendCommand（精确对应时间轴上的 seek 位置），不修改状态机内部状态。
-            blendCommand = ent.pendingSequencerBlend;
-            ent.hasPendingSequencerBlend = false;
-        } else if (animatorPreviewMode_ || (seqPlayer_.isPlaying() && seqHasAnimKeyframe)) {
-            // ── 预览模式 ON 或 AnimatorKeyframe 轨道播放中：状态机正常推进 ──
+        } else {
+            // No Sequencer pose owns this entity: run the live Animator normally.
             if (!ent.animatorController.hasStates() && !clips.empty()) {
                 ent.animatorController.configureFromClips(clips);
             }
-            blendCommand = ent.animatorController.update(dt, clips);
-        } else {
-            // ── 预览模式 OFF：Sequencer 驱动，但当前没有 Sequencer 驱动此实体，
-            //     骨骼走 bind pose
-            // blendCommand 保持默认（poseA.sampleCount = 0），骨骼走 bind pose
+            blendCommand = ent.animatorController.update(
+                sequenceCaptureActive_ ? 0.f : dt, clips);
         }
 
         auto evaluateStatePose = [](const AnimatorController::StatePoseCommand& statePose,
@@ -1840,6 +2264,12 @@ void Application::recordCommandBuffer(VkCommandBuffer cb, uint32_t imageIndex)
 
 void Application::recreateSwapChain()
 {
+    if (sequenceCaptureActive_) {
+        finishSequenceCapture(
+            "Failed",
+            "Capture stopped because the framebuffer size or swapchain changed");
+    }
+
     int w = 0, h = 0;
     glfwGetFramebufferSize(window_, &w, &h);
     while (w == 0 || h == 0) {
@@ -3465,7 +3895,8 @@ void Application::processInput(GLFWwindow* w)
         key1WasDown = k1; key2WasDown = k2; key3WasDown = k3; key4WasDown = k4;
     }
 
-    const bool manualCameraInput = !imguiKb && !sequenceCameraActive_;
+    const bool manualCameraInput =
+        !imguiKb && !sequenceCameraActive_ && !sequenceCaptureActive_;
     if (manualCameraInput) {
         camera_.speedZ = static_cast<float>(glfwGetKey(w, GLFW_KEY_W) == GLFW_PRESS)
                        - static_cast<float>(glfwGetKey(w, GLFW_KEY_S) == GLFW_PRESS);

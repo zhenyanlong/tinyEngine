@@ -83,6 +83,7 @@ public:
         // 当 Sequencer 的 AnimatorKeyframe 轨道求值时，将计算出的 BlendCommand
         // 缓存于此，供 drawFrame 直接使用，避免与状态机自身的 update(dt) 重复推进。
         bool hasPendingSequencerBlend = false;
+        bool sequencerAnimatorActive = false;
         AnimatorController::BlendCommand pendingSequencerBlend;
 
         // ── Root Motion 运行时状态 ─────────────────────────────

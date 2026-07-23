@@ -1,11 +1,16 @@
 ## 2026-07-23
 
+- [ ] Animator Preview Mode 替换为默认关闭的 Sequencer Control：仅显式存在轨道的 Transform/Animator/Camera 输出由 Sequencer 接管，未被轨道控制的 Animator 继续实时运行；同时修复 Clip Preview，并在控制权/seek 切换时重置 Root Motion 历史
+- [ ] Sequencer 状态机事件统一收敛到 AnimatorKeyframe 的 SetFloat/SetInt/SetBool/SetTrigger 确定性求值；Track Management 改为维护层级不变量的 Track Actions，负责 Group 选择/创建及带确认的级联删除
+- [ ] 新增每条 Sequence 唯一的全局 Camera/Shot 轨道：支持硬切关键帧、Camera Actor 稳定重绑定、同帧 Transform 先于 Shot 求值、固定时间线编辑行及 version 2 JSON 往返；CameraPath 仅兼容不含 Shot 轨道的旧 Sequence
+- [ ] 实现固定步长 PNG Sequence 录制：支持开始/结束/FPS/Take/是否包含 UI，非零起点预滚、精确帧时间求值、顺序 GPU 回读、capture manifest、Stop/Cancel/resize 保留部分结果，并在结束时恢复播放头/摄像机/实体状态
+- [ ] 改进编辑器布局：时间尺严格结束于 Duration；Sequencer 参数区扩大并支持水平拖动分隔；Animator 资源区/编辑区支持垂直拖动分隔；Controller 操作按钮按资源区实际宽度自动换行
 - [ ] Animator State 新增显式 Forward/Reverse 播放方向与非负 Play Rate，并使用归一化播放进度；version 1 负 speed 资产自动迁移为 Reverse + 绝对倍率
 - [ ] 新增 SingleClip/BlendSpace1D State Motion，支持 Float 参数驱动的带位置 Sample、端点钳制、归一化时间同步，以及 BlendSpace 内部与 State Transition 外部两层 TRS 姿势混合
 - [ ] Root Motion 改为方向与循环安全的逐 Clip delta 提取，并跨 BlendSpace Sample 和 State Transition 混合；Sequencer 非连续 seek 会重置逐实体 Clip 历史
 - [ ] `.animctrl.json` 升级为 version 2 并保留 v1 加载；扩展 Animator UI、兼容 Controller 筛选、保存验证、Clip Rename、参数重命名传播、被引用参数删除保护及当前 Sequence 事件更新
 - [ ] 更新 TDD.md 与 animation-system-plan.md，同步 Phase B6 架构、迁移、兼容性、数据流、UI、Root Motion 和验收标准
-- [ ] 验证通过：x64-debug 构建、Animator v1/v2/倒放/BlendSpace/Transition C++ smoke test、Python MCP 测试 10/10 与 git diff 检查
+- [ ] 验证：x64-debug 构建及 Animator/CameraShot 专项 smoke test 均通过；最后仅涉及按钮自动换行的修改通过 ClCompile（0 error），完整重链接因 tinyEngine.exe 正在运行而被 LNK1168 阻止；git diff 检查通过
 
 ## 2026-07-22
 

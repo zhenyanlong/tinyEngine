@@ -1447,11 +1447,13 @@ void UIManager::drawSequencerPanel()
     const double currentTime = seqPlayer.currentTime();
 
     static int selectedTrackIdx = -1;
+    static int selectedShotKeyIdx = -1;
     static int selectedClipType = -1;
     static int selectedClipIdx = -1;
     static char seqNameBuf[256] = "NewSequence";
     static bool loopPlayback = false;
     static float zoomLevel = 1.0f;
+    constexpr int kCameraShotTrackSelection = -2;
 
     const float timelineHeight = 30.0f;
     const float trackLabelWidth = 180.0f;
@@ -1464,6 +1466,23 @@ void UIManager::drawSequencerPanel()
     ImGui::SameLine(ImGui::GetWindowWidth() - 200);
     ImGui::SetNextItemWidth(150);
     ImGui::InputText("##seqName", seqNameBuf, sizeof(seqNameBuf));
+    ImGui::Separator();
+
+    bool sequencerControl = vulkanRender->isSequencerControlEnabled();
+    ImGui::BeginDisabled(vulkanRender->isSequenceCaptureActive());
+    if (ImGui::Checkbox("Sequencer Control", &sequencerControl)) {
+        vulkanRender->setSequencerControlEnabled(sequencerControl);
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "When enabled, Sequencer tracks may drive bound scene objects.\n"
+            "When disabled, the playhead can still move without changing the scene.");
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled(sequencerControl
+        ? "(scene output enabled)"
+        : "(transport only; scene output disabled)");
     ImGui::Separator();
 
     if (seqPlayer.isPlaying()) {
@@ -1582,6 +1601,7 @@ void UIManager::drawSequencerPanel()
                     ? entry.displayName : sequence.name;
                 snprintf(seqNameBuf, sizeof(seqNameBuf), "%s", loadedName.c_str());
                 selectedTrackIdx = -1;
+                selectedShotKeyIdx = -1;
                 selectedClipType = -1;
                 selectedClipIdx = -1;
                 selectedKeyframeIdx_ = -1;
@@ -1592,15 +1612,19 @@ void UIManager::drawSequencerPanel()
                 sequenceRebindTrackIndices_ = std::move(bindingReport.unresolvedTrackIndices);
                 sequenceRebindEntityIds_.assign(sequenceRebindTrackIndices_.size(), uint64_t(0));
                 sequenceRebindPopupPending_ = !sequenceRebindTrackIndices_.empty();
-                if (sequenceRebindPopupPending_) {
+                const size_t unresolvedTotal =
+                    sequenceRebindTrackIndices_.size()
+                    + bindingReport.unresolvedCameraShotKeyIndices.size();
+                if (sequenceRebindPopupPending_ || unresolvedTotal > 0) {
                     snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
-                             "Loaded %s: rebound %zu, %zu target(s) unresolved",
+                             "Loaded %s: rebound %zu track(s), %zu shot key(s); %zu target(s) unresolved",
                              entry.relativePath.c_str(), bindingReport.reboundTrackCount,
-                             sequenceRebindTrackIndices_.size());
+                             bindingReport.reboundCameraShotKeyCount, unresolvedTotal);
                 } else {
                     snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
-                             "Loaded %s: rebound %zu target(s)",
-                             entry.relativePath.c_str(), bindingReport.reboundTrackCount);
+                             "Loaded %s: rebound %zu track(s), %zu shot key(s)",
+                             entry.relativePath.c_str(), bindingReport.reboundTrackCount,
+                             bindingReport.reboundCameraShotKeyCount);
                 }
                 ImGui::CloseCurrentPopup();
             } else {
@@ -1696,12 +1720,16 @@ void UIManager::drawSequencerPanel()
     ImGui::Separator();
 
     // ── 计算每条轨道的行高（左右两列共用） ────────────────────────────
-    // 注意：父轨道判定不能仅凭"内容为空"——新建的子轨道（[T]/[A]）在添加关键帧前
-    // 内容数组也为空，会被误判为父轨道，导致点击不切换、不高亮、行高减半、右列不绘制。
-    // 必须额外排除以 [T] / [A] 开头的子轨道。
+    // 当前 .seq.json 没有 parentTrackId；一个 Group 的子轨道定义为其后直到
+    // 下一个 Group 之前的连续范围。左右两列和删除逻辑必须使用同一层级规则。
     auto isSubTrack = [&](int ti) -> bool {
-        const auto& track = sequence.tracks[ti];
-        return track.name.rfind("[T] ", 0) == 0 || track.name.rfind("[A] ", 0) == 0;
+        if (sequence.tracks[ti].type == TrackType::Group)
+            return false;
+        for (int previous = ti - 1; previous >= 0; --previous) {
+            if (sequence.tracks[previous].type == TrackType::Group)
+                return true;
+        }
+        return false;
     };
     auto isParentTrack = [&](int ti) -> bool {
         const auto& track = sequence.tracks[ti];
@@ -1715,12 +1743,28 @@ void UIManager::drawSequencerPanel()
     // 解决单列布局中同一 Y 行混用 InvisibleButton(标签)+Dummy(时间线) 导致的
     // hover/点击不稳定（根因：同行多交互 item 抢占 HoveredId，且标签列随滚动滑走），
     // 同时让刻度尺与关键帧共用同一 contentOriginX，根除对齐漂移（Bug 1 + Bug 2）。
-    const float editorHeight = ImGui::GetWindowHeight() - 200.0f;
+    static float parameterPanelHeight = 240.0f;
+    constexpr float panelSplitterHeight = 8.0f;
+    const float availablePanelHeight = ImGui::GetContentRegionAvail().y;
+    const float minimumTimelineHeight =
+        std::min(140.0f, availablePanelHeight * 0.40f);
+    const float minimumParameterHeight =
+        std::min(180.0f, availablePanelHeight * 0.45f);
+    const float maximumParameterHeight = std::max(
+        minimumParameterHeight,
+        availablePanelHeight - minimumTimelineHeight - panelSplitterHeight);
+    parameterPanelHeight = std::clamp(
+        parameterPanelHeight,
+        minimumParameterHeight,
+        maximumParameterHeight);
+    const float editorHeight = std::max(
+        80.0f,
+        availablePanelHeight - parameterPanelHeight - panelSplitterHeight);
     const float labelColWidth = trackLabelWidth;
     const float timeColWidth  = std::max(ImGui::GetContentRegionAvail().x - labelColWidth, 1.0f);
 
     // 两列共用同一套行高，保证垂直像素偏移一致（滚动同步的前提）
-    float tracksContentHeight = 0.0f;
+    float tracksContentHeight = trackHeight;
     for (int ti = 0; ti < static_cast<int>(sequence.tracks.size()); ++ti)
         tracksContentHeight += getRowHeight(ti);
 
@@ -1741,6 +1785,50 @@ void UIManager::drawSequencerPanel()
         // 轨道越多累积偏移越大。显式 SetCursorScreenPos 定位可绕过 ItemSpacing。
         float lblRowCursorY = sp.y;
         const float lblContentX = sp.x;
+
+        bool shotBindingMissing = false;
+        if (sequence.cameraShotTrack) {
+            for (const auto& key : sequence.cameraShotTrack->keyframes) {
+                const auto* entity =
+                    vulkanRender->getSceneManager().getModelEntity(key.cameraEntityId);
+                if (!entity || !entity->isCamera()) {
+                    shotBindingMissing = true;
+                    break;
+                }
+            }
+        }
+        ImGui::PushID("CameraShotGlobalLabel");
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.45f, 0.28f, 0.08f, 0.55f));
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.55f, 0.38f, 0.12f, 0.55f));
+        ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.65f, 0.42f, 0.12f, 0.7f));
+        ImGui::SetCursorScreenPos(ImVec2(lblContentX, lblRowCursorY));
+        if (ImGui::Selectable(
+                "##cameraShotTrack",
+                selectedTrackIdx == kCameraShotTrackSelection, 0,
+                ImVec2(labelColWidth, trackHeight))) {
+            selectedTrackIdx = kCameraShotTrackSelection;
+            selectedShotKeyIdx = -1;
+            selectedClipType = -1;
+            selectedClipIdx = -1;
+            selectedKeyframeIdx_ = -1;
+        }
+        ImGui::PopStyleColor(3);
+        {
+            const ImVec2 mn = ImGui::GetItemRectMin();
+            const ImU32 color = shotBindingMissing
+                ? IM_COL32(255, 64, 64, 255)
+                : IM_COL32(245, 174, 68, 255);
+            lblDL->AddText(ImVec2(mn.x + 4.f, mn.y + 5.f), color,
+                           "Camera / Shots  [Global]");
+            if (shotBindingMissing) {
+                lblDL->AddText(
+                    ImVec2(mn.x + 4.f, mn.y + 5.f + ImGui::GetTextLineHeight()),
+                    color, "Camera Missing");
+            }
+        }
+        ImGui::PopID();
+        lblRowCursorY += trackHeight;
+
         for (int ti = 0; ti < static_cast<int>(sequence.tracks.size()); ++ti) {
             const auto& track = sequence.tracks[ti];
             bool parent = isParentTrack(ti);
@@ -1763,13 +1851,12 @@ void UIManager::drawSequencerPanel()
             ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.3f, 0.5f, 0.8f, 0.6f));
             // 显式定位到累加 Y，绕过 ItemSpacing，与右列每行 Y 完全对齐
             ImGui::SetCursorScreenPos(ImVec2(lblContentX, lblRowCursorY));
-            if (ImGui::Selectable("##trackLbl", selected && !parent, 0,
+            if (ImGui::Selectable("##trackLbl", selected, 0,
                                   ImVec2(labelColWidth, rowH))) {
-                if (!parent) {
-                    selectedTrackIdx = ti;
-                    selectedClipType = -1;
-                    selectedClipIdx = -1;
-                }
+                selectedTrackIdx = ti;
+                selectedClipType = -1;
+                selectedClipIdx = -1;
+                selectedKeyframeIdx_ = -1;
             }
             ImGui::PopStyleColor(3);
             // 在 Selectable 上叠加居中文字（保持原视觉风格）
@@ -1815,8 +1902,10 @@ void UIManager::drawSequencerPanel()
     // ── 刻度尺行 ──────────────────────────────────────────────────────
     {
         ImVec2 rowPos = ImGui::GetCursorScreenPos();
-        const int maxSec = std::max(static_cast<int>(totalDuration) + 2, 10);
-        for (int sec = 0; sec <= maxSec; ++sec) {
+        const double rulerDuration = std::max(totalDuration, 0.0);
+        const int lastWholeSecond =
+            static_cast<int>(std::floor(rulerDuration));
+        for (int sec = 0; sec <= lastWholeSecond; ++sec) {
             float x = timeToX(static_cast<double>(sec));
             drawList->AddLine(ImVec2(x, rowPos.y), ImVec2(x, rowPos.y + timelineHeight), IM_COL32(100, 100, 100, 255));
             char buf[16];
@@ -1825,6 +1914,26 @@ void UIManager::drawSequencerPanel()
         }
 
         const float rulerSpan = timelineHeight + tracksContentHeight;
+        const bool hasFractionalEnd =
+            rulerDuration - static_cast<double>(lastWholeSecond) > 1e-6;
+        if (hasFractionalEnd) {
+            const float endX = timeToX(rulerDuration);
+            drawList->AddLine(
+                ImVec2(endX, rowPos.y),
+                ImVec2(endX, rowPos.y + rulerSpan),
+                IM_COL32(130, 130, 130, 220), 1.0f);
+
+            char durationLabel[32];
+            snprintf(durationLabel, sizeof(durationLabel), "%.3f", rulerDuration);
+            std::string trimmedLabel = durationLabel;
+            while (!trimmedLabel.empty() && trimmedLabel.back() == '0')
+                trimmedLabel.pop_back();
+            if (!trimmedLabel.empty() && trimmedLabel.back() == '.')
+                trimmedLabel.pop_back();
+            drawList->AddText(
+                ImVec2(endX + 2.f, rowPos.y + 2.f),
+                IM_COL32(220, 220, 220, 255), trimmedLabel.c_str());
+        }
         if (totalDuration > 0.0) {
             float playheadX = timeToX(currentTime);
             drawList->AddLine(ImVec2(playheadX, rowPos.y), ImVec2(playheadX, rowPos.y + rulerSpan), IM_COL32(255, 50, 50, 255), 2.0f);
@@ -1859,6 +1968,88 @@ void UIManager::drawSequencerPanel()
     // clip/keyframe 的 SetCursorScreenPos+Button 会把 cursor 上移，若用 GetCursorScreenPos
     // 取下一行起点会逐行上移错位。此处显式累加，每行 Dummy 也显式定位。
     float rowCursorY = ImGui::GetCursorScreenPos().y;
+
+    {
+        const ImVec2 contentPos(contentOriginX, rowCursorY);
+        if (selectedTrackIdx == kCameraShotTrackSelection) {
+            drawList->AddRectFilled(
+                contentPos,
+                ImVec2(contentPos.x + timelineWidth, contentPos.y + trackHeight),
+                IM_COL32(90, 62, 24, 110));
+        }
+        ImGui::SetCursorScreenPos(contentPos);
+        ImGui::Dummy(ImVec2(timelineWidth, trackHeight));
+        rowCursorY += trackHeight;
+
+        if (sequence.cameraShotTrack) {
+            const auto& keys = sequence.cameraShotTrack->keyframes;
+            for (int keyIndex = 0;
+                 keyIndex < static_cast<int>(keys.size());
+                 ++keyIndex) {
+                const auto& key = keys[keyIndex];
+                const float keyX =
+                    contentPos.x + static_cast<float>(key.time * pixelsPerSecond);
+                constexpr float keySize = 8.f;
+                const ImVec2 keyMin(
+                    keyX - keySize,
+                    contentPos.y + trackHeight * 0.5f - keySize);
+                const ImVec2 keyMax(
+                    keyX + keySize,
+                    contentPos.y + trackHeight * 0.5f + keySize);
+                const bool keySelected =
+                    selectedTrackIdx == kCameraShotTrackSelection
+                    && selectedShotKeyIdx == keyIndex;
+                const auto* cameraEntity =
+                    vulkanRender->getSceneManager().getModelEntity(key.cameraEntityId);
+                const bool validCamera = cameraEntity && cameraEntity->isCamera();
+                const ImU32 keyColor = !validCamera
+                    ? IM_COL32(255, 60, 60, 255)
+                    : keySelected
+                        ? IM_COL32(255, 255, 255, 255)
+                        : IM_COL32(245, 174, 68, 235);
+                drawList->AddQuadFilled(
+                    ImVec2(keyX, keyMin.y),
+                    ImVec2(keyMax.x, contentPos.y + trackHeight * 0.5f),
+                    ImVec2(keyX, keyMax.y),
+                    ImVec2(keyMin.x, contentPos.y + trackHeight * 0.5f),
+                    keyColor);
+
+                const float segmentEndX = keyIndex + 1 < static_cast<int>(keys.size())
+                    ? contentPos.x
+                        + static_cast<float>(keys[keyIndex + 1].time * pixelsPerSecond)
+                    : contentPos.x + timelineWidth;
+                drawList->AddLine(
+                    ImVec2(keyX + keySize, contentPos.y + trackHeight * 0.5f),
+                    ImVec2(segmentEndX, contentPos.y + trackHeight * 0.5f),
+                    IM_COL32(220, 145, 45, 150), 2.f);
+                const std::string cameraLabel = validCamera
+                    ? cameraEntity->displayName
+                    : (key.targetDisplayName.empty()
+                        ? "Camera Missing" : key.targetDisplayName + " (Missing)");
+                drawList->AddText(
+                    ImVec2(keyX + keySize + 3.f, contentPos.y + 5.f),
+                    keyColor, cameraLabel.c_str());
+
+                ImGui::SetCursorScreenPos(keyMin);
+                ImGui::PushID(keyIndex + 700000);
+                ImGui::InvisibleButton(
+                    "##cameraShotKey",
+                    ImVec2(keySize * 2.f, keySize * 2.f));
+                if (ImGui::IsItemClicked()) {
+                    selectedTrackIdx = kCameraShotTrackSelection;
+                    selectedShotKeyIdx = keyIndex;
+                    selectedClipType = -1;
+                    selectedClipIdx = -1;
+                    selectedKeyframeIdx_ = -1;
+                    sequencerEditTime_ = key.time;
+                    sequencerEditTimeSet_ = true;
+                    seqPlayer.seek(key.time);
+                    vulkanRender->requestSequencerPreview();
+                }
+                ImGui::PopID();
+            }
+        }
+    }
 
     // ── 每条轨道一行 ──────────────────────────────────────────────────
     for (int ti = 0; ti < static_cast<int>(sequence.tracks.size()); ++ti) {
@@ -2019,9 +2210,179 @@ void UIManager::drawSequencerPanel()
     seqTimelineScrollY_ = ImGui::GetScrollY();
     ImGui::EndChild();
 
-    ImGui::Separator();
+    {
+        const ImVec2 splitterStart = ImGui::GetCursorScreenPos();
+        const float splitterWidth = ImGui::GetContentRegionAvail().x;
+        ImGui::InvisibleButton(
+            "##sequencerPanelSplitter",
+            ImVec2(splitterWidth, panelSplitterHeight));
+        const bool splitterHovered = ImGui::IsItemHovered();
+        const bool splitterActive = ImGui::IsItemActive();
+        if (splitterHovered || splitterActive)
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+        if (splitterActive) {
+            parameterPanelHeight = std::clamp(
+                parameterPanelHeight - ImGui::GetIO().MouseDelta.y,
+                minimumParameterHeight,
+                maximumParameterHeight);
+        }
+
+        const ImU32 splitterColor = splitterActive
+            ? IM_COL32(120, 170, 230, 255)
+            : splitterHovered
+                ? IM_COL32(100, 130, 170, 255)
+                : IM_COL32(70, 70, 70, 255);
+        ImGui::GetWindowDrawList()->AddLine(
+            ImVec2(
+                splitterStart.x,
+                splitterStart.y + panelSplitterHeight * 0.5f),
+            ImVec2(
+                splitterStart.x + splitterWidth,
+                splitterStart.y + panelSplitterHeight * 0.5f),
+            splitterColor, splitterActive ? 2.0f : 1.0f);
+    }
 
     ImGui::BeginChild("##clipEditor", ImVec2(0, 0), true);
+
+    if (selectedTrackIdx == kCameraShotTrackSelection) {
+        ImGui::Text("Camera / Shot Track");
+        ImGui::SameLine();
+        ImGui::TextDisabled("(global, unique, hard cuts)");
+        ImGui::TextDisabled(
+            "A key selects the render Camera Actor until the next key. "
+            "Animate that actor with its Transform track.");
+
+        uint64_t selectedCameraId = vulkanRender->selectedCameraEntityId_;
+        if (selectedCameraId == 0) {
+            const auto* selectedEntity =
+                vulkanRender->getSceneManager().getModelEntity(selectedEntityId_);
+            if (selectedEntity && selectedEntity->isCamera())
+                selectedCameraId = selectedEntity->entityId;
+        }
+        const auto* selectedCamera =
+            vulkanRender->getSceneManager().getModelEntity(selectedCameraId);
+        const bool canAddShotKey = selectedCamera && selectedCamera->isCamera();
+        ImGui::BeginDisabled(!canAddShotKey);
+        if (ImGui::Button("Add Shot Key at Playhead")) {
+            if (!sequence.cameraShotTrack)
+                sequence.cameraShotTrack.emplace();
+            auto& keys = sequence.cameraShotTrack->keyframes;
+            const double keyTime = sequencerEditTimeSet_
+                ? sequencerEditTime_ : seqPlayer.currentTime();
+            auto existing = std::find_if(
+                keys.begin(), keys.end(),
+                [&](const CameraShotKeyframe& key) {
+                    return std::abs(key.time - keyTime) <= 1e-6;
+                });
+            CameraShotKeyframe key;
+            key.time = keyTime;
+            key.cameraEntityId = selectedCamera->entityId;
+            key.targetDisplayName = selectedCamera->displayName;
+            if (existing != keys.end())
+                *existing = key;
+            else
+                keys.push_back(std::move(key));
+            std::stable_sort(
+                keys.begin(), keys.end(),
+                [](const CameraShotKeyframe& a, const CameraShotKeyframe& b) {
+                    return a.time < b.time;
+                });
+            for (int i = 0; i < static_cast<int>(keys.size()); ++i) {
+                if (std::abs(keys[i].time - keyTime) <= 1e-6
+                    && keys[i].cameraEntityId == selectedCamera->entityId) {
+                    selectedShotKeyIdx = i;
+                    break;
+                }
+            }
+            vulkanRender->requestSequencerPreview();
+        }
+        ImGui::EndDisabled();
+        if (!canAddShotKey)
+            ImGui::TextDisabled("Select a Camera Actor to add a shot key.");
+
+        if (sequence.cameraShotTrack
+            && selectedShotKeyIdx >= 0
+            && selectedShotKeyIdx
+                < static_cast<int>(sequence.cameraShotTrack->keyframes.size())) {
+            auto& keys = sequence.cameraShotTrack->keyframes;
+            auto& key = keys[selectedShotKeyIdx];
+            ImGui::Separator();
+            ImGui::Text("Shot Key [%d]", selectedShotKeyIdx);
+            double keyTime = key.time;
+            if (ImGui::DragScalar(
+                    "Time##shotKey", ImGuiDataType_Double,
+                    &keyTime, 0.1f, nullptr, nullptr, "%.3f")) {
+                const uint64_t cameraId = key.cameraEntityId;
+                key.time = std::max(0.0, keyTime);
+                std::stable_sort(
+                    keys.begin(), keys.end(),
+                    [](const CameraShotKeyframe& a, const CameraShotKeyframe& b) {
+                        return a.time < b.time;
+                    });
+                for (int i = 0; i < static_cast<int>(keys.size()); ++i) {
+                    if (keys[i].cameraEntityId == cameraId
+                        && std::abs(keys[i].time - std::max(0.0, keyTime)) <= 1e-6) {
+                        selectedShotKeyIdx = i;
+                        break;
+                    }
+                }
+                sequencerEditTime_ = std::max(0.0, keyTime);
+                sequencerEditTimeSet_ = true;
+                seqPlayer.seek(sequencerEditTime_);
+                vulkanRender->requestSequencerPreview();
+            }
+
+            auto& currentKey = keys[selectedShotKeyIdx];
+            const auto* boundCamera =
+                vulkanRender->getSceneManager().getModelEntity(
+                    currentKey.cameraEntityId);
+            const char* cameraPreview =
+                boundCamera && boundCamera->isCamera()
+                ? boundCamera->displayName.c_str()
+                : "Camera Missing";
+            ImGui::SetNextItemWidth(260.f);
+            if (ImGui::BeginCombo("Camera Actor##shotKey", cameraPreview)) {
+                for (const auto& entity :
+                     vulkanRender->getSceneManager().getModelEntities()) {
+                    if (!entity.isCamera())
+                        continue;
+                    const bool selected =
+                        entity.entityId == currentKey.cameraEntityId;
+                    const std::string label = entity.displayName.empty()
+                        ? "Camera " + std::to_string(entity.entityId)
+                        : entity.displayName + "  ["
+                            + std::to_string(entity.entityId) + "]";
+                    if (ImGui::Selectable(label.c_str(), selected)) {
+                        vulkanRender->bindCameraShotKey(
+                            static_cast<size_t>(selectedShotKeyIdx),
+                            entity.entityId);
+                    }
+                    if (selected)
+                        ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            if (!boundCamera || !boundCamera->isCamera()) {
+                ImGui::TextColored(
+                    ImVec4(1.f, 0.25f, 0.25f, 1.f),
+                    "This shot key must be rebound before recording.");
+            }
+
+            if (ImGui::Button("Preview Shot Key")) {
+                sequencerEditTime_ = currentKey.time;
+                sequencerEditTimeSet_ = true;
+                seqPlayer.seek(currentKey.time);
+                vulkanRender->requestSequencerPreview();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Delete Shot Key")) {
+                keys.erase(keys.begin() + selectedShotKeyIdx);
+                selectedShotKeyIdx = -1;
+                vulkanRender->requestSequencerPreview();
+            }
+        }
+        ImGui::Separator();
+    }
 
     // ── Add Selected to Track → 自动判断子轨道 ────────────────────────
     if (vulkanRender->selectedCameraEntityId_ != 0 || selectedEntityId_ != 0) {
@@ -2031,7 +2392,7 @@ void UIManager::drawSequencerPanel()
         auto* ent = vulkanRender->getSceneManager().getModelEntity(targetId);
         bool hasAnimator = ent && ent->animatorController.hasStates();
 
-        if (ImGui::Button("Add Selected to Track")) {
+        if (ImGui::Button("Add Selected Entity Tracks")) {
             // 用 displayName 命名，回退到 entityId
             std::string entityName = (ent && !ent->displayName.empty())
                 ? ent->displayName : "Entity_" + std::to_string(targetId);
@@ -2165,37 +2526,28 @@ void UIManager::drawSequencerPanel()
         if (ImGui::InputText("##trackNameEdit", trackNameBuf, sizeof(trackNameBuf)))
             track.name = trackNameBuf;
 
-        const TrackType supportedTypes[] = {
-            TrackType::Group, TrackType::CameraPath, TrackType::TransformTween,
-            TrackType::TransformKeyframe, TrackType::AnimatorKeyframe
-        };
-        const char* typeNames[] = {
-            "Group", "CameraPath", "TransformTween (Deprecated)",
-            "TransformKeyframe", "AnimatorKeyframe"
-        };
-        int typeIdx = -1;
-        for (int i = 0; i < IM_ARRAYSIZE(supportedTypes); ++i) {
-            if (track.type == supportedTypes[i]) { typeIdx = i; break; }
-        }
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(120);
-        const char* typePreview = typeIdx >= 0 ? typeNames[typeIdx] : "Legacy (Disabled)";
-        if (ImGui::BeginCombo("Type", typePreview)) {
-            for (int i = 0; i < IM_ARRAYSIZE(supportedTypes); ++i) {
-                if (ImGui::Selectable(typeNames[i], typeIdx == i)) {
-                    SequenceTrack newTrack;
-                    newTrack.name = track.name;
-                    newTrack.type = supportedTypes[i];
-                    sequence.tracks[selectedTrackIdx] = std::move(newTrack);
-                    selectedClipIdx = -1;
-                    selectedClipType = -1;
-                    typeIdx = i;
-                }
+        auto trackTypeLabel = [](TrackType type) {
+            switch (type) {
+            case TrackType::AnimationClip:     return "AnimationClip (Legacy, Disabled)";
+            case TrackType::CameraPath:        return "CameraPath (Legacy)";
+            case TrackType::TransformTween:    return "TransformTween (Deprecated)";
+            case TrackType::TransformKeyframe: return "TransformKeyframe";
+            case TrackType::AnimatorKeyframe:  return "AnimatorKeyframe";
+            case TrackType::Event:             return "Event (Legacy, Disabled)";
+            case TrackType::Group:             return "Group";
             }
-            ImGui::EndCombo();
-        }
+            return "Unknown";
+        };
+        ImGui::SameLine();
+        ImGui::TextDisabled("Type: %s (fixed)", trackTypeLabel(track.type));
         if (track.type == TrackType::AnimationClip || track.type == TrackType::Event)
             ImGui::TextDisabled("Legacy track retained for compatibility; runtime evaluation is disabled.");
+        else if (track.type == TrackType::CameraPath)
+            ImGui::TextDisabled(
+                "Legacy playback compatibility only; new CameraPath clips cannot be created.");
+        else if (track.type == TrackType::Group)
+            ImGui::TextDisabled(
+                "Group contains the following tracks up to the next Group.");
 
         ImGui::Separator();
 
@@ -2614,11 +2966,13 @@ void UIManager::drawSequencerPanel()
                 selectedClipIdx = -1;
                 selectedClipType = -1;
             }
-        } else if (track.type != TrackType::TransformKeyframe) {
+        } else if (track.type != TrackType::TransformKeyframe
+                   && track.type != TrackType::AnimatorKeyframe
+                   && track.type != TrackType::Group) {
             ImGui::TextDisabled("Select a clip to edit properties");
         }
 
-        if (track.type == TrackType::CameraPath || track.type == TrackType::TransformTween) {
+        if (track.type == TrackType::TransformTween) {
             ImGui::Separator();
             ImGui::Text("Add Clip");
 
@@ -2665,45 +3019,194 @@ void UIManager::drawSequencerPanel()
         if (track.type == TrackType::AnimatorKeyframe) {
             // 关键帧通过上面的 Add Animator Keyframe 按钮添加
         }
-    } else {
+    } else if (selectedTrackIdx != kCameraShotTrackSelection) {
         ImGui::TextDisabled("Select a track to edit");
     }
 
     ImGui::Separator();
-    ImGui::Text("Track Management");
-    if (ImGui::Button("Add Track##addTrack")) {
+    ImGui::Text("Track Actions");
+
+    auto makeUniqueTrackName = [&](const std::string& base) {
+        auto exists = [&](const std::string& candidate) {
+            return std::any_of(sequence.tracks.begin(), sequence.tracks.end(),
+                               [&](const SequenceTrack& track) {
+                                   return track.name == candidate;
+                               });
+        };
+        if (!exists(base))
+            return base;
+        for (int suffix = 2; ; ++suffix) {
+            const std::string candidate = base + " " + std::to_string(suffix);
+            if (!exists(candidate))
+                return candidate;
+        }
+    };
+
+    if (ImGui::Button("Add Group##addGroup")) {
         SequenceTrack newTrack;
-        newTrack.name = "Track" + std::to_string(sequence.tracks.size() + 1);
+        newTrack.name = makeUniqueTrackName("New Group");
         newTrack.type = TrackType::Group;
         sequence.tracks.push_back(std::move(newTrack));
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Delete Track##delTrack") && selectedTrackIdx >= 0 && selectedTrackIdx < static_cast<int>(sequence.tracks.size())) {
-        sequence.tracks.erase(sequence.tracks.begin() + selectedTrackIdx);
-        selectedTrackIdx = -1;
+        selectedTrackIdx = static_cast<int>(sequence.tracks.size()) - 1;
         selectedClipIdx = -1;
         selectedClipType = -1;
         selectedKeyframeIdx_ = -1;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Select Camera / Shot Track##selectCameraShotTrack")) {
+        selectedTrackIdx = kCameraShotTrackSelection;
+        selectedShotKeyIdx = -1;
+        selectedClipIdx = -1;
+        selectedClipType = -1;
         selectedKeyframeIdx_ = -1;
+    }
+    ImGui::SameLine();
+
+    static int pendingDeleteTrackIdx = -1;
+    const bool canDeleteTrack =
+        selectedTrackIdx >= 0
+        && selectedTrackIdx < static_cast<int>(sequence.tracks.size());
+    ImGui::BeginDisabled(!canDeleteTrack);
+    if (ImGui::Button("Delete Selected##delTrack")) {
+        pendingDeleteTrackIdx = selectedTrackIdx;
+        ImGui::OpenPopup("Delete Sequencer Track");
+    }
+    ImGui::EndDisabled();
+
+    if (ImGui::BeginPopupModal("Delete Sequencer Track", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        const bool deleteTargetValid =
+            pendingDeleteTrackIdx >= 0
+            && pendingDeleteTrackIdx < static_cast<int>(sequence.tracks.size());
+        if (!deleteTargetValid) {
+            ImGui::TextDisabled("The selected track no longer exists.");
+        } else {
+            const auto& deleteTarget = sequence.tracks[pendingDeleteTrackIdx];
+            int deleteEnd = pendingDeleteTrackIdx + 1;
+            if (deleteTarget.type == TrackType::Group) {
+                while (deleteEnd < static_cast<int>(sequence.tracks.size())
+                       && sequence.tracks[deleteEnd].type != TrackType::Group) {
+                    ++deleteEnd;
+                }
+                ImGui::TextWrapped(
+                    "Delete group '%s' and its %d following child track(s)?",
+                    deleteTarget.name.c_str(),
+                    deleteEnd - pendingDeleteTrackIdx - 1);
+            } else {
+                ImGui::TextWrapped("Delete track '%s'?", deleteTarget.name.c_str());
+            }
+            ImGui::TextDisabled("This operation cannot be undone.");
+
+            if (ImGui::Button("Delete", ImVec2(120.f, 0.f))) {
+                const std::string deletedName = deleteTarget.name;
+                const int deletedCount = deleteEnd - pendingDeleteTrackIdx;
+                sequence.tracks.erase(
+                    sequence.tracks.begin() + pendingDeleteTrackIdx,
+                    sequence.tracks.begin() + deleteEnd);
+                selectedTrackIdx = -1;
+                selectedClipIdx = -1;
+                selectedClipType = -1;
+                selectedKeyframeIdx_ = -1;
+                pendingDeleteTrackIdx = -1;
+                vulkanRender->requestSequencerPreview();
+                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                         "Deleted '%s' (%d track%s)",
+                         deletedName.c_str(), deletedCount,
+                         deletedCount == 1 ? "" : "s");
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+        }
+
+        if (ImGui::Button("Cancel", ImVec2(120.f, 0.f))) {
+            pendingDeleteTrackIdx = -1;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
     }
 
     ImGui::Separator();
-    ImGui::Text("Camera Path Recording");
-    if (vulkanRender->isRecordingCameraPath()) {
-        ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "Recording...");
+    ImGui::Text("Sequence Recording");
+    ImGui::TextDisabled(
+        "Fixed-timestep PNG capture at the current framebuffer resolution. "
+        "The Camera / Shot track selects each recorded view.");
+    static double captureStartTime = 0.0;
+    static double captureEndTime = -1.0;
+    static int captureFps = 30;
+    static bool captureIncludeUi = false;
+    static char captureTakeName[128] = "SequenceTake";
+    if (captureEndTime < 0.0)
+        captureEndTime = std::max(totalDuration, 0.0);
+
+    if (vulkanRender->isSequenceCaptureActive()) {
+        const uint32_t captured = vulkanRender->getSequenceCaptureFrameCount();
+        const uint32_t planned = vulkanRender->getSequenceCaptureTotalFrames();
+        const float progress = planned > 0
+            ? static_cast<float>(captured) / static_cast<float>(planned)
+            : 0.f;
+        ImGui::ProgressBar(
+            progress, ImVec2(-1.f, 0.f),
+            (std::to_string(captured) + " / " + std::to_string(planned)
+             + " frames").c_str());
+        if (ImGui::Button("Stop After Current Frame"))
+            vulkanRender->stopSequenceCapture();
         ImGui::SameLine();
-        ImGui::Text("Time: %.2f s", vulkanRender->getRecordingTime());
-        if (ImGui::Button("Stop Recording")) {
-            vulkanRender->endCameraPathRecording();
-        }
+        if (ImGui::Button("Cancel (Keep Partial)"))
+            vulkanRender->cancelSequenceCapture();
     } else {
-        static char recordPathName[128] = "example_shot";
-        ImGui::SetNextItemWidth(150);
-        ImGui::InputText("Path Name", recordPathName, sizeof(recordPathName));
+        ImGui::SetNextItemWidth(150.f);
+        ImGui::InputText("Take Name", captureTakeName, sizeof(captureTakeName));
+        ImGui::SetNextItemWidth(110.f);
+        ImGui::DragScalar(
+            "Start##capture", ImGuiDataType_Double,
+            &captureStartTime, 0.1f, nullptr, nullptr, "%.3f");
         ImGui::SameLine();
-        if (ImGui::Button("Start Recording")) {
-            vulkanRender->beginCameraPathRecording(recordPathName);
+        ImGui::SetNextItemWidth(110.f);
+        ImGui::DragScalar(
+            "End##capture", ImGuiDataType_Double,
+            &captureEndTime, 0.1f, nullptr, nullptr, "%.3f");
+        ImGui::SameLine();
+        if (ImGui::Button("Use Sequence Range")) {
+            captureStartTime = 0.0;
+            captureEndTime = totalDuration;
         }
+        ImGui::SetNextItemWidth(90.f);
+        ImGui::DragInt("FPS", &captureFps, 1.f, 1, 240);
+        ImGui::SameLine();
+        ImGui::Checkbox("Include UI", &captureIncludeUi);
+
+        const bool canRecord =
+            sequencerControl
+            && sequence.cameraShotTrack
+            && !sequence.cameraShotTrack->keyframes.empty()
+            && captureEndTime > captureStartTime;
+        ImGui::BeginDisabled(!canRecord);
+        if (ImGui::Button("Record PNG Sequence")) {
+            Application::SequenceCaptureSettings settings;
+            settings.startTime = captureStartTime;
+            settings.endTime = captureEndTime;
+            settings.fps = captureFps;
+            settings.includeUi = captureIncludeUi;
+            settings.takeName = captureTakeName;
+            std::string captureError;
+            if (!vulkanRender->beginSequenceCapture(settings, &captureError)) {
+                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                         "Recording failed: %s", captureError.c_str());
+            }
+        }
+        ImGui::EndDisabled();
+        if (!sequencerControl)
+            ImGui::TextDisabled("Enable Sequencer Control to record.");
+        else if (!sequence.cameraShotTrack
+                 || sequence.cameraShotTrack->keyframes.empty())
+            ImGui::TextDisabled("Add at least one Camera / Shot key.");
+    }
+    ImGui::TextWrapped("Status: %s",
+                       vulkanRender->getSequenceCaptureStatus().c_str());
+    if (!vulkanRender->getSequenceCaptureOutputDirectory().empty()) {
+        ImGui::TextWrapped(
+            "Output: %s",
+            vulkanRender->getSequenceCaptureOutputDirectory().c_str());
     }
 
     if (animatorStatusMsg_[0]) {
@@ -2749,25 +3252,14 @@ void UIManager::drawAnimatorPanel()
     auto& clips = ent->animationClips;
     auto& ctrl = ent->animatorController;
 
-    // ── Animator Preview Mode 开关 ──
-    bool previewMode = vulkanRender->isAnimatorPreviewMode();
-    if (ImGui::Checkbox("Animator Preview Mode", &previewMode)) {
-        if (!previewMode) {
-            // 切换到 OFF 时，清掉 Animator Preview 按钮设置的 previewClipIndex
-            ent->previewClipIndex = -1;
-            ent->previewTime = 0.f;
-        }
-        vulkanRender->setAnimatorPreviewMode(previewMode);
-    }
-    ImGui::SameLine();
-    if (!previewMode) {
-        ImGui::TextDisabled("(Sequencer 驱动动画)");
+    const bool animatorOwnedBySequencer =
+        vulkanRender->isEntitySequencerAnimatorControlled(ent->entityId);
+    if (animatorOwnedBySequencer) {
+        ImGui::TextDisabled(
+            "Sequencer Control: this Animator is driven by its bound track.");
     } else {
-        ImGui::TextDisabled("(状态机驱动)");
+        ImGui::TextDisabled("Live Animator control");
     }
-
-    // 预览模式 OFF 时禁用所有编辑操作
-    ImGui::BeginDisabled(!previewMode);
 
     if (animatorControllerAssetsEntityId_ != ent->entityId) {
         animatorControllerAssetsEntityId_ = ent->entityId;
@@ -2893,9 +3385,28 @@ void UIManager::drawAnimatorPanel()
 
     // ── 三区布局：左侧侧边栏 | 右侧上半 | 底部 ──────────────────────
     static float leftWidth = 220.f;
+    constexpr float animatorVerticalSplitterWidth = 8.f;
+    const float animatorAvailableWidth = ImGui::GetContentRegionAvail().x;
+    const float animatorMinimumLeftWidth =
+        std::min(180.f, animatorAvailableWidth * 0.35f);
+    const float animatorMinimumRightWidth =
+        std::min(360.f, animatorAvailableWidth * 0.55f);
+    const float animatorMaximumLeftWidth = std::max(
+        animatorMinimumLeftWidth,
+        animatorAvailableWidth
+            - animatorMinimumRightWidth
+            - animatorVerticalSplitterWidth
+            - ImGui::GetStyle().ItemSpacing.x * 2.f);
+    leftWidth = std::clamp(
+        leftWidth, animatorMinimumLeftWidth, animatorMaximumLeftWidth);
+    const float animatorColumnHeight = std::max(
+        100.f,
+        ImGui::GetContentRegionAvail().y
+            - ImGui::GetFrameHeightWithSpacing() * 1.5f);
 
     // ── 左侧侧边栏 ──────────────────────────────────────────────────────
-    ImGui::BeginChild("##animLeft", ImVec2(leftWidth, -ImGui::GetFrameHeightWithSpacing() * 1.5f), true);
+    ImGui::BeginChild(
+        "##animLeft", ImVec2(leftWidth, animatorColumnHeight), true);
 
     if (ImGui::CollapsingHeader("Animator Controllers", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::TextDisabled("Compatible with this model");
@@ -2941,6 +3452,20 @@ void UIManager::drawAnimatorPanel()
                 ImGui::SetTooltip("%s", ent->animatorControllerPath.c_str());
         }
         ImGui::Separator();
+        auto continueControllerButtonRowIfFits = [](const char* nextLabel) {
+            const float nextButtonWidth =
+                ImGui::CalcTextSize(nextLabel).x
+                + ImGui::GetStyle().FramePadding.x * 2.f;
+            const float contentRight =
+                ImGui::GetWindowPos().x
+                + ImGui::GetWindowContentRegionMax().x;
+            const float nextRight =
+                ImGui::GetItemRectMax().x
+                + ImGui::GetStyle().ItemSpacing.x
+                + nextButtonWidth;
+            if (nextRight <= contentRight)
+                ImGui::SameLine();
+        };
         if (ImGui::Button("New AnimController")) {
             const std::filesystem::path directory =
                 std::filesystem::path(vulkanRender->getResRoot()) / "animators";
@@ -2968,7 +3493,7 @@ void UIManager::drawAnimatorPanel()
                          "Create failed: %s", path.string().c_str());
             }
         }
-        ImGui::SameLine();
+        continueControllerButtonRowIfFits("Save Current");
         if (ImGui::Button("Save Current")) {
             if (ent->animatorControllerPath.empty()) {
                 snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
@@ -2988,7 +3513,7 @@ void UIManager::drawAnimatorPanel()
                 }
             }
         }
-        ImGui::SameLine();
+        continueControllerButtonRowIfFits("Clear Controller");
         if (ImGui::Button("Clear Controller")) {
             if (!ent->animatorControllerPath.empty()) {
                 // 清除绑定的控制器路径，重置为运行时控制器
@@ -3063,7 +3588,15 @@ void UIManager::drawAnimatorPanel()
                     }
 
                     ImGui::SameLine();
-                    if (ImGui::SmallButton(previewLabel)) {
+                    ImGui::BeginDisabled(animatorOwnedBySequencer);
+                    const bool previewPressed = ImGui::SmallButton(previewLabel);
+                    ImGui::EndDisabled();
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)
+                        && animatorOwnedBySequencer) {
+                        ImGui::SetTooltip(
+                            "Disable Sequencer Control to preview clips for this actor.");
+                    }
+                    if (previewPressed) {
                         if (isPreview) {
                             ent->previewClipIndex = -1;
                             ent->previewTime = 0.f;
@@ -3090,6 +3623,38 @@ void UIManager::drawAnimatorPanel()
     }
 
     ImGui::EndChild(); // ##animLeft
+    ImGui::SameLine();
+
+    {
+        const ImVec2 splitterStart = ImGui::GetCursorScreenPos();
+        ImGui::InvisibleButton(
+            "##animatorVerticalSplitter",
+            ImVec2(animatorVerticalSplitterWidth, animatorColumnHeight));
+        const bool splitterHovered = ImGui::IsItemHovered();
+        const bool splitterActive = ImGui::IsItemActive();
+        if (splitterHovered || splitterActive)
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        if (splitterActive) {
+            leftWidth = std::clamp(
+                leftWidth + ImGui::GetIO().MouseDelta.x,
+                animatorMinimumLeftWidth,
+                animatorMaximumLeftWidth);
+        }
+
+        const ImU32 splitterColor = splitterActive
+            ? IM_COL32(120, 170, 230, 255)
+            : splitterHovered
+                ? IM_COL32(100, 130, 170, 255)
+                : IM_COL32(70, 70, 70, 255);
+        ImGui::GetWindowDrawList()->AddLine(
+            ImVec2(
+                splitterStart.x + animatorVerticalSplitterWidth * 0.5f,
+                splitterStart.y),
+            ImVec2(
+                splitterStart.x + animatorVerticalSplitterWidth * 0.5f,
+                splitterStart.y + animatorColumnHeight),
+            splitterColor, splitterActive ? 2.f : 1.f);
+    }
     ImGui::SameLine();
 
     // ── 右侧区域 ──────────────────────────────────────────────────────────
@@ -3833,8 +4398,6 @@ void UIManager::drawAnimatorPanel()
     ImGui::EndChild(); // ##animatorBottom
 
     ImGui::EndGroup();
-
-    ImGui::EndDisabled();
 
     ImGui::End();
 }

@@ -23,6 +23,7 @@ public:
         std::function<void(double t, const TransformTweenClip& clip)> onTransformTweenEval;
         std::function<void(double t, uint64_t entityId, const TransformKeyframeTrack::EvalResult& result)> onTransformKeyframeEval;
         std::function<void(double t, uint64_t entityId, const AnimatorKeyframeTrack::EvalResult& result)> onAnimatorKeyframeEval;
+        std::function<void(double t, const CameraShotKeyframe& keyframe)> onCameraShotEval;
     };
 
     void update(double dt, const FrameCallbacks& cb);

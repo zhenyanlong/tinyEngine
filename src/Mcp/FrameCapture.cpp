@@ -198,6 +198,11 @@ bool FrameCapture::isSubmitted() const
     return status_ == Status::Submitted;
 }
 
+bool FrameCapture::isBusy() const
+{
+    return status_ == Status::Pending || status_ == Status::Submitted;
+}
+
 void FrameCapture::complete(const VulkanContext& ctx)
 {
     if (status_ != Status::Submitted)

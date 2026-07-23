@@ -82,10 +82,20 @@ void SequencePlayer::update(double dt, const FrameCallbacks& cb)
                 }
             }
         }
+        if (seq_->cameraShotTrack && cb.onCameraShotEval) {
+            if (const auto* shot = seq_->cameraShotTrack->evaluate(currentTime_))
+                cb.onCameraShotEval(currentTime_, *shot);
+        }
         return;
     }
 
-    if (totalDur <= 0.0) return;
+    if (totalDur <= 0.0) {
+        if (seq_->cameraShotTrack && cb.onCameraShotEval) {
+            if (const auto* shot = seq_->cameraShotTrack->evaluate(currentTime_))
+                cb.onCameraShotEval(currentTime_, *shot);
+        }
+        return;
+    }
 
     if (playing_) {
         currentTime_ += dt;
@@ -108,6 +118,8 @@ void SequencePlayer::update(double dt, const FrameCallbacks& cb)
             break;
 
         case TrackType::CameraPath:
+            if (seq_->cameraShotTrack)
+                break;
             for (const auto& clip : track.cameraPathClips) {
                 const double end = clip.startTime + clip.duration;
                 if (currentTime_ >= clip.startTime && currentTime_ < end) {
@@ -153,5 +165,10 @@ void SequencePlayer::update(double dt, const FrameCallbacks& cb)
         case TrackType::Group:
             break;
         }
+    }
+
+    if (seq_->cameraShotTrack && cb.onCameraShotEval) {
+        if (const auto* shot = seq_->cameraShotTrack->evaluate(currentTime_))
+            cb.onCameraShotEval(currentTime_, *shot);
     }
 }
