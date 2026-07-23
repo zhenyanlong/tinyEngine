@@ -14,12 +14,13 @@ struct AnimatorParam;
 
 /** @brief 轨道类型 */
 enum class TrackType {
-    AnimationClip,      ///< 引用一段 .anim.ast 动画片段
+    AnimationClip,      ///< 已废弃：旧版直接动画片段轨道，仅用于资产兼容
     CameraPath,         ///< 相机路径（播放期间屏蔽右键相机控制）
     TransformTween,     ///< 场景对象 position/rotation/scale 补间（旧版，保留兼容）
     TransformKeyframe,  ///< 关键帧轨道（新版）
     AnimatorKeyframe,   ///< Animator 参数关键帧轨道（驱动状态机）
-    Event               ///< 时间点触发 AnimatorEvent
+    Event,              ///< 已废弃：旧版独立事件轨道，仅用于资产兼容
+    Group               ///< 仅用于层级组织，不参与运行时求值
 };
 
 /** @brief 插值模式 */
@@ -238,6 +239,7 @@ struct AnimatorKeyframeTrack {
     struct EvalResult {
         std::string initialState;           ///< 初始状态
         std::vector<AnimatorParam> params;  ///< 最终参数值
+        std::vector<AnimatorTimelineSample> timeline; ///< 0..evalTime 的有序状态机输入
         double evalTime = 0.0;              ///< 当前求值时间
     };
 
@@ -251,7 +253,7 @@ struct AnimatorKeyframeTrack {
 /** @brief 一条轨道，内部按 startTime 升序存放同一类型的片段 */
 struct SequenceTrack {
     std::string name;
-    TrackType   type = TrackType::AnimationClip;
+    TrackType   type = TrackType::Group;
 
     std::vector<AnimTrackClip>      animClips;
     std::vector<CameraPathClip>     cameraPathClips;

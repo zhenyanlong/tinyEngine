@@ -1,5 +1,19 @@
+## 2026-07-23
+
+- [ ] Animator State 新增显式 Forward/Reverse 播放方向与非负 Play Rate，并使用归一化播放进度；version 1 负 speed 资产自动迁移为 Reverse + 绝对倍率
+- [ ] 新增 SingleClip/BlendSpace1D State Motion，支持 Float 参数驱动的带位置 Sample、端点钳制、归一化时间同步，以及 BlendSpace 内部与 State Transition 外部两层 TRS 姿势混合
+- [ ] Root Motion 改为方向与循环安全的逐 Clip delta 提取，并跨 BlendSpace Sample 和 State Transition 混合；Sequencer 非连续 seek 会重置逐实体 Clip 历史
+- [ ] `.animctrl.json` 升级为 version 2 并保留 v1 加载；扩展 Animator UI、兼容 Controller 筛选、保存验证、Clip Rename、参数重命名传播、被引用参数删除保护及当前 Sequence 事件更新
+- [ ] 更新 TDD.md 与 animation-system-plan.md，同步 Phase B6 架构、迁移、兼容性、数据流、UI、Root Motion 和验收标准
+- [ ] 验证通过：x64-debug 构建、Animator v1/v2/倒放/BlendSpace/Transition C++ smoke test、Python MCP 测试 10/10 与 git diff 检查
+
 ## 2026-07-22
 
+- [ ] 修复无损 Swapchain 重建：窗口 resize 保留全部场景实体/模型缓冲、Transform、选择状态、材质/纹理 ID 与逐 skin SkinBinding；仅重建依赖交换链的 UBO/Descriptor、Framebuffer、Pipeline、CommandBuffer、逐 image fence 归属、Pick、PiP 与 ImGui 纹理 Descriptor
+- [ ] 时间尺支持连续拖动：开始拖动时暂停播放，鼠标离开时间尺后仍保持捕获，将时间限制在 Sequence 时长内，并持续 seek/预览 Transform 与 Animator 轨道
+- [ ] AnimatorKeyframe 改为从 0 到目标时间的确定性求值：SetFloat/SetInt/SetBool 在固定步长与精确关键帧边界采样，SetTrigger 只在一个边界脉冲；正常播放、直接 seek 与反向拖动共用同一纯状态机求值
+- [ ] 废弃独立 Sequencer Event/AnimationClip 的运行时执行，移除相关 callback 和全实体 Trigger 广播；新增显式 Group 父轨道，旧空 AnimationClip 父轨道自动迁移，非空旧轨道仅保留 JSON 兼容并禁用执行
+- [ ] 验证通过：x64-debug 构建、Animator 时间流/旧资产迁移 C++ smoke test、隐藏窗口 resize 运行测试（3/3 实体签名保持）、Python MCP 测试 10/10 与 git diff 检查
 - [ ] 修复 Mixamo 多 skin 角色眼球漂移：将运行时骨骼 UBO/DescriptorSet 从共享 MaterialId 中拆分为按实体/材质/skinIndex 独立的 SkinBinding；主视口、PiP、GPU Pick、资源缓存复用、场景重载与清理均使用匹配绑定（MaterialManager.hpp/.cpp、SceneManager.hpp/.cpp、Application.cpp、PickSystem.cpp、SceneSerializer.cpp）
 - [ ] 新增递归 Sequence 资产选择弹窗，支持搜索、刷新、元数据/错误展示、双击加载；加载采用原子替换，解析失败时保留当前编辑内容（IMGUIManager.hpp/.cpp、Application.hpp/.cpp、SequenceAssetLoader.cpp）
 - [ ] 主摄像机 yaw 改为绕世界 WorldUp 旋转，新增 Q/E 沿世界轴下降/上升，并在 ImGui 捕获键盘或鼠标时阻止相机输入（camera.hpp/.cpp、Application.cpp）

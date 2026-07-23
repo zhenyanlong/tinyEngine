@@ -143,9 +143,12 @@ AnimatorController::BlendCommand AnimatorController::update(
     }
 
     const float safeDt = std::max(dt, 0.f);
-    const float previousStateTime = stateTime_;
+    const float previousProgress = stateProgress_;
     bool stateChangedThisFrame = false;
-    stateTime_ += safeDt * std::max(current->speed, 0.f);
+    const float currentDuration = effectiveDuration(*current, clips, params_, stateProgress_);
+    if (currentDuration > kFloatEpsilon) {
+        stateProgress_ += safeDt * std::max(current->playRate, 0.f) / currentDuration;
+    }
 
     if (transitioning_) {
         const AnimatorState* next = findState(nextState_);
@@ -154,16 +157,19 @@ AnimatorController::BlendCommand AnimatorController::update(
             nextState_.clear();
             blendT_ = 0.f;
         } else {
-            nextStateTime_ += safeDt * std::max(next->speed, 0.f);
+            const float nextDuration = effectiveDuration(*next, clips, params_, nextStateProgress_);
+            if (nextDuration > kFloatEpsilon) {
+                nextStateProgress_ += safeDt * std::max(next->playRate, 0.f) / nextDuration;
+            }
             blendT_ = activeFadeDuration_ <= kFloatEpsilon
                 ? 1.f
                 : std::min(1.f, blendT_ + safeDt / activeFadeDuration_);
 
             if (blendT_ >= 1.f) {
                 currentState_ = nextState_;
-                stateTime_ = nextStateTime_;
+                stateProgress_ = nextStateProgress_;
                 nextState_.clear();
-                nextStateTime_ = 0.f;
+                nextStateProgress_ = 0.f;
                 activeFadeDuration_ = 0.f;
                 blendT_ = 0.f;
                 transitioning_ = false;
@@ -174,7 +180,6 @@ AnimatorController::BlendCommand AnimatorController::update(
     }
 
     if (!transitioning_ && current && !stateChangedThisFrame) {
-        const AnimationClip* currentClip = findClip(current->clipName, clips);
         for (const auto& transition : transitions_) {
             if (!transition.fromState.empty() && transition.fromState != currentState_)
                 continue;
@@ -182,14 +187,16 @@ AnimatorController::BlendCommand AnimatorController::update(
                 continue;
 
             const AnimatorState* target = findState(transition.toState);
-            if (!target || !findClip(target->clipName, clips))
+            if (!target || !hasValidMotion(*target, clips))
                 continue;
-            if (!exitTimeReached(transition, *current, currentClip, previousStateTime)
+            if (transition.hasExitTime && !hasValidMotion(*current, clips))
+                continue;
+            if (!exitTimeReached(transition, *current, previousProgress)
                 || !checkAllConditions(transition))
                 continue;
 
             nextState_ = target->name;
-            nextStateTime_ = 0.f;
+            nextStateProgress_ = 0.f;
             blendT_ = 0.f;
             activeFadeDuration_ = std::max(transition.fadeDuration, 0.f);
             activeBlendCurve_ = transition.blendCurve;
@@ -198,9 +205,9 @@ AnimatorController::BlendCommand AnimatorController::update(
 
             if (activeFadeDuration_ <= kFloatEpsilon) {
                 currentState_ = nextState_;
-                stateTime_ = 0.f;
+                stateProgress_ = 0.f;
                 nextState_.clear();
-                nextStateTime_ = 0.f;
+                nextStateProgress_ = 0.f;
                 activeFadeDuration_ = 0.f;
                 transitioning_ = false;
                 current = findState(currentState_);
@@ -212,14 +219,14 @@ AnimatorController::BlendCommand AnimatorController::update(
     current = findState(currentState_);
     if (!current) return command;
 
-    command.clipA = findClip(current->clipName, clips);
-    command.timeA = sampleTime(*current, command.clipA, stateTime_);
+    command.stateA = current;
+    command.poseA = resolveStatePose(*current, clips, params_, stateProgress_);
 
     if (transitioning_) {
         const AnimatorState* next = findState(nextState_);
         if (next) {
-            command.clipB = findClip(next->clipName, clips);
-            command.timeB = sampleTime(*next, command.clipB, nextStateTime_);
+            command.stateB = next;
+            command.poseB = resolveStatePose(*next, clips, params_, nextStateProgress_);
             const float raw = std::clamp(blendT_, 0.f, 1.f);
             command.blendWeight = applyBlendCurve(raw, activeBlendCurve_);
         }
@@ -232,8 +239,26 @@ AnimatorController::BlendCommand AnimatorController::computeBlendAtTime(
     const std::vector<AnimatorParam>& paramValues,
     const std::string& initialState) const
 {
+    AnimatorTimelineSample start;
+    start.time = 0.f;
+    start.params = paramValues;
+    std::vector<AnimatorTimelineSample> timeline{start};
+    if (t > 0.f) {
+        AnimatorTimelineSample end = start;
+        end.time = t;
+        timeline.push_back(std::move(end));
+    }
+    return computeBlendAtTime(t, clips, timeline, initialState);
+}
+
+AnimatorController::BlendCommand AnimatorController::computeBlendAtTime(
+    float t, const std::vector<AnimationClip>& clips,
+    const std::vector<AnimatorTimelineSample>& inputTimeline,
+    const std::string& initialState) const
+{
     BlendCommand command;
     if (states_.empty()) return command;
+    t = std::max(t, 0.f);
 
     // 确定起始状态
     std::string curState = initialState.empty() ? defaultState_ : initialState;
@@ -245,20 +270,12 @@ AnimatorController::BlendCommand AnimatorController::computeBlendAtTime(
         current = &states_.front();
     }
 
-    // 构造一份本地参数副本，叠加 paramValues 的覆盖值
+    // 状态机和参数全部使用本地副本，seek/拖动不会污染运行时 Animator。
     std::vector<AnimatorParam> localParams = params_;
-    for (const auto& pv : paramValues) {
-        for (auto& lp : localParams) {
-            if (lp.name == pv.name) {
-                lp.value = pv.value;
-                break;
-            }
-        }
-    }
 
     // 模拟状态机随时间演进，从 0 到 t
-    float stateTime = 0.f;
-    float nextStateTime = 0.f;
+    float stateProgress = 0.f;
+    float nextStateProgress = 0.f;
     float blendT = 0.f;
     float activeFadeDuration = 0.f;
     BlendCurve activeBlendCurve = BlendCurve::SmoothStep;
@@ -266,20 +283,63 @@ AnimatorController::BlendCommand AnimatorController::computeBlendAtTime(
     std::string nextState;
     bool consumed = false;  // 是否已检查过本轮的过渡条件
 
-    // 逐帧推进（使用较大步进提高性能，但确保不遗漏 exitTime 检测）
-    // 使用 0.05 秒步进，在边界精确到 t
-    constexpr float kStep = 0.05f;
+    std::vector<AnimatorTimelineSample> timeline;
+    timeline.reserve(inputTimeline.size() + 2);
+    for (const auto& sample : inputTimeline) {
+        if (sample.time >= 0.f && sample.time <= t + kFloatEpsilon)
+            timeline.push_back(sample);
+    }
+    std::stable_sort(timeline.begin(), timeline.end(),
+                     [](const AnimatorTimelineSample& a, const AnimatorTimelineSample& b) {
+                         return a.time < b.time;
+                     });
+    if (timeline.empty() || timeline.front().time > kFloatEpsilon)
+        timeline.insert(timeline.begin(), AnimatorTimelineSample{});
+    if (timeline.back().time < t - kFloatEpsilon) {
+        AnimatorTimelineSample end;
+        end.time = t;
+        timeline.push_back(std::move(end));
+    }
+
+    auto applySample = [&](const AnimatorTimelineSample& sample) {
+        for (auto& param : localParams) {
+            if (param.type == AnimatorParam::Type::Trigger)
+                param.value.b = false;
+        }
+        for (const auto& value : sample.params) {
+            for (auto& param : localParams) {
+                if (param.name == value.name && param.type == value.type) {
+                    param.value = value.value;
+                    break;
+                }
+            }
+        }
+        for (const auto& triggerName : sample.triggers) {
+            for (auto& param : localParams) {
+                if (param.name == triggerName && param.type == AnimatorParam::Type::Trigger) {
+                    param.value.b = true;
+                    break;
+                }
+            }
+        }
+    };
+
     float elapsed = 0.f;
-    while (elapsed < t) {
-        const float step = std::min(kStep, t - elapsed);
+    for (const auto& sample : timeline) {
+        const float targetTime = std::clamp(sample.time, elapsed, t);
+        const float step = targetTime - elapsed;
         const float safeDt = std::max(step, 0.f);
-        const float previousStateTime = stateTime;
+        const float previousProgress = stateProgress;
 
         current = findState(curState);
         if (!current) break;
 
-        // 推进当前状态时间
-        stateTime += safeDt * std::max(current->speed, 0.f);
+        // 播放进度始终正向累积；Forward/Reverse 只影响最终采样时间。
+        const float currentDuration = effectiveDuration(
+            *current, clips, localParams, stateProgress);
+        if (currentDuration > kFloatEpsilon) {
+            stateProgress += safeDt * std::max(current->playRate, 0.f) / currentDuration;
+        }
 
         if (transitioning) {
             const AnimatorState* nextSt = findState(nextState);
@@ -288,7 +348,11 @@ AnimatorController::BlendCommand AnimatorController::computeBlendAtTime(
                 nextState.clear();
                 blendT = 0.f;
             } else {
-                nextStateTime += safeDt * std::max(nextSt->speed, 0.f);
+                const float nextDuration = effectiveDuration(
+                    *nextSt, clips, localParams, nextStateProgress);
+                if (nextDuration > kFloatEpsilon) {
+                    nextStateProgress += safeDt * std::max(nextSt->playRate, 0.f) / nextDuration;
+                }
                 blendT = activeFadeDuration <= kFloatEpsilon
                     ? 1.f
                     : std::min(1.f, blendT + safeDt / activeFadeDuration);
@@ -296,9 +360,9 @@ AnimatorController::BlendCommand AnimatorController::computeBlendAtTime(
                 if (blendT >= 1.f) {
                     // 过渡完成
                     curState = nextState;
-                    stateTime = nextStateTime;
+                    stateProgress = nextStateProgress;
                     nextState.clear();
-                    nextStateTime = 0.f;
+                    nextStateProgress = 0.f;
                     activeFadeDuration = 0.f;
                     blendT = 0.f;
                     transitioning = false;
@@ -307,12 +371,14 @@ AnimatorController::BlendCommand AnimatorController::computeBlendAtTime(
             }
         }
 
+        // 持续参数先应用，Trigger 随后作为单次脉冲，再检查过渡。
+        applySample(sample);
+
         // 检查新的过渡（仅在非过渡状态或过渡刚完成时）
         if (!transitioning && !consumed) {
             current = findState(curState);
             if (!current) break;
 
-            const AnimationClip* currentClip = findClip(current->clipName, clips);
             for (const auto& transition : transitions_) {
                 if (!transition.fromState.empty() && transition.fromState != curState)
                     continue;
@@ -320,33 +386,33 @@ AnimatorController::BlendCommand AnimatorController::computeBlendAtTime(
                     continue;
 
                 const AnimatorState* target = findState(transition.toState);
-                if (!target || !findClip(target->clipName, clips))
+                if (!target || !hasValidMotion(*target, clips))
                     continue;
 
-                // 检查 exitTime：使用 stateTime 替代 this->stateTime_
+                // exitTime 表示沿播放方向累积的归一化进度，与采样方向解耦。
                 bool exitOk = true;
                 if (transition.hasExitTime) {
-                    if (!currentClip || currentClip->duration <= kFloatEpsilon) {
+                    const float targetProgress = std::clamp(transition.exitTime, 0.f, 1.f);
+                    if (!hasValidMotion(*current, clips)) {
                         exitOk = false;
+                    } else if (!current->loop) {
+                        exitOk = stateProgress >= targetProgress;
+                    } else if (targetProgress <= kFloatEpsilon) {
+                        exitOk = true;
                     } else {
-                        const float targetTime = std::clamp(transition.exitTime, 0.f, 1.f)
-                                                  * currentClip->duration;
-                        if (!current->loop) {
-                            exitOk = stateTime >= targetTime;
-                        } else if (targetTime > kFloatEpsilon) {
-                            const float elapsedInner = std::max(0.f, stateTime - previousStateTime);
-                            if (elapsedInner < currentClip->duration) {
-                                const float prevW = std::fmod(std::max(previousStateTime, 0.f), currentClip->duration);
-                                const float curW = std::fmod(std::max(stateTime, 0.f), currentClip->duration);
-                                const bool wrapped = curW < prevW;
-                                exitOk = wrapped
-                                    ? (targetTime > prevW || targetTime <= curW)
-                                    : (prevW < targetTime && curW >= targetTime);
-                            } else {
-                                exitOk = true;
-                            }
-                        } else {
+                        const float delta = std::max(0.f, stateProgress - previousProgress);
+                        if (delta >= 1.f) {
                             exitOk = true;
+                        } else {
+                            const float prevWrapped =
+                                previousProgress - std::floor(previousProgress);
+                            const float currentWrapped =
+                                stateProgress - std::floor(stateProgress);
+                            const bool wrapped = currentWrapped < prevWrapped;
+                            exitOk = wrapped
+                                ? (targetProgress > prevWrapped || targetProgress <= currentWrapped)
+                                : (prevWrapped < targetProgress
+                                   && currentWrapped >= targetProgress);
                         }
                     }
                 }
@@ -369,7 +435,7 @@ AnimatorController::BlendCommand AnimatorController::computeBlendAtTime(
 
                 // 触发过渡
                 nextState = target->name;
-                nextStateTime = 0.f;
+                nextStateProgress = 0.f;
                 blendT = 0.f;
                 activeFadeDuration = std::max(transition.fadeDuration, 0.f);
                 activeBlendCurve = transition.blendCurve;
@@ -388,9 +454,9 @@ AnimatorController::BlendCommand AnimatorController::computeBlendAtTime(
                 // 零时长过渡
                 if (activeFadeDuration <= kFloatEpsilon) {
                     curState = nextState;
-                    stateTime = 0.f;
+                    stateProgress = 0.f;
                     nextState.clear();
-                    nextStateTime = 0.f;
+                    nextStateProgress = 0.f;
                     activeFadeDuration = 0.f;
                     blendT = 0.f;
                     transitioning = false;
@@ -403,21 +469,29 @@ AnimatorController::BlendCommand AnimatorController::computeBlendAtTime(
         // 如果不在过渡中，下个步进可以继续检查过渡
         if (!transitioning) consumed = false;
 
-        elapsed += step;
+        // Trigger 只对当前时间边界的一次过渡判断有效，不能累积为永久 true。
+        for (auto& param : localParams) {
+            if (param.type == AnimatorParam::Type::Trigger)
+                param.value.b = false;
+        }
+
+        elapsed = targetTime;
+        if (elapsed >= t - kFloatEpsilon) break;
     }
 
     // 构建 BlendCommand
     current = findState(curState);
     if (!current) return command;
 
-    command.clipA = findClip(current->clipName, clips);
-    command.timeA = sampleTime(*current, command.clipA, stateTime);
+    command.stateA = current;
+    command.poseA = resolveStatePose(*current, clips, localParams, stateProgress);
 
     if (transitioning) {
         const AnimatorState* nextSt = findState(nextState);
         if (nextSt) {
-            command.clipB = findClip(nextSt->clipName, clips);
-            command.timeB = sampleTime(*nextSt, command.clipB, nextStateTime);
+            command.stateB = nextSt;
+            command.poseB = resolveStatePose(
+                *nextSt, clips, localParams, nextStateProgress);
             const float raw = std::clamp(blendT, 0.f, 1.f);
             command.blendWeight = applyBlendCurve(raw, activeBlendCurve);
         }
@@ -429,8 +503,8 @@ AnimatorController::BlendCommand AnimatorController::computeBlendAtTime(
 void AnimatorController::reset() {
     currentState_ = defaultState_;
     nextState_.clear();
-    stateTime_ = 0.f;
-    nextStateTime_ = 0.f;
+    stateProgress_ = 0.f;
+    nextStateProgress_ = 0.f;
     blendT_ = 0.f;
     activeFadeDuration_ = 0.f;
     activeBlendCurve_ = BlendCurve::SmoothStep;
@@ -445,8 +519,8 @@ void AnimatorController::setActiveState(const std::string& name) {
     if (!findState(name)) return;
     currentState_ = name;
     nextState_.clear();
-    stateTime_ = 0.f;
-    nextStateTime_ = 0.f;
+    stateProgress_ = 0.f;
+    nextStateProgress_ = 0.f;
     blendT_ = 0.f;
     activeFadeDuration_ = 0.f;
     transitioning_ = false;
@@ -463,24 +537,21 @@ bool AnimatorController::checkAllConditions(const AnimatorTransition& transition
 
 bool AnimatorController::exitTimeReached(const AnimatorTransition& transition,
                                          const AnimatorState& state,
-                                         const AnimationClip* clip,
-                                         float previousStateTime) const {
+                                         float previousProgress) const {
     if (!transition.hasExitTime) return true;
-    if (!clip || clip->duration <= kFloatEpsilon) return false;
+    const float targetProgress = std::clamp(transition.exitTime, 0.f, 1.f);
+    if (!state.loop) return stateProgress_ >= targetProgress;
+    if (targetProgress <= kFloatEpsilon) return true;
 
-    const float targetTime = std::clamp(transition.exitTime, 0.f, 1.f) * clip->duration;
-    if (!state.loop) return stateTime_ >= targetTime;
-    if (targetTime <= kFloatEpsilon) return true;
+    const float elapsed = std::max(0.f, stateProgress_ - previousProgress);
+    if (elapsed >= 1.f) return true;
 
-    const float elapsed = std::max(0.f, stateTime_ - previousStateTime);
-    if (elapsed >= clip->duration) return true;
-
-    const float previousWrapped = std::fmod(std::max(previousStateTime, 0.f), clip->duration);
-    const float currentWrapped = std::fmod(std::max(stateTime_, 0.f), clip->duration);
+    const float previousWrapped = previousProgress - std::floor(previousProgress);
+    const float currentWrapped = stateProgress_ - std::floor(stateProgress_);
     const bool wrapped = currentWrapped < previousWrapped;
     return wrapped
-        ? targetTime > previousWrapped || targetTime <= currentWrapped
-        : previousWrapped < targetTime && currentWrapped >= targetTime;
+        ? targetProgress > previousWrapped || targetProgress <= currentWrapped
+        : previousWrapped < targetProgress && currentWrapped >= targetProgress;
 }
 
 void AnimatorController::consumeTriggers(const AnimatorTransition& transition) {
@@ -516,6 +587,24 @@ const AnimatorState* AnimatorController::findState(const std::string& name) cons
     return it == states_.end() ? nullptr : &*it;
 }
 
+bool AnimatorController::renameParameter(const std::string& oldName,
+                                         const std::string& newName) {
+    if (oldName.empty() || newName.empty() || oldName == newName) return false;
+    AnimatorParam* param = findParam(oldName);
+    if (!param || findParam(newName)) return false;
+
+    param->name = newName;
+    for (auto& transition : transitions_) {
+        for (auto& condition : transition.conditions) {
+            if (condition.paramName == oldName) condition.paramName = newName;
+        }
+    }
+    for (auto& state : states_) {
+        if (state.blendParameter == oldName) state.blendParameter = newName;
+    }
+    return true;
+}
+
 const AnimationClip* AnimatorController::findClip(
     const std::string& clipName, const std::vector<AnimationClip>& clips) const {
     const auto it = std::find_if(clips.begin(), clips.end(),
@@ -525,14 +614,134 @@ const AnimationClip* AnimatorController::findClip(
     return it == clips.end() ? nullptr : &*it;
 }
 
+AnimatorController::StatePoseCommand AnimatorController::resolveStatePose(
+    const AnimatorState& state,
+    const std::vector<AnimationClip>& clips,
+    const std::vector<AnimatorParam>& params,
+    float progress) const {
+    StatePoseCommand pose;
+    pose.state = &state;
+
+    if (state.motionType == StateMotionType::SingleClip) {
+        const AnimationClip* clip = findClip(state.clipName, clips);
+        if (!clip) return pose;
+        pose.samples[0] = ClipPoseSample{clip, sampleTime(state, clip, progress), 1.f};
+        pose.sampleCount = 1;
+        return pose;
+    }
+
+    struct ResolvedSample {
+        const AnimationClip* clip = nullptr;
+        float position = 0.f;
+    };
+    std::vector<ResolvedSample> resolved;
+    resolved.reserve(state.blendSamples.size());
+    for (const auto& sample : state.blendSamples) {
+        if (const AnimationClip* clip = findClip(sample.clipName, clips)) {
+            resolved.push_back({clip, sample.position});
+        }
+    }
+    if (resolved.empty()) return pose;
+    std::stable_sort(resolved.begin(), resolved.end(),
+                     [](const ResolvedSample& a, const ResolvedSample& b) {
+                         return a.position < b.position;
+                     });
+
+    float axis = 0.f;
+    const auto paramIt = std::find_if(
+        params.begin(), params.end(), [&](const AnimatorParam& param) {
+            return param.name == state.blendParameter
+                && param.type == AnimatorParam::Type::Float;
+        });
+    if (paramIt != params.end()) axis = paramIt->value.f;
+
+    auto setSingle = [&](const ResolvedSample& sample) {
+        pose.samples[0] = ClipPoseSample{
+            sample.clip, sampleTime(state, sample.clip, progress), 1.f};
+        pose.sampleCount = 1;
+    };
+
+    if (resolved.size() == 1 || axis <= resolved.front().position) {
+        setSingle(resolved.front());
+        return pose;
+    }
+    if (axis >= resolved.back().position) {
+        setSingle(resolved.back());
+        return pose;
+    }
+
+    for (size_t i = 0; i + 1 < resolved.size(); ++i) {
+        const auto& lower = resolved[i];
+        const auto& upper = resolved[i + 1];
+        if (axis > upper.position) continue;
+
+        const float span = upper.position - lower.position;
+        if (span <= kFloatEpsilon) {
+            setSingle(upper);
+            return pose;
+        }
+        const float upperWeight = std::clamp(
+            (axis - lower.position) / span, 0.f, 1.f);
+        if (upperWeight <= kFloatEpsilon) {
+            setSingle(lower);
+        } else if (upperWeight >= 1.f - kFloatEpsilon) {
+            setSingle(upper);
+        } else {
+            pose.samples[0] = ClipPoseSample{
+                lower.clip, sampleTime(state, lower.clip, progress),
+                1.f - upperWeight};
+            pose.samples[1] = ClipPoseSample{
+                upper.clip, sampleTime(state, upper.clip, progress),
+                upperWeight};
+            pose.sampleCount = 2;
+        }
+        return pose;
+    }
+
+    setSingle(resolved.back());
+    return pose;
+}
+
+float AnimatorController::effectiveDuration(
+    const AnimatorState& state,
+    const std::vector<AnimationClip>& clips,
+    const std::vector<AnimatorParam>& params,
+    float progress) const {
+    const StatePoseCommand pose = resolveStatePose(state, clips, params, progress);
+    if (pose.sampleCount == 0) return 0.f;
+
+    float duration = 0.f;
+    for (uint32_t i = 0; i < pose.sampleCount; ++i) {
+        if (pose.samples[i].clip) {
+            duration += std::max(pose.samples[i].clip->duration, 0.f)
+                      * pose.samples[i].weight;
+        }
+    }
+    return duration;
+}
+
+bool AnimatorController::hasValidMotion(
+    const AnimatorState& state,
+    const std::vector<AnimationClip>& clips) const {
+    if (state.motionType == StateMotionType::SingleClip) {
+        return findClip(state.clipName, clips) != nullptr;
+    }
+    return std::any_of(
+        state.blendSamples.begin(), state.blendSamples.end(),
+        [&](const BlendSpace1DSample& sample) {
+            return findClip(sample.clipName, clips) != nullptr;
+        });
+}
+
 float AnimatorController::sampleTime(const AnimatorState& state,
                                      const AnimationClip* clip,
-                                     float stateTime) {
+                                     float progress) {
     if (!clip || clip->duration <= kFloatEpsilon) return 0.f;
-    if (!state.loop) return std::clamp(stateTime, 0.f, clip->duration);
-
-    const float wrapped = std::fmod(stateTime, clip->duration);
-    return wrapped < 0.f ? wrapped + clip->duration : wrapped;
+    float phase = state.loop
+        ? progress - std::floor(progress)
+        : std::clamp(progress, 0.f, 1.f);
+    if (state.direction == PlaybackDirection::Reverse) phase = 1.f - phase;
+    return std::clamp(phase, 0.f, 1.f) * clip->duration;
 }
 
 // ── 序列化辅助 ─────────────────────────────────────────────────────
@@ -554,6 +763,28 @@ BlendCurve strToCurve(const std::string& s) {
     if (s == "EaseIn")     return BlendCurve::EaseIn;
     if (s == "EaseOut")    return BlendCurve::EaseOut;
     return BlendCurve::SmoothStep;
+}
+
+std::string directionToStr(PlaybackDirection direction) {
+    return direction == PlaybackDirection::Reverse ? "Reverse" : "Forward";
+}
+
+PlaybackDirection strToDirection(const std::string& value) {
+    return value == "Reverse"
+        ? PlaybackDirection::Reverse
+        : PlaybackDirection::Forward;
+}
+
+std::string motionTypeToStr(StateMotionType type) {
+    return type == StateMotionType::BlendSpace1D
+        ? "BlendSpace1D"
+        : "SingleClip";
+}
+
+StateMotionType strToMotionType(const std::string& value) {
+    return value == "BlendSpace1D"
+        ? StateMotionType::BlendSpace1D
+        : StateMotionType::SingleClip;
 }
 
 std::string rootMotionModeToStr(AnimatorState::RootMotionMode m) {
@@ -614,15 +845,28 @@ TransitionCondition::Op strToCondOp(const std::string& s) {
 
 bool AnimatorController::saveToFile(const std::string& jsonPath) const {
     nlohmann::json j;
-    j["version"] = 1;
+    j["version"] = 2;
     j["defaultState"] = defaultState_;
 
     auto& jStates = j["states"];
     for (const auto& s : states_) {
         nlohmann::json js;
         js["name"] = s.name;
-        js["clipName"] = s.clipName;
-        js["speed"] = s.speed;
+        js["motionType"] = motionTypeToStr(s.motionType);
+        if (s.motionType == StateMotionType::BlendSpace1D) {
+            js["blendParameter"] = s.blendParameter;
+            auto& samples = js["samples"];
+            for (const auto& sample : s.blendSamples) {
+                samples.push_back({
+                    {"clipName", sample.clipName},
+                    {"position", sample.position}
+                });
+            }
+        } else {
+            js["clipName"] = s.clipName;
+        }
+        js["direction"] = directionToStr(s.direction);
+        js["playRate"] = std::max(s.playRate, 0.f);
         js["loop"] = s.loop;
         js["rootMotion"] = rootMotionModeToStr(s.rootMotion);
         if (!s.rootBoneName.empty())
@@ -678,6 +922,7 @@ bool AnimatorController::loadFromFile(const std::string& jsonPath) {
     try { in >> j; } catch (...) { return false; }
 
     if (!j.is_object()) return false;
+    const int version = j.value("version", 1);
 
     std::vector<AnimatorState> states;
     if (j.contains("states") && j["states"].is_array()) {
@@ -685,7 +930,31 @@ bool AnimatorController::loadFromFile(const std::string& jsonPath) {
             AnimatorState s;
             s.name = js.value("name", std::string{});
             s.clipName = js.value("clipName", std::string{});
-            s.speed = js.value("speed", 1.f);
+            s.motionType = strToMotionType(
+                js.value("motionType", std::string{"SingleClip"}));
+            s.blendParameter = js.value("blendParameter", std::string{});
+            if (js.contains("samples") && js["samples"].is_array()) {
+                for (const auto& jSample : js["samples"]) {
+                    if (!jSample.is_object()) continue;
+                    BlendSpace1DSample sample;
+                    sample.clipName = jSample.value("clipName", std::string{});
+                    sample.position = jSample.value("position", 0.f);
+                    s.blendSamples.push_back(std::move(sample));
+                }
+            }
+
+            if (version <= 1) {
+                const float legacySpeed = js.value("speed", 1.f);
+                s.playRate = std::abs(legacySpeed);
+                s.direction = legacySpeed < 0.f
+                    ? PlaybackDirection::Reverse
+                    : PlaybackDirection::Forward;
+                s.motionType = StateMotionType::SingleClip;
+            } else {
+                s.playRate = std::max(js.value("playRate", 1.f), 0.f);
+                s.direction = strToDirection(
+                    js.value("direction", std::string{"Forward"}));
+            }
             s.loop = js.value("loop", true);
             s.rootMotion = strToRootMotionMode(js.value("rootMotion", std::string{"None"}));
             s.rootBoneName = js.value("rootBoneName", std::string{});

@@ -870,7 +870,8 @@ bool Application::loadSequenceAsset(const std::string& path,
     currentSequence_ = std::move(loaded);
     seqPlayer_.load(currentSequence_);
     seqPlayer_.setSequenceRef(currentSequence_);
-    sequencerPreviewPending_ = false;
+    sequencerPreviewPending_ = true;
+    lastSequencerAnimatorEvalTime_ = -1.0;
     sequenceCameraActive_ = false;
     cameraPathCache_.clear();
 
@@ -1034,7 +1035,6 @@ void Application::drawFrame(float dt)
 
     // ── Sequencer 驱动 ───────────────────────────────────────────────────────
     sequenceCameraActive_ = false;
-    bool seqHasAnimTrack = false;
     {
         seqPlayer_.setSequenceRef(currentSequence_);
         const auto* seq = &currentSequence_;
@@ -1043,36 +1043,12 @@ void Application::drawFrame(float dt)
             for (const auto& t : seq->tracks) {
                 if (t.type == TrackType::CameraPath) { hasCameraTrack = true; break; }
             }
-            for (const auto& t : seq->tracks) {
-                if (t.type == TrackType::AnimationClip && !t.animClips.empty()) {
-                    seqHasAnimTrack = true; break;
-                }
-            }
         }
 
         const bool sequencerPreviewRequested = sequencerPreviewPending_;
+        const double previousAnimatorEvalTime = lastSequencerAnimatorEvalTime_;
+        double evaluatedAnimatorTime = -1.0;
         SequencePlayer::FrameCallbacks seqCallbacks;
-        seqCallbacks.onAnimClipEval = [&](double localT, const std::string& clipName,
-                                           double clipOffset, double playSpeed) {
-            // 预览模式 ON 时，Sequencer 不干预动画播放（由状态机控制）
-            if (animatorPreviewMode_) return;
-            for (auto& ent : sceneMgr_.getModelEntities()) {
-                if (!ent.hasSkin_ || !ent.skeleton || ent.skeleton->bones.empty())
-                    continue;
-                for (int ci = 0; ci < static_cast<int>(ent.animationClips.size()); ++ci) {
-                    if (ent.animationClips[ci].name == clipName) {
-                        ent.previewClipIndex = ci;
-                        double t = localT + clipOffset;
-                        if (ent.animationClips[ci].duration > 0.f)
-                            t = std::fmod(t, static_cast<double>(ent.animationClips[ci].duration));
-                        ent.previewTime = static_cast<float>(t);
-                        ent.previewSpeed = static_cast<float>(playSpeed);
-                        break;
-                    }
-                }
-            }
-        };
-
         seqCallbacks.onCameraPathEval = [&](double localT, const std::string& pathAssetRelPath) {
             // Cache camera paths to avoid reloading from disk every frame
             auto it = cameraPathCache_.find(pathAssetRelPath);
@@ -1112,42 +1088,33 @@ void Application::drawFrame(float dt)
             ent->syncCameraFromTransform();
         };
 
-        seqCallbacks.onEvent = [&](const std::string& eventName) {
-            std::cout << "[Sequencer] Event: " << eventName << "\n";
-            for (auto& ent : sceneMgr_.getModelEntities()) {
-                if (ent.animatorController.hasStates()) {
-                    AnimatorEvent ev;
-                    ev.type = AnimatorEvent::Type::SetTrigger;
-                    ev.paramName = eventName;
-                    ent.animatorController.dispatchEvent(ev);
-                }
-            }
-        };
-
         seqCallbacks.onAnimatorKeyframeEval = [&](double t, uint64_t entityId,
                                                    const AnimatorKeyframeTrack::EvalResult& result) {
             auto* ent = sceneMgr_.getModelEntity(entityId);
             if (!ent || !ent->animatorController.hasStates()) return;
 
-            // 构造参数值数组（从 result.params 转换）
-            std::vector<AnimatorParam> paramValues = result.params;
+            // seek、拖动、循环回绕属于时间不连续点，禁止复用上一姿势的 Root Motion delta。
+            if (sequencerPreviewRequested
+                || (previousAnimatorEvalTime >= 0.0 && t + 1e-6 < previousAnimatorEvalTime)) {
+                ent->rootMotionInitialized = false;
+            }
 
-            // 使用纯函数 computeBlendAtTime 计算指定时间点的 BlendCommand，
-            // 不修改状态机内部状态，避免大步进导致的边界问题。
+            // 从 0 到 t 按事件时间顺序求值；Setter 持续，Trigger 只在关键帧边界脉冲一次。
             ent->pendingSequencerBlend = ent->animatorController.computeBlendAtTime(
                 static_cast<float>(t), ent->animationClips,
-                paramValues, result.initialState);
+                result.timeline, result.initialState);
             ent->hasPendingSequencerBlend = true;
+            evaluatedAnimatorTime = t;
         };
 
         seqPlayer_.update(dt, seqCallbacks);
+        if (evaluatedAnimatorTime >= 0.0)
+            lastSequencerAnimatorEvalTime_ = evaluatedAnimatorTime;
         if (sequencerPreviewRequested)
             sequencerPreviewPending_ = false;
     }
 
-    // 当 Sequencer 正在播放但没有 AnimationClip 轨道时，
-    // 清理 Sequencer 设置的 preview 状态（通过 onAnimClipEval 设的 previewTime 和 previewClipIndex）
-    // 但如果有 AnimatorKeyframe 轨道，不要清理（状态机由 AnimatorKeyframe 驱动）
+    // Sequencer 不再直接执行 AnimationClip 轨道；AnimatorKeyframe 是唯一动画驱动入口。
     bool seqHasAnimKeyframe = false;
     {
         const auto* seq = &currentSequence_;
@@ -1160,7 +1127,7 @@ void Application::drawFrame(float dt)
         }
     }
 
-    if (seqPlayer_.isPlaying() && !seqHasAnimTrack && !seqHasAnimKeyframe) {
+    if (seqPlayer_.isPlaying() && !seqHasAnimKeyframe) {
         for (auto& ent : sceneMgr_.getModelEntities()) {
             ent.previewClipIndex = -1;
         }
@@ -1200,8 +1167,10 @@ void Application::drawFrame(float dt)
             ent.previewTime += dt * ent.previewSpeed;
             if (clip->duration > 0.f)
                 ent.previewTime = std::fmod(ent.previewTime, clip->duration);
-            blendCommand.clipA = clip;
-            blendCommand.timeA = ent.previewTime;
+            blendCommand.poseA.samples[0] = {
+                clip, ent.previewTime, 1.f
+            };
+            blendCommand.poseA.sampleCount = 1;
         } else if (ent.hasPendingSequencerBlend) {
             // ── Sequencer AnimatorKeyframe 求值缓存：使用 computeBlendAtTime 已计算好的
             //     BlendCommand（精确对应时间轴上的 seek 位置），不修改状态机内部状态。
@@ -1216,23 +1185,56 @@ void Application::drawFrame(float dt)
         } else {
             // ── 预览模式 OFF：Sequencer 驱动，但当前没有 Sequencer 驱动此实体，
             //     骨骼走 bind pose
-            // blendCommand 保持默认（clipA = nullptr），骨骼走 bind pose
+            // blendCommand 保持默认（poseA.sampleCount = 0），骨骼走 bind pose
         }
+
+        auto evaluateStatePose = [](const AnimatorController::StatePoseCommand& statePose,
+                                    int boneIndex,
+                                    const glm::mat4& bindTransform) {
+            if (statePose.sampleCount == 0 || !statePose.samples[0].clip) {
+                BoneLocalTransform bindPose;
+                glm::vec3 skew;
+                glm::vec4 perspective;
+                if (glm::decompose(bindTransform, bindPose.scale, bindPose.rotation,
+                                   bindPose.translation, skew, perspective)) {
+                    bindPose.rotation = glm::normalize(bindPose.rotation);
+                }
+                return bindPose;
+            }
+
+            BoneLocalTransform pose =
+                statePose.samples[0].clip->evaluateBoneLocalTransformParts(
+                    boneIndex, statePose.samples[0].sampleTime, bindTransform);
+            if (statePose.sampleCount > 1 && statePose.samples[1].clip) {
+                const BoneLocalTransform target =
+                    statePose.samples[1].clip->evaluateBoneLocalTransformParts(
+                        boneIndex, statePose.samples[1].sampleTime, bindTransform);
+                const float totalWeight =
+                    statePose.samples[0].weight + statePose.samples[1].weight;
+                const float weight = totalWeight > 1e-6f
+                    ? std::clamp(statePose.samples[1].weight / totalWeight, 0.f, 1.f)
+                    : 0.f;
+                pose.translation = glm::mix(pose.translation, target.translation, weight);
+                pose.rotation = glm::normalize(
+                    glm::slerp(pose.rotation, target.rotation, weight));
+                pose.scale = glm::mix(pose.scale, target.scale, weight);
+            }
+            return pose;
+        };
 
         std::vector<glm::mat4> localTransforms(skeleton->bones.size());
         for (size_t i = 0; i < skeleton->bones.size(); ++i) {
             const glm::mat4& bindTransform = skeleton->bones[i].localBindTransform;
-            if (!blendCommand.clipA) {
+            if (blendCommand.poseA.sampleCount == 0) {
                 localTransforms[i] = bindTransform;
                 continue;
             }
 
-            BoneLocalTransform pose = blendCommand.clipA->evaluateBoneLocalTransformParts(
-                static_cast<int>(i), blendCommand.timeA, bindTransform);
-            if (blendCommand.clipB) {
-                const BoneLocalTransform target =
-                    blendCommand.clipB->evaluateBoneLocalTransformParts(
-                        static_cast<int>(i), blendCommand.timeB, bindTransform);
+            BoneLocalTransform pose = evaluateStatePose(
+                blendCommand.poseA, static_cast<int>(i), bindTransform);
+            if (blendCommand.poseB.sampleCount > 0) {
+                const BoneLocalTransform target = evaluateStatePose(
+                    blendCommand.poseB, static_cast<int>(i), bindTransform);
                 const float weight = std::clamp(blendCommand.blendWeight, 0.f, 1.f);
                 pose.translation = glm::mix(pose.translation, target.translation, weight);
                 pose.rotation = glm::normalize(glm::slerp(pose.rotation, target.rotation, weight));
@@ -1243,58 +1245,201 @@ void Application::drawFrame(float dt)
 
         // ── Root Motion ────────────────────────────────────────────
         {
-            const auto& ctrl = ent.animatorController;
-            const std::string& curStateName = ctrl.currentStateName();
-            AnimatorState::RootMotionMode rootMotionMode = AnimatorState::RootMotionMode::None;
-            std::string rootBoneName;
-            for (const auto& st : ctrl.states()) {
-                if (st.name == curStateName) {
-                    rootMotionMode = st.rootMotion;
-                    rootBoneName = st.rootBoneName;
-                    break;
-                }
-            }
+            struct RootDelta {
+                glm::vec3 translation{0.f};
+                glm::quat rotation{1.f, 0.f, 0.f, 0.f};
+                bool valid = false;
+            };
 
-            if (rootMotionMode != AnimatorState::RootMotionMode::None) {
+            auto rootBoneIndex = [&](const AnimatorState* state) {
                 int rootBoneIdx = 0;
-                if (!rootBoneName.empty()) {
-                    auto it = skeleton->boneNameToIndex.find(rootBoneName);
+                if (state && !state->rootBoneName.empty()) {
+                    auto it = skeleton->boneNameToIndex.find(state->rootBoneName);
                     if (it != skeleton->boneNameToIndex.end())
                         rootBoneIdx = it->second;
                 }
+                return std::clamp(rootBoneIdx, 0,
+                                  static_cast<int>(skeleton->bones.size()) - 1);
+            };
 
-                if (rootMotionMode == AnimatorState::RootMotionMode::Locked) {
+            if (!ent.rootMotionInitialized) {
+                ent.rootMotionClipHistory.clear();
+            }
+
+            auto evaluateClipRoot = [&](const AnimationClip& clip,
+                                        float sampleTime,
+                                        int rootBoneIdx) {
+                return clip.evaluateBoneLocalTransformParts(
+                    rootBoneIdx, sampleTime,
+                    skeleton->bones[rootBoneIdx].localBindTransform);
+            };
+
+            auto evaluateStateRootDelta =
+                [&](const AnimatorController::StatePoseCommand& statePose) {
+                RootDelta stateDelta;
+                const AnimatorState* state = statePose.state;
+                if (!state || state->rootMotion != AnimatorState::RootMotionMode::Follow
+                    || statePose.sampleCount == 0) {
+                    return stateDelta;
+                }
+
+                const int rootBoneIdx = rootBoneIndex(state);
+                std::array<RootDelta, 2> sampleDeltas{};
+                float validWeight = 0.f;
+                for (uint32_t sampleIndex = 0;
+                     sampleIndex < statePose.sampleCount;
+                     ++sampleIndex) {
+                    const auto& sample = statePose.samples[sampleIndex];
+                    if (!sample.clip) continue;
+
+                    const BoneLocalTransform currentRoot = evaluateClipRoot(
+                        *sample.clip, sample.sampleTime, rootBoneIdx);
+                    const std::string historyKey =
+                        state->name + "\n" + sample.clip->name + "\n"
+                        + std::to_string(rootBoneIdx);
+                    auto historyIt = ent.rootMotionClipHistory.find(historyKey);
+                    if (historyIt != ent.rootMotionClipHistory.end()) {
+                        const auto& previous = historyIt->second;
+                        RootDelta delta;
+                        delta.valid = true;
+
+                        const bool forwardWrapped =
+                            state->loop
+                            && state->direction == PlaybackDirection::Forward
+                            && sample.sampleTime + 1e-5f < previous.sampleTime;
+                        const bool reverseWrapped =
+                            state->loop
+                            && state->direction == PlaybackDirection::Reverse
+                            && sample.sampleTime > previous.sampleTime + 1e-5f;
+
+                        if (forwardWrapped || reverseWrapped) {
+                            const BoneLocalTransform startRoot =
+                                evaluateClipRoot(*sample.clip, 0.f, rootBoneIdx);
+                            const BoneLocalTransform endRoot =
+                                evaluateClipRoot(*sample.clip,
+                                                 sample.clip->duration,
+                                                 rootBoneIdx);
+                            if (forwardWrapped) {
+                                delta.translation =
+                                    (endRoot.translation - previous.translation)
+                                    + (currentRoot.translation - startRoot.translation);
+                                const glm::quat first =
+                                    endRoot.rotation * glm::inverse(previous.rotation);
+                                const glm::quat second =
+                                    currentRoot.rotation * glm::inverse(startRoot.rotation);
+                                delta.rotation = glm::normalize(second * first);
+                            } else {
+                                delta.translation =
+                                    (startRoot.translation - previous.translation)
+                                    + (currentRoot.translation - endRoot.translation);
+                                const glm::quat first =
+                                    startRoot.rotation * glm::inverse(previous.rotation);
+                                const glm::quat second =
+                                    currentRoot.rotation * glm::inverse(endRoot.rotation);
+                                delta.rotation = glm::normalize(second * first);
+                            }
+                        } else {
+                            delta.translation =
+                                currentRoot.translation - previous.translation;
+                            delta.rotation = glm::normalize(
+                                currentRoot.rotation * glm::inverse(previous.rotation));
+                        }
+                        sampleDeltas[sampleIndex] = delta;
+                        validWeight += sample.weight;
+                    }
+
+                    ent.rootMotionClipHistory[historyKey] = {
+                        sample.sampleTime,
+                        currentRoot.translation,
+                        currentRoot.rotation
+                    };
+                }
+
+                if (validWeight <= 1e-6f) return stateDelta;
+                stateDelta.valid = true;
+                if (statePose.sampleCount == 1 || !sampleDeltas[1].valid) {
+                    if (sampleDeltas[0].valid) stateDelta = sampleDeltas[0];
+                    return stateDelta;
+                }
+                if (!sampleDeltas[0].valid) {
+                    stateDelta = sampleDeltas[1];
+                    return stateDelta;
+                }
+
+                const float weight = std::clamp(
+                    statePose.samples[1].weight / validWeight, 0.f, 1.f);
+                stateDelta.translation = glm::mix(
+                    sampleDeltas[0].translation,
+                    sampleDeltas[1].translation, weight);
+                stateDelta.rotation = glm::normalize(glm::slerp(
+                    sampleDeltas[0].rotation,
+                    sampleDeltas[1].rotation, weight));
+                return stateDelta;
+            };
+
+            RootDelta rootDeltaA = evaluateStateRootDelta(blendCommand.poseA);
+            RootDelta rootDeltaB = evaluateStateRootDelta(blendCommand.poseB);
+            RootDelta finalRootDelta;
+            const float transitionWeight =
+                std::clamp(blendCommand.blendWeight, 0.f, 1.f);
+            const glm::quat identityRotation(1.f, 0.f, 0.f, 0.f);
+            if (rootDeltaA.valid && rootDeltaB.valid) {
+                finalRootDelta.valid = true;
+                finalRootDelta.translation = glm::mix(
+                    rootDeltaA.translation, rootDeltaB.translation,
+                    transitionWeight);
+                finalRootDelta.rotation = glm::normalize(glm::slerp(
+                    rootDeltaA.rotation, rootDeltaB.rotation,
+                    transitionWeight));
+            } else if (rootDeltaA.valid) {
+                finalRootDelta.valid = true;
+                finalRootDelta.translation =
+                    rootDeltaA.translation * (1.f - transitionWeight);
+                finalRootDelta.rotation = glm::normalize(glm::slerp(
+                    identityRotation, rootDeltaA.rotation,
+                    1.f - transitionWeight));
+            } else if (rootDeltaB.valid) {
+                finalRootDelta.valid = true;
+                finalRootDelta.translation =
+                    rootDeltaB.translation * transitionWeight;
+                finalRootDelta.rotation = glm::normalize(glm::slerp(
+                    identityRotation, rootDeltaB.rotation,
+                    transitionWeight));
+            }
+
+            const AnimatorState* rootMotionState = blendCommand.stateA;
+            if ((!rootMotionState
+                 || rootMotionState->rootMotion == AnimatorState::RootMotionMode::None)
+                && blendCommand.stateB) {
+                rootMotionState = blendCommand.stateB;
+            }
+
+            if (rootMotionState
+                && rootMotionState->rootMotion != AnimatorState::RootMotionMode::None) {
+                const int rootBoneIdx = rootBoneIndex(rootMotionState);
+
+                if (rootMotionState->rootMotion == AnimatorState::RootMotionMode::Locked) {
                     localTransforms[rootBoneIdx] = skeleton->bones[rootBoneIdx].localBindTransform;
                     ent.rootMotionInitialized = false;
-                } else if (rootMotionMode == AnimatorState::RootMotionMode::Follow) {
-                    BoneLocalTransform rootPose;
-                    {
-                        const glm::mat4& bindTransform = skeleton->bones[rootBoneIdx].localBindTransform;
-                        glm::vec3 skew;
-                        glm::vec4 perspective;
-                        if (glm::decompose(localTransforms[rootBoneIdx], rootPose.scale, rootPose.rotation, rootPose.translation, skew, perspective)) {
-                            rootPose.rotation = glm::normalize(rootPose.rotation);
-                        } else {
-                            rootPose = BoneLocalTransform{};
-                        }
+                } else if (rootMotionState->rootMotion
+                           == AnimatorState::RootMotionMode::Follow) {
+                    BoneLocalTransform rootPose = evaluateStatePose(
+                        rootMotionState == blendCommand.stateB
+                            ? blendCommand.poseB
+                            : blendCommand.poseA,
+                        rootBoneIdx,
+                        skeleton->bones[rootBoneIdx].localBindTransform);
+                    if (ent.rootMotionInitialized && finalRootDelta.valid) {
+                        ent.transform.position += finalRootDelta.translation;
+                        ent.transform.rotation =
+                            finalRootDelta.rotation * ent.transform.rotation;
                     }
-
-                    if (!ent.rootMotionInitialized) {
-                        ent.prevRootTranslation = rootPose.translation;
-                        ent.prevRootRotation = rootPose.rotation;
-                        ent.rootMotionInitialized = true;
-                    } else {
-                        glm::vec3 deltaPos = rootPose.translation - ent.prevRootTranslation;
-                        glm::quat deltaRot = rootPose.rotation * glm::inverse(ent.prevRootRotation);
-                        ent.transform.position += deltaPos;
-                        ent.transform.rotation = deltaRot * ent.transform.rotation;
-                        ent.prevRootTranslation = rootPose.translation;
-                        ent.prevRootRotation = rootPose.rotation;
-                    }
-
+                    ent.rootMotionInitialized = true;
                     localTransforms[rootBoneIdx] = glm::mat4_cast(rootPose.rotation)
                                                  * glm::scale(glm::mat4(1.f), rootPose.scale);
                 }
+            } else {
+                ent.rootMotionInitialized = false;
             }
         }
 
@@ -1703,14 +1848,13 @@ void Application::recreateSwapChain()
     }
     vkDeviceWaitIdle(ctx_.getDevice());
 
-    // recreateSwapChain 会调用 ImGui_ImplVulkan_Shutdown 销毁所有 ImGui texture，
-    // 必须重置 pipTextureCreated_，否则下一帧 PiP 会使用已失效的旧 texture 句柄。
+    // ImGui Vulkan 后端重建会销毁 texture descriptor，PiP 在下一帧重新注册。
     pipTextureCreated_ = false;
+    pipTextureId_ = (ImTextureID)0;
 
     pickSys_.destroy(ctx_, cmdMgr_);
     cmdMgr_.freeCommandBuffers(ctx_);
     descMgr_.destroy(ctx_);
-    matMgr_.destroy(ctx_);
     fbMgr_.destroy(ctx_);
     pipeMgr_.destroyPipelines(ctx_);
     rpMgr_.destroy(ctx_);
@@ -1738,41 +1882,15 @@ void Application::recreateSwapChain()
 
     fbMgr_.create(ctx_, swapChain_, rpMgr_);
 
-    sceneMgr_.destroyModelBuffers(ctx_);
-    sceneMgr_.loadModel(ui_->modelPath, glm::vec3(0.f), bufMgr_);
-    mainModelTransform = ObjectTransform{};
-    mainModelSelected  = false;
-    pickedBoxEntityId  = 0;
-
-    matMgr_.init(ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_,
-                 swapChain_.getImageCount(), ui_->texturePath);
-    sceneMgr_.setModelMaterialId(matMgr_.getDefaultMeshMaterialId());
-
-    // Re-apply the asset material after swapchain recreate.
-    {
-        const MaterialId mid = matMgr_.loadMaterialFromAsset(
-            "materials/mainmodel.ast", ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_);
-        if (mid != kInvalidMaterialId) sceneMgr_.setModelMaterialId(mid);
-    }
-
-    // Re-apply auto-dumped glTF .ast files per SubMesh slot.
-    {
-        const auto& autoPaths = sceneMgr_.getModelAutoAstPaths();
-        for (int slot = 0; slot < (int)autoPaths.size(); ++slot) {
-            if (autoPaths[slot].empty()) continue;
-            const MaterialId mid = matMgr_.loadMaterialFromAsset(
-                autoPaths[slot], ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_);
-            if (mid != kInvalidMaterialId)
-                sceneMgr_.setModelSubMeshMaterialId(slot, mid);
-        }
-    }
-
-    // 若有骨骼数据，为每个实体的槽位材质创建蒙皮版本
-    convertModelMaterialsToSkinned();
+    // 仅重建依赖 swapchain image 数量的材质 UBO/descriptor。
+    // 材质 ID、纹理、SkinBinding、场景实体及其 GPU 模型缓冲全部原样保留。
+    matMgr_.onSwapchainRecreate(ctx_, cmdMgr_, bufMgr_, fbMgr_, pipeMgr_,
+                                swapChain_.getImageCount());
 
     descMgr_.create(ctx_, swapChain_, pipeMgr_, bufMgr_);
     pickSys_.create(ctx_, cmdMgr_);
     cmdMgr_.allocateCommandBuffers(ctx_, swapChain_.getImageCount());
+    cmdMgr_.resetImagesInFlight(swapChain_.getImageCount());
 }
 
 // ─── Picking ──────────────────────────────────────────────────────────────────

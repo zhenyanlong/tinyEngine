@@ -134,9 +134,6 @@ public:
     // Track mute/solo state (indexed by track index in current sequence)
 
 
-    // Last seek time set by timeline drag (seconds)
-    double seekTime_ = -1.0;
-
     // Sequencer keyframe editing state
     double sequencerEditTime_ = 0.0;
     bool   sequencerEditTimeSet_ = false;

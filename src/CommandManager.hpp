@@ -6,6 +6,8 @@ public:
     void create(const VulkanContext& ctx);
     void allocateCommandBuffers(const VulkanContext& ctx, uint32_t count);
     void createSyncObjects(const VulkanContext& ctx, uint32_t imageCount);
+    /** @brief Swapchain image 数量变化后重置逐图像 fence 归属，不重建帧同步对象。 */
+    void resetImagesInFlight(uint32_t imageCount);
     void destroy(const VulkanContext& ctx);
 
     VkCommandPool   getCommandPool()    const { return commandPool_; }

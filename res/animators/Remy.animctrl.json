@@ -12,7 +12,7 @@
       "type": "Bool"
     },
     {
-      "defaultValue": 0.0,
+      "defaultValue": 0.6000000238418579,
       "name": "float01",
       "type": "Float"
     },
@@ -22,25 +22,39 @@
       "type": "Bool"
     },
     {
-      "defaultValue": true,
+      "defaultValue": false,
       "name": "NewTrigger",
       "type": "Trigger"
     }
   ],
   "states": [
     {
-      "clipName": "Box1",
+      "blendParameter": "float01",
+      "direction": "Reverse",
       "loop": true,
+      "motionType": "BlendSpace1D",
       "name": "Box1",
+      "playRate": 1.0,
       "rootMotion": "None",
-      "speed": 1.0
+      "samples": [
+        {
+          "clipName": "box2",
+          "position": 0.0
+        },
+        {
+          "clipName": "RealJumpDown",
+          "position": 1.0
+        }
+      ]
     },
     {
       "clipName": "RealJumpDown",
+      "direction": "Forward",
       "loop": true,
+      "motionType": "SingleClip",
       "name": "RealJumpDown",
-      "rootMotion": "None",
-      "speed": 1.0
+      "playRate": 1.0,
+      "rootMotion": "None"
     }
   ],
   "transitions": [
@@ -75,5 +89,5 @@
       "to": "RealJumpDown"
     }
   ],
-  "version": 1
+  "version": 2
 }

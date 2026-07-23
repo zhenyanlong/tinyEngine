@@ -203,6 +203,7 @@ private:
     // ON (default)：Animator 面板自由驱动状态机
     // OFF：动画由 Sequencer 时间轴控制，状态机不自动推进
     bool               animatorPreviewMode_ = true;
+    double             lastSequencerAnimatorEvalTime_ = -1.0;
 
     // ── Camera Path cache ──────────────────────────────────────────────────
     std::unordered_map<std::string, CameraPath> cameraPathCache_;

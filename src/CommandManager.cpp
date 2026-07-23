@@ -51,6 +51,11 @@ void CommandManager::createSyncObjects(const VulkanContext& ctx, uint32_t imageC
     }
 }
 
+void CommandManager::resetImagesInFlight(uint32_t imageCount)
+{
+    imagesInFlight_.assign(imageCount, VK_NULL_HANDLE);
+}
+
 void CommandManager::destroy(const VulkanContext& ctx)
 {
     freeCommandBuffers(ctx);

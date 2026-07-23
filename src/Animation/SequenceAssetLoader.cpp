@@ -31,8 +31,9 @@ const char* trackTypeName(TrackType t)
     case TrackType::TransformKeyframe:  return "TransformKeyframe";
     case TrackType::AnimatorKeyframe:   return "AnimatorKeyframe";
     case TrackType::Event:              return "Event";
+    case TrackType::Group:              return "Group";
     }
-    return "AnimationClip";
+    return "Group";
 }
 
 TrackType trackTypeFromName(const std::string& s)
@@ -42,7 +43,8 @@ TrackType trackTypeFromName(const std::string& s)
     if (s == "TransformKeyframe")  return TrackType::TransformKeyframe;
     if (s == "AnimatorKeyframe")   return TrackType::AnimatorKeyframe;
     if (s == "Event")              return TrackType::Event;
-    return TrackType::AnimationClip;
+    if (s == "Group")              return TrackType::Group;
+    return TrackType::Group;
 }
 
 json vec3ToJson(const glm::vec3& v)
@@ -501,6 +503,14 @@ bool SequenceAssetLoader::loadSequence(const std::string& jsonRelPath,
                           [](const AnimatorKeyframe& a, const AnimatorKeyframe& b) {
                               return a.time < b.time;
                           });
+            }
+
+            // 旧版层级父轨道借用了空 AnimationClip 作为占位；无损迁移为明确的 Group。
+            if (track.type == TrackType::AnimationClip && track.animClips.empty()) {
+                track.type = TrackType::Group;
+            } else if (track.type == TrackType::AnimationClip || track.type == TrackType::Event) {
+                std::cerr << "[Sequence] Deprecated track '" << track.name
+                          << "' is retained for JSON compatibility but disabled at runtime.\n";
             }
 
             parsed.tracks.push_back(std::move(track));

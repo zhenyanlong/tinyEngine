@@ -1,5 +1,19 @@
+## 2026-07-23
+
+- [ ] Added explicit Forward/Reverse Animator state playback with non-negative Play Rate and normalized progress; version-1 negative speed assets migrate automatically to Reverse + absolute rate
+- [ ] Added SingleClip/BlendSpace1D State Motion with Float-driven positioned samples, endpoint clamping, normalized-time synchronization, and two-layer BlendSpace/State-transition TRS pose blending
+- [ ] Made Root Motion direction- and loop-aware by extracting per-clip deltas and blending them across BlendSpace samples and State transitions; discontinuous Sequencer seeks reset per-entity clip history
+- [ ] Upgraded `.animctrl.json` to version 2 while retaining v1 loading; expanded Animator UI, compatible-controller filtering, save validation, Clip rename, parameter rename propagation, referenced-parameter deletion protection, and current-Sequence event updates
+- [ ] Updated TDD.md and animation-system-plan.md for Phase B6 architecture, migration, compatibility, data flow, UI, Root Motion, and acceptance criteria
+- [ ] Validation passed: x64-debug build, Animator v1/v2/reverse/BlendSpace/transition C++ smoke test, 10/10 Python MCP tests, and git diff checks
+
 ## 2026-07-22
 
+- [ ] Fixed lossless Swapchain recreation: resize now preserves all scene entities/model buffers, transforms, selections, material/texture IDs, and per-skin SkinBindings; only swapchain-dependent UBO/descriptors, framebuffers, pipelines, command buffers, image-fence ownership, Pick, PiP, and ImGui texture descriptors are rebuilt
+- [ ] Added continuous timeline scrubbing: ruler drag pauses playback, captures the mouse outside the ruler, clamps to Sequence duration, and continuously seeks/previews Transform and Animator tracks
+- [ ] Made AnimatorKeyframe evaluation deterministic from 0 to the requested time: persistent SetFloat/SetInt/SetBool values are sampled at fixed and exact keyframe boundaries, SetTrigger is a one-boundary pulse, and playback/direct/backward seek share the same pure state-machine evaluation
+- [ ] Deprecated independent Sequencer Event and AnimationClip execution, removed their callbacks and global Trigger broadcast, added explicit Group tracks, and migrated empty legacy AnimationClip parent tracks to Group while retaining non-empty legacy data as disabled JSON-compatible tracks
+- [ ] Validation passed: x64-debug build, Animator timeline/legacy migration C++ smoke test, hidden-window resize runtime test preserving 3/3 entity signatures, 10/10 Python MCP tests, and git diff checks
 - [ ] Fixed Mixamo multi-skin eye drift by separating runtime bone UBO/descriptor ownership from shared MaterialId into per-entity/material/skinIndex SkinBinding resources; main view, PiP, GPU pick, cache reuse, scene reload, and cleanup now use the matching binding (MaterialManager.hpp/.cpp, SceneManager.hpp/.cpp, Application.cpp, PickSystem.cpp, SceneSerializer.cpp)
 - [ ] Added a recursive Sequence asset picker with search, refresh, metadata/error display, double-click loading, and atomic load semantics that preserve the current edit on parse failure (IMGUIManager.hpp/.cpp, Application.hpp/.cpp, SequenceAssetLoader.cpp)
 - [ ] Changed main-camera yaw to rotate around world WorldUp, added Q/E world-axis descent/ascent, and gated camera input while ImGui captures keyboard or mouse (camera.hpp/.cpp, Application.cpp)

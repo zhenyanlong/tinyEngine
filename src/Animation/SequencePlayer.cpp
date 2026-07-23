@@ -11,7 +11,6 @@ void SequencePlayer::load(const Sequence& seq)
     currentTime_ = 0.0;
     playing_ = false;
     loop_ = false;
-    firedEventClipHashes_.clear();
 }
 
 void SequencePlayer::setSequenceRef(Sequence& seq)
@@ -19,7 +18,6 @@ void SequencePlayer::setSequenceRef(Sequence& seq)
     if (seq_ == &seq)
         return;
     seq_ = &seq;
-    firedEventClipHashes_.clear();
 }
 
 void SequencePlayer::loadSequence(const std::string& seqJsonRelPath)
@@ -39,7 +37,6 @@ void SequencePlayer::play(bool loop)
     if (!seq_) return;
     playing_ = true;
     loop_ = loop;
-    firedEventClipHashes_.clear();
 }
 
 void SequencePlayer::pause()
@@ -51,7 +48,6 @@ void SequencePlayer::stop()
 {
     playing_ = false;
     currentTime_ = 0.0;
-    firedEventClipHashes_.clear();
 }
 
 void SequencePlayer::seek(double t)
@@ -61,7 +57,6 @@ void SequencePlayer::seek(double t)
         ? seq_->totalDuration
         : seq_->computeTotalDuration();
     currentTime_ = std::clamp(t, 0.0, maxDur > 0.0 ? maxDur : 0.0);
-    firedEventClipHashes_.clear();
 }
 
 void SequencePlayer::update(double dt, const FrameCallbacks& cb)
@@ -98,7 +93,6 @@ void SequencePlayer::update(double dt, const FrameCallbacks& cb)
         if (currentTime_ >= totalDur) {
             if (loop_) {
                 currentTime_ = std::fmod(currentTime_, totalDur);
-                firedEventClipHashes_.clear();
             } else {
                 currentTime_ = totalDur;
                 playing_ = false;
@@ -109,14 +103,8 @@ void SequencePlayer::update(double dt, const FrameCallbacks& cb)
     for (const auto& track : seq_->tracks) {
         switch (track.type) {
         case TrackType::AnimationClip:
-            for (const auto& clip : track.animClips) {
-                const double end = clip.startTime + clip.duration;
-                if (currentTime_ >= clip.startTime && currentTime_ < end) {
-                    const double localT = currentTime_ - clip.startTime;
-                    if (cb.onAnimClipEval)
-                        cb.onAnimClipEval(localT, clip.clipName, clip.clipOffset, clip.playSpeed);
-                }
-            }
+            // Deprecated: Animator state/clip selection is driven exclusively by
+            // AnimatorKeyframe events. Retained only for legacy JSON round trips.
             break;
 
         case TrackType::CameraPath:
@@ -159,27 +147,10 @@ void SequencePlayer::update(double dt, const FrameCallbacks& cb)
             break;
 
         case TrackType::Event:
-            for (size_t ci = 0; ci < track.eventClips.size(); ++ci) {
-                const auto& clip = track.eventClips[ci];
-                const double end = clip.startTime + clip.duration;
+            // Deprecated: independent Event tracks must never broadcast into Animators.
+            break;
 
-                size_t h = std::hash<std::string>{}(track.name)
-                         ^ (std::hash<std::string>{}(clip.event.paramName) << 1)
-                         ^ (std::hash<double>{}(clip.startTime) << 2);
-
-                const bool inRange = currentTime_ >= clip.startTime && currentTime_ < end;
-                const bool notFired = firedEventClipHashes_.find(h) == firedEventClipHashes_.end();
-
-                if (inRange && notFired) {
-                    firedEventClipHashes_.insert(h);
-                    if (cb.onEvent)
-                        cb.onEvent(clip.event.paramName);
-                }
-
-                if (!inRange) {
-                    firedEventClipHashes_.erase(h);
-                }
-            }
+        case TrackType::Group:
             break;
         }
     }

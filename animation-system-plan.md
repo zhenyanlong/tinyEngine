@@ -530,6 +530,25 @@ private:
 
 ---
 
+### B6. 倒放与 BlendSpace1D State Motion
+
+**目标：** 让 State 显式配置播放方向，并在保持 State Transition、Sequencer、Root Motion、多实体蒙皮和旧资产兼容的前提下支持一维混合空间。
+
+**具体任务：**
+
+- [x] **B6-1** 将有符号 speed 拆分为非负 `playRate` 与 `PlaybackDirection`，使用始终正向累积的归一化播放进度实现 Forward/Reverse、Loop 和方向无关的 Exit Time
+- [x] **B6-2** 新增 `StateMotionType::SingleClip/BlendSpace1D`、Float blendParameter 与带 position 的 Sample 列表；区间外钳制到端点，区间内在相邻 Sample 间线性混合并按归一化相位同步不同时长 Clip
+- [x] **B6-3** 将 `BlendCommand` 重构为 State 内部 Sample 混合 + State 间 Cross-fade 两层结构，支持 Single↔Single、Single↔BlendSpace 和 BlendSpace↔BlendSpace
+- [x] **B6-4** 将 `.animctrl.json` 升级为 version 2，并向后迁移 version 1 的 clipName/speed；负 speed 迁移为 Reverse + abs(speed)
+- [x] **B6-5** Root Motion 改为按 Clip 计算循环安全的正放/倒放 delta，再按 BlendSpace 与 Transition 权重混合；seek/反向时间跳变清空历史
+- [x] **B6-6** Animator 面板支持 Motion Type、Direction、Play Rate、Float 参数和 Sample 编辑；兼容资产筛选、Clip Rename、参数 Rename/删除保护与保存前验证覆盖新引用结构
+- [x] **B6-7** Sequencer `computeBlendAtTime()` 与实时 Animator 共用 Motion/播放时钟解析，AnimatorKeyframe SetFloat 可确定性驱动 BlendSpace
+- [x] **B6-8** 通过 x64-debug 构建、v1/v2/Reverse/BlendSpace/Transition C++ smoke test、10 个 Python MCP 测试和 diff 检查
+
+**验收标准：** 负 speed 旧资产重启后保持倒放；BlendSpace 在端点/中间/越界参数下姿势正确；四种 State Motion 过渡组合可工作；Sequence seek 与播放姿势一致；Root Motion 在倒放循环和 BlendSpace 权重变化时不产生瞬移；主视口、PiP、GPU Pick 与多 SkinBinding 接口不变。
+
+---
+
 ## Phase C — Sequencer 时序动画系统
 
 ### C1. SequenceTrack / SequenceClip 数据结构

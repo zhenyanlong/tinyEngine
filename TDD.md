@@ -1,6 +1,6 @@
 # tinyEngine 技术设计文档
 
-> 最后更新：2026-07-22
+> 最后更新：2026-07-23
 
 ---
 
@@ -187,6 +187,8 @@ Vulkan 基础设施的封装，负责实例、设备、队列家族的创建与�
 交换链管理，封装 VkSwapchainKHR + Image + ImageView。
 
 **交换链格式选择策略：** 优先 SRGB 色彩空间（`VK_COLOR_SPACE_SRGB_NONLINEAR_KHR`）；呈现模式优先 `VK_PRESENT_MODE_MAILBOX_KHR`（三重缓冲），回退 `VK_PRESENT_MODE_FIFO_KHR`。
+
+**无损重建约束（2026-07-22）：** `Application::recreateSwapChain()` 只重建 Swapchain、RenderPass/Pipeline/Framebuffer、Pick、全局/材质 descriptor、逐 image command buffer 与同步归属。场景实体、模型 vertex/index buffer、Transform、选择状态、材质/纹理 ID、SkinBinding 和 Sequence/Animator 状态必须保留；`MaterialManager::onSwapchainRecreate()` 仅重建随 image count 变化的 UBO/descriptor。ImGui Vulkan 后端重建时清空并重新注册缩略图/PiP descriptor。
 
 ### 4.3 RenderPassManager（RenderPassManager.hpp）
 
@@ -424,9 +426,10 @@ struct BoneMapping {
 **关键行为：**
 - `configure()` 设置状态、过渡、参数及默认状态；`configureFromClips()` 为实体 clip 建立无过渡的默认状态
 - `setFloat/setInt/setBool/setTrigger` 修改运行时参数；Trigger 在命中过渡后自动消费
-- `update(dt, clips)` 推进当前/目标状态时间，检查 AnyState/当前状态过渡、条件和归一化 exit time，返回 `BlendCommand`
-- `computeBlendAtTime(t, clips, paramValues, initialState)` 纯函数：从初始状态开始，应用给定参数值，以 0.05s 步进逐帧模拟到时间 t 的状态演进，返回 BlendCommand，**不修改内部状态**。用于 Sequencer AnimatorKeyframe 轨道的离线求值，避免大步进导致的 exitTime 检测问题
-- `BlendCommand` 携带 clip A/B、各自采样时间和混合权重；零时长 fade 立即切换
+- `update(dt, clips)` 推进当前/目标状态的归一化播放进度，检查 AnyState/当前状态过渡、条件和 exit time，返回两层 `BlendCommand`
+- `computeBlendAtTime(t, clips, timeline, initialState)` 纯函数：从初始状态开始，按 0.05s 固定采样和精确关键帧边界依次应用 Setter/Trigger，再模拟到时间 t，返回 BlendCommand，**不修改内部状态**。Trigger 只在对应边界参与一次过渡判断；直接 seek、播放和反向拖动得到相同结果
+- `AnimatorState` 支持 `SingleClip` / `BlendSpace1D` Motion、Forward/Reverse 方向与非负 `playRate`；播放进度始终正向累积，Reverse 仅将采样相位映射为 `1-phase`
+- `BlendCommand` 的 `poseA/poseB` 各自最多携带两个 BlendSpace Clip Sample，再以 `blendWeight` 做 State 间交叉淡入淡出；零时长 fade 立即切换
 - Controller 存放于 `ModelEntity`，不使用原计划中的全局 `AnimationPlayer`/`animCtrl_` 单例
 
 **Phase B3 — 混合品质保障：**
@@ -437,11 +440,12 @@ struct BoneMapping {
 
 **Phase B4 — 状态机序列化：**
 - `saveToFile(jsonPath)` / `loadFromFile(jsonPath)` 使用 nlohmann/json 实现 `.animctrl.json` 的读写
-- 序列化字段：version、defaultState、states[]（name/clipName/speed/loop）、params[]（name/type/defaultValue）、transitions[]（from/to/fadeDuration/hasExitTime/exitTime/blendCurve/conditions[]）
+- 当前格式为 version 2：states[] 保存 motionType、clipName 或 blendParameter/samples[]、direction、playRate、loop 与 Root Motion；params/transitions 结构保持兼容
+- version 1 自动迁移：单 `clipName` 映射为 SingleClip，`speed < 0` 映射为 Reverse + `abs(speed)`，非负 speed 映射为 Forward；下一次保存输出 version 2
 - `loadFromFile` 对所有 JSON key 做 `contains()` + `is_array()` 检查，缺失字段使用默认值，避免异常
 - `MaterialAssetDesc` 新增 `animControllerPath` 字段；`MaterialAssetLoader::load` 解析 `.ast` 中的 `animController` 字段
 - `Application::loadAndApplyMaterialAsset` 在模型 swap 后，若 `.ast` 含 `animController` 路径，自动调用 `ents[0].animatorController.loadFromFile()`
-- `ModelEntity::animatorControllerPath` 记录当前绑定资产；Animator 面板递归扫描 `res/animators/`，仅显示所有 state 的 `clipName` 均存在于当前模型的兼容控制器
+- `ModelEntity::animatorControllerPath` 记录当前绑定资产；Animator 面板递归扫描 `res/animators/`，同时验证 SingleClip 与全部 BlendSpace Sample、Float 参数和 Sample 位置唯一性
 - `New AnimController` 按当前模型全部 clips 生成初始 states 并写入唯一命名的 `.animctrl.json`；`Save Current` 保存当前绑定控制器
 - 示例文件：`res/animators/example.animctrl.json`（3 states / 3 transitions / 2 params）
 
@@ -452,10 +456,11 @@ struct BoneMapping {
 - **左侧侧边栏下半**：列出 `ent->animationClips`，每项右侧提供 Preview/Stop 与 Rename；支持拖拽 payload `DND_ANIMCLIP` 到右侧 States 列表创建 state
 - **右侧上半左栏 States**：使用 ASCII `[Active]` / `[State]` 标记，避免默认 ImGui 字体缺少 Unicode 图标时显示 `?`；接受 `DND_ANIMCLIP` 拖拽自动创建 state（clipName = name）
 - **右侧上半右栏 Transitions**：列出当前选中 state 的 outgoing transitions（含 AnyState），`+ Add Transition` 按钮创建新过渡
-- **底部左栏编辑器**：选中 transition 时编辑 toState/fadeDuration/hasExitTime/exitTime/blendCurve/conditions[]；选中 state 时编辑 speed/loop；condition 编辑使用临时 `char[]` 缓冲区（避免 `std::string` 直接绑定 `InputText`）
+- **底部左栏编辑器**：选中 transition 时编辑 toState/fadeDuration/hasExitTime/exitTime/blendCurve/conditions[]；选中 state 时编辑 Motion Type、Direction、Play Rate、Loop、Single Clip 或 BlendSpace Float 参数与 Sample 列表
 - **底部右栏**：状态机运行时状态（current state / transition progress bar / 计数）+ Add Param 按钮（Float/Bool/Trigger）+ Add State 快捷按钮 + Reset Controller
 - **预览模式**：`ModelEntity::previewClipIndex >= 0` 时，`Application::drawFrame` 绕开状态机直接播放 `animationClips[previewClipIndex]`，`previewTime` 按 `previewSpeed` 推进并 mod duration
-- **Clip 行内重命名**：Rename 将列表行切换为 InputText + Apply/Cancel；名称必须非空且在当前模型内唯一，成功后同步运行时 clip、当前控制器 `clipName`、同名自动生成 state 与 transition 引用
+- **Clip 行内重命名**：Rename 将列表行切换为 InputText + Apply/Cancel；名称必须非空且在当前模型内唯一，成功后同步运行时 clip、SingleClip/BlendSpace 全部引用、同名自动生成 state 与 transition 引用
+- **参数引用安全**：参数重命名同步 Transition Condition、BlendSpace 参数和当前 Sequence 中同实体 Animator 事件；被 Controller/Sequence 引用的参数禁止直接删除
 - **重命名持久化**：`ModelEntity::animationAssetPath` 记录 clips 来源；`AnimationAssetLoader::renameClip()` 仅修改 `.anim.ast` 的 clip 元数据，不重写 `.anim.bin`，并通过临时文件 + 备份替换保证失败回滚
 - **Windows 文件替换约束**：解析 `.anim.ast` 的输入流必须在 rename 前销毁，避免共享冲突；UI 使用稳定英文错误码，防止系统本地化文本因字体缺字显示为 `?`
 - **ImGui ID 安全**：condition 循环中所有控件 label 带 `_%d` 索引后缀，避免同帧多 condition 的 ID 冲突
@@ -472,7 +477,7 @@ struct BoneMapping {
 - `AnimatorState` 新增 `RootMotionMode` 枚举（None / Locked / Follow）和 `rootBoneName` 字段
 - **None**：骨骼动画在原地播放（默认，保持现有行为）
 - **Locked**：根骨骼锁定在 bind pose 位置，子骨骼在局部做动画
-- **Follow**：提取根骨骼当前帧与上一帧的位移/旋转 delta，累加到 `ent.transform`，根骨骼 localTransform 去掉位移
+- **Follow**：分别提取每个活动 Clip 的根骨骼 delta，处理 Forward/Reverse 循环首尾，再按 BlendSpace 与 State Transition 权重混合并累加到 `ent.transform`
 - `Application::drawFrame` 骨骼求值后、`computeFinalMatrices` 前插入 root motion 处理逻辑
 - 状态序列化支持：`.animctrl.json` 保存/加载 `rootMotion` 和 `rootBoneName` 字段
 - UI 支持：State Properties 区域增加 Root Motion 模式下拉选择和根骨骼名称下拉选择
@@ -489,8 +494,8 @@ struct BoneMapping {
 - `AnimatorController::dispatchEvent(event)` / `dispatchEvents(events)` 将事件转发到对应 `set*` 方法
 - 为未来 Sequence 系统预留标准接口：Sequence 可在 clip 开始/结束或特定时间点触发 `dispatchEvent` 改变参数，从而驱动状态机过渡
 
-**逐骨骼混合：** `Application::drawFrame(dt)` 分别采样两个 clip 的局部 TRS，Translation/Scale 使用 `glm::mix`，Rotation 使用 `glm::slerp`，之后再组合为局部矩阵并计算最终骨骼 palette。
-- **Root Motion**：每帧骨骼求值后、`computeFinalMatrices` 前插入 root motion 处理。`AnimatorState::RootMotionMode` 支持三种模式：None（原地播放）、Locked（根骨骼锁定 bind pose）、Follow（根骨骼 delta 累加到 entity transform）。根骨骼可通过 `rootBoneName` 配置，默认 `bones[0]`。
+**逐骨骼混合：** `Application::drawFrame(dt)` 先在每个 State 内对最多两个 BlendSpace Sample 做 TRS 混合，再在当前/目标 State 之间做第二层 TRS cross-fade；Translation/Scale 使用 `glm::mix`，Rotation 使用 `glm::slerp`，之后计算最终骨骼 palette。
+- **Root Motion**：每帧骨骼求值后、`computeFinalMatrices` 前按 Clip 分别计算 root delta，正放/倒放跨循环边界时分成两个区间累计，再按 BlendSpace 与 Transition 权重混合。seek、反向拖动和状态拓扑变化会清空每实体 `rootMotionClipHistory`，避免复用不连续历史。
 
 **AnimationRetargeter 重定向流程（见 4.12.4）：**
 - `buildMapping()` 按名称匹配建立源/目标骨骼映射
@@ -501,21 +506,20 @@ struct BoneMapping {
 
 ### 4.12.5 Sequencer 时序动画系统（Phase C，已完成）
 
-Phase C 提供时间轴驱动的多轨道动画系统，支持骨骼动画片段、相机路径、Transform 补间、关键帧动画和事件触发。
+Phase C 提供时间轴驱动的多轨道动画系统；状态机事件统一存放在 Animator 子轨道关键帧中，Sequencer 不再直接执行独立 Event 或 AnimationClip 轨道。
 
 **C1 — SequenceTrack / SequenceClip 数据结构（`src/Animation/Sequence.hpp`）**
 - `SequenceClipBase`：所有片段基类（startTime / duration）
-- `TrackType` 枚举：AnimationClip / CameraPath / TransformTween / TransformKeyframe / AnimatorKeyframe / Event
+- 有效 `TrackType`：Group / CameraPath / TransformTween / TransformKeyframe / AnimatorKeyframe；AnimationClip / Event 仅作为旧 JSON 的禁用兼容类型
 - 各 Clip 派生类型：`AnimTrackClip`（clipName / clipOffset / playSpeed）、`CameraPathClip`（pathAssetPath）、`TransformTweenClip`（start/end TRS + ease）、`EventClip`（完整 `AnimatorEvent`）
 - `SequenceTrack`：name、type、每条轨道存同类型片段的 vector + `keyframeTrack` / `animatorTrack`
 - `Sequence`：name、tracks、totalDuration
 
 **C2 — SequencePlayer 播放控制器（`src/Animation/SequencePlayer.hpp/.cpp`）**
 - play / pause / stop / seek 接口
-- `setSequenceRef(Sequence& seq)`：引用外部 Sequence（不拷贝），使 UI 修改实时生效；仅在引用对象实际变化时清空事件去重集合，避免每帧调用导致事件重复触发
-- `update(dt, FrameCallbacks)`：按 ticks 逐帧推进，遍历各 track 的 clip 判断当前时间是否在区间内
-- `FrameCallbacks` 通过 lambda 连接相机路径求值、动画 clip 求值、变换更新、关键帧求值、事件触发
-- Event clip 首次进入时通过事件哈希集合去重
+- `setSequenceRef(Sequence& seq)`：引用外部 Sequence（不拷贝），使 UI 修改实时生效
+- `update(dt, FrameCallbacks)`：推进时间并求值 CameraPath、Transform 和 AnimatorKeyframe；旧 AnimationClip/Event 类型不会进入运行时执行
+- `FrameCallbacks` 通过 lambda 连接相机路径、变换和 Animator 时间流求值
 - Sequencer 播放期间屏蔽右键拖拽（camera track 存在时）
 - `totalDur <= 0` 但有关键帧轨道时，仍执行关键帧求值（支持空序列预览）
 
@@ -541,9 +545,8 @@ Phase C 提供时间轴驱动的多轨道动画系统，支持骨骼动画片段
 - `AnimatorKeyframe`：某一时刻触发的所有参数变更（time + events 列表）
 - `AnimatorKeyframeTrack`：绑定实体的 AnimatorController 轨道
   - `targetEntityId` / `targetAstRelPath` / `targetDisplayName` / `initialState`（初始状态名）/ `keyframes[]`
-  - `evaluate(t)` 从 t=0 累积应用所有事件，SetFloat/SetInt 支持插值，SetBool/SetTrigger 跳变
-  - 返回 `EvalResult`（initialState + 最终参数值 + evalTime）
-- `EventClip` 扩展：从 `eventName` 字符串改为完整 `AnimatorEvent` 结构体，支持所有事件类型
+  - `evaluate(t)` 生成 0..t 的有序 `AnimatorTimelineSample`；SetFloat/SetInt 从最近同名 Setter 向下一个同名 Setter 插值，SetBool 持续，SetTrigger 为单次脉冲
+  - 返回 `EvalResult`（initialState + 最终持续参数 + timeline + evalTime）
 - 序列化（`SequenceAssetLoader`）：AnimatorKeyframeTrack 完整 JSON 读写，含事件类型/参数/值/插值模式/初始状态
 - 运行时（`Application.cpp`）：`onAnimatorKeyframeEval` 回调调用 `computeBlendAtTime()` 纯函数计算指定时间点的 BlendCommand，不修改状态机内部状态（2026-07-15 重构，替代原 `reset() + setTrigger() + update(t)` 方案）
 - 状态机驱动逻辑：当 Sequencer 播放且有 AnimatorKeyframe 轨道时，`BlendCommand` 由状态机计算而非直接 clip 播放
@@ -561,17 +564,16 @@ Phase C 提供时间轴驱动的多轨道动画系统，支持骨骼动画片段
 - Load 弹窗递归扫描 `res/sequences/**/*.seq.json`，支持搜索、刷新、单选、双击加载，并显示时长、轨道数和无效资产错误
 - 双列布局（2026-07-15 重构）：左标签列（`##seqLabels`，无水平滚动）+ 右时间线列（`##seqTimeline`，水平滚动+垂直滚动主控），两列通过 `seqTimelineScrollY_` 垂直滚动同步
 - 左列轨道标签用 `ImGui::Selectable` 提供可靠 hover/click，不再混用 InvisibleButton+Dummy；两列行 Y 均通过独立累加 `rowCursorY` 推进，绕过 ImGui ItemSpacing，确保任意轨道数量下左右像素对齐
-- `isParentTrack` 判定的根因修复（2026-07-15）：父轨道不能仅凭"内容数组为空"判断，须排除以 `[T]`/`[A]` 前缀的子轨道（`empty && !isSubTrack`）
+- 父轨道使用显式 `TrackType::Group`，不再借用空 AnimationClip 作为占位；旧空 AnimationClip 父轨道在加载时自动迁移
 - 时间线刻度尺：基于 duration 自适应显示秒数刻度 + 数字标签；刻度尺、clip、keyframe 的 X 坐标通过统一 lambda `timeToX(t)` 计算，根除水平滚动对齐漂移
 - 红色播放指示线（当前时间）+ 黄色编辑指示线（sequencerEditTime_），线高度从硬编码 2000 改为精确的 `timelineHeight + tracksContentHeight`
-- 点击时间轴设置编辑位置并触发实时预览
+- 时间尺支持按住左键连续拖动：激活时暂停播放，持续 `seek + requestSequencerPreview`，拖出区域后保持捕获并限制在有效时长内
 - UE 风格层级轨道：选中实体点击 "Add Selected to Track" 自动创建父轨道 + Transform 子轨道 + Animator 子轨道（有 AnimatorController 时）
 - 重复轨道检测（2026-07-15）：同一实体已存在时不再重复添加，状态栏提示 "Entity 'xxx' already has tracks in this sequence"
 - 轨道命名使用实体 displayName，回退到 Entity_ID
 - "Add Keyframe" 按钮根据当前选中轨道类型自动判断添加 Transform 或 Animator 关键帧
 - 关键帧编辑：time / position / rotation / scale / easeToNext（Transform）/ 事件列表（Animator）
-- Animator 事件编辑：事件类型下拉 / 参数名输入 / 值控件 / 插值模式下拉
-- EventClip 编辑器支持完整 AnimatorEvent（SetFloat/SetInt/SetBool/SetTrigger）
+- Animator 事件编辑：事件类型下拉 / 参数名输入 / 值控件 / 插值模式下拉；这是状态切换参数事件的唯一 Sequencer 编辑入口
 - TransformTween 轨道类型在 UI 中标记为 "(Deprecated)"，颜色改为灰色
 - 已移除 Mute/Solo 按钮（功能未实现，简化代码）
 - Sequence 加载后按“现有持久化 ID → 唯一 astRelPath/displayName → 旧 `[T]/[A]` 轨道名称”顺序恢复目标；无法唯一匹配时弹出 `Rebind Sequence Tracks` 手动绑定，未绑定轨道以红色 `Target Missing` 标记
@@ -584,7 +586,8 @@ Phase C 提供时间轴驱动的多轨道动画系统，支持骨骼动画片段
 - **AnimatorKeyframe 轨道 seek 预览时状态过渡不生效**：`onAnimatorKeyframeEval` 直接调用 `AnimatorController::update(t)` 以大步进推进状态机，导致 exitTime 检测窗口跳过、trigger 消费状态与内部状态耦合。重构为 `computeBlendAtTime()` 纯函数，以 0.05s 步进逐帧模拟，使用本地参数副本，不修改状态机内部状态。
 - **程序重启后 Sequence 关键帧无法驱动原模型**：旧轨道仅保存进程内 `targetEntityId`，而实体 ID 在重启后重新分配。场景现持久化 ID，轨道同时保存资产路径与显示名；旧 Sequence 可通过轨道名称自动迁移，歧义情况交由手动重绑定弹窗处理。
 - **多 Transform 轨道单次预览只有第一条生效**：`sequencerPreviewPending_` 不再由第一条 Transform callback 提前清除，而是在本帧全部轨道求值完成后统一清除。
-- **EventClip 去重状态每帧被重置**：`SequencePlayer::setSequenceRef()` 仅在 Sequence 引用变化时清空事件哈希。
+- **窗口 resize 后模型消失**：Swapchain 重建不再销毁 MaterialManager 或 ModelEntity GPU buffer，也不再重新加载单个默认模型；逐 image fence 归属与 ImGui/PiP descriptor 随新交换链重建。
+- **Animator Trigger seek 错位**：不再把目标时刻最终参数从 0 秒提前应用；Setter/Trigger 按关键帧时间顺序输入本地状态机，Trigger 判断后立即清除。
 
 **实时预览机制**：
 - Application 维护 `sequencerPreviewPending_` 标志
@@ -727,8 +730,9 @@ ModelEntity(s)
 AnimatorController (per ModelEntity)
   │
   ├── dt + parameters ──→ state/transition evaluation
-  ├── BlendCommand ─────→ clipA/timeA + clipB/timeB + weight
-  ├── per-bone TRS ─────→ mix(T/S) + slerp(R)
+  ├── State Motion ─────→ SingleClip / BlendSpace1D (up to 2 samples)
+  ├── BlendCommand ─────→ poseA + poseB + transition weight
+  ├── per-bone TRS ─────→ inner BlendSpace mix → outer State cross-fade
   └── final matrices ───→ per-skin palette → BoneMatricesUBO (binding=6)
 
 Box Instances
@@ -1001,11 +1005,11 @@ TINYOBJLOADER_IMPLEMENTATION # tinyobjloader 实现编译
 | 动画资产序列化 | 已完成 | Phase A5：AnimationAssetLoader (.ast Header + .anim.bin 二进制) + 懒生成 + 启动恢复 + clip 元数据事务式重命名 |
 | Mixamo 无蒙皮动画 FBX 导入 | 已完成 | FbxImporter::loadAnimationOnly 将 scene 节点推断为骨骼树；AnimationRetargeter 按名称映射重定向到目标 Mesh 骨架；Application::importAnimationFbx 完成动画重定向持久化；Content Browser Import Anim... + Mesh 选择弹窗 UI |
 | 共享 GPU buffer 缓存 | 已完成 | SceneManager.modelResourceCache_ 共享 vertex/index buffer + animation state，重复拖拽不暴涨 |
-| 动画状态机 | 已完成（Phase B1-B5 + B5-7/8/9） | 参数/状态/过渡/Trigger/exit time + 逐骨骼 TRS cross-fade（B1-B2）；BlendCurve ease 曲线（B3）；.animctrl.json 序列化、兼容资产筛选与新建/保存（B4）；ImGui 动画总控面板 + 拖拽创建 state + 预览/重命名 + 事件驱动系统（B5）；实时编辑优化：去掉了 Apply State/Transition 按钮，属性直接写入状态机，Condition 从手打改为带类型感知的下拉选择（B5-7）；Root Motion 支持：per-state 三种模式（None/Locked/Follow），根骨骼可配置（B5-8）；Animator Preview Mode 开关：ON 状态机驱动，OFF Sequencer 驱动（B5-9） |
+| 动画状态机 | 已完成（Phase B1-B6） | 参数/状态/过渡/Trigger/exit time + 两层 TRS cross-fade；显式 Forward/Reverse + Play Rate；SingleClip/BlendSpace1D State Motion；version 2 Controller 与 v1 负 speed 迁移；BlendSpace/Transition Root Motion delta 混合；Animator 编辑器、Clip/参数重命名和 Sequencer 确定性求值兼容 |
 | 蒙皮模型 GPU 拾取 | 已完成 | skinned pick pipeline 复用材质 bone UBO，按 submesh/当前动画姿势写入 Entity ID |
 | 重复蒙皮模型独立动画状态 | 已完成 | Controller 逐实体独立；SkinBinding 将 bone UBO/descriptor 从 MaterialId 中解耦，并按实体/材质/skinIndex 分配，主视口、PiP、Pick 三条路径一致使用 |
 | 多 .anim.ast 合并加载 | **已修复** | 2026-07-02：根因是 `loadAndApplyMaterialAsset` 传入的 `astRelPath` 可能是 `.material.ast` 路径，不含 `animations` 数组。修复：(1) `ensureAnimationAssetForMeshAst` 增加回退逻辑；(2) `loadAndApplyMaterialAsset` 中记录实体 `astRelPath` 供回退使用。<br>2026-07-13：修复同名 clip 跨文件问题，加载时自动 `_1`、`_2` 后缀去重。|
-| Sequencer | 已完成（Phase C1-C7） | C1 数据结构 + C2 播放控制器 + C3 相机路径 + C4 TransformTween(已废弃)/Keyframe + C5 序列化 + C6 ImGui 双列时间轴编辑器 + C7 AnimatorKeyframe 轨道。支持递归 Sequence 资产选择、原子加载、稳定目标元数据、重启后自动重绑定、歧义手动重绑定和 Target Missing 状态 |
+| Sequencer | 已完成（Phase C1-C7） | AnimatorKeyframe 是唯一状态机驱动入口；支持确定性 Setter/Trigger 时间流、点击/连续拖动 seek、显式 Group 父轨道、旧 Event/AnimationClip 禁用兼容、递归资产选择、原子加载、稳定目标重绑定和 Target Missing 状态 |
 | Content Browser 离屏缩略图 | **修复中** | 使用离屏渲染（128×128）生成 mesh 缩略图，当前三个待修复问题：<br>1. **材质未显示**：glTF 材质已加载但渲染结果仍偏灰；OBJ/FBX 无 .ast 路径全用默认材质 — 需排查 UBO 更新或 descriptor set 绑定时机<br>2. **相机角度错误**：当前从 (1,1,1) 方向观察，用户反馈方向是反的，需调整摄像机朝向<br>3. **Remy skinned 模型全灰**：FBX 带动画蒙皮模型渲染结果为纯色，非蒙皮 pipeline 未正确处理其顶点数据 |
 | Sequencer Camera + PiP | 已完成 | SequencerCamera 独立保存 position/orientation/fov，场景中可添加可视化 Camera Actor 并通过 PiP 预览；New Camera 直接复制主摄像机当前 Transform。历史 PiP、坐标约定、模型朝向与 Gizmo 问题均已修复，详见 §16 |
 | 资产系统扩充 | 待实现 | Phase D1-D3：AnimationAssetRegistry 资产注册、.ast 文件扩展（animationAssetPath/animControllerPath）、ImGui Assets 浏览器面板（TabBar 重构） |

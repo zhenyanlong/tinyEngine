@@ -31,6 +31,12 @@ public:
     };
 
     struct ModelEntity {
+        struct RootMotionClipHistory {
+            float sampleTime = 0.f;
+            glm::vec3 translation{0.f};
+            glm::quat rotation{1.f, 0.f, 0.f, 0.f};
+        };
+
         enum class Type { Mesh, Camera };
         Type type = Type::Mesh;
         
@@ -83,6 +89,7 @@ public:
         glm::vec3 prevRootTranslation{0.f};
         glm::quat prevRootRotation{1.f, 0.f, 0.f, 0.f};
         bool      rootMotionInitialized = false;
+        std::unordered_map<std::string, RootMotionClipHistory> rootMotionClipHistory;
 
         // ── Camera 专属字段（仅 type == Camera 时有效） ─────────────────────
         SequencerCamera cameraData;

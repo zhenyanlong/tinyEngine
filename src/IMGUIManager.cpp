@@ -46,11 +46,102 @@ bool isControllerCompatibleWithClips(const std::filesystem::path& path,
     if (!candidate.loadFromFile(path.string())) return false;
 
     for (const auto& state : candidate.states()) {
-        if (state.clipName.empty()) return false;
-        const auto match = std::find_if(clips.begin(), clips.end(), [&](const AnimationClip& clip) {
-            return clip.name == state.clipName;
-        });
-        if (match == clips.end()) return false;
+        auto clipExists = [&](const std::string& clipName) {
+            return !clipName.empty()
+                && std::any_of(clips.begin(), clips.end(), [&](const AnimationClip& clip) {
+                    return clip.name == clipName;
+                });
+        };
+        if (state.motionType == StateMotionType::BlendSpace1D) {
+            if (state.blendSamples.empty()) return false;
+            const bool hasFloatParameter = std::any_of(
+                candidate.params().begin(), candidate.params().end(),
+                [&](const AnimatorParam& param) {
+                    return param.name == state.blendParameter
+                        && param.type == AnimatorParam::Type::Float;
+                });
+            if (!hasFloatParameter) return false;
+            std::vector<float> positions;
+            for (const auto& sample : state.blendSamples) {
+                if (!clipExists(sample.clipName)) return false;
+                if (!std::isfinite(sample.position)) return false;
+                positions.push_back(sample.position);
+            }
+            std::sort(positions.begin(), positions.end());
+            for (size_t i = 1; i < positions.size(); ++i) {
+                if (std::abs(positions[i] - positions[i - 1]) <= 1e-5f)
+                    return false;
+            }
+        } else if (!clipExists(state.clipName)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool validateAnimatorController(const AnimatorController& controller,
+                                const std::vector<AnimationClip>& clips,
+                                std::string& error)
+{
+    auto clipExists = [&](const std::string& clipName) {
+        return !clipName.empty()
+            && std::any_of(clips.begin(), clips.end(), [&](const AnimationClip& clip) {
+                return clip.name == clipName;
+            });
+    };
+    auto floatParamExists = [&](const std::string& name) {
+        return std::any_of(
+            controller.params().begin(), controller.params().end(),
+            [&](const AnimatorParam& param) {
+                return param.name == name && param.type == AnimatorParam::Type::Float;
+            });
+    };
+
+    std::set<std::string> stateNames;
+    for (const auto& state : controller.states()) {
+        if (state.name.empty() || !stateNames.insert(state.name).second) {
+            error = "State names must be non-empty and unique";
+            return false;
+        }
+        if (!std::isfinite(state.playRate) || state.playRate < 0.f) {
+            error = "State '" + state.name + "' has an invalid play rate";
+            return false;
+        }
+        if (state.motionType == StateMotionType::SingleClip) {
+            if (!clipExists(state.clipName)) {
+                error = "State '" + state.name + "' references a missing clip";
+                return false;
+            }
+            continue;
+        }
+
+        if (!floatParamExists(state.blendParameter)) {
+            error = "BlendSpace state '" + state.name
+                  + "' requires an existing Float parameter";
+            return false;
+        }
+        if (state.blendSamples.empty()) {
+            error = "BlendSpace state '" + state.name + "' has no samples";
+            return false;
+        }
+        std::vector<float> positions;
+        positions.reserve(state.blendSamples.size());
+        for (const auto& sample : state.blendSamples) {
+            if (!clipExists(sample.clipName) || !std::isfinite(sample.position)) {
+                error = "BlendSpace state '" + state.name
+                      + "' has an invalid sample";
+                return false;
+            }
+            positions.push_back(sample.position);
+        }
+        std::sort(positions.begin(), positions.end());
+        for (size_t i = 1; i < positions.size(); ++i) {
+            if (std::abs(positions[i] - positions[i - 1]) <= 1e-5f) {
+                error = "BlendSpace state '" + state.name
+                      + "' has duplicate sample positions";
+                return false;
+            }
+        }
     }
     return true;
 }
@@ -262,7 +353,21 @@ void UIManager::reloadImGuiVulkanAfterSwapchainRecreate(Application* app)
 {
 	vulkanRender = app;
 	ImGui_ImplVulkan_Shutdown();
+	// ImGui Vulkan 后端拥有这些 ImTextureID 对应的 descriptor set。
+	// 后端重建后旧 ID 全部失效；清空缓存并按需重新注册，避免 resize 后使用悬空 descriptor。
+	if (thumbIconSampler_ != VK_NULL_HANDLE) {
+		vkDestroySampler(Device, thumbIconSampler_, nullptr);
+		thumbIconSampler_ = VK_NULL_HANDLE;
+	}
+	for (const auto& [assetId, sampler] : thumbSamplers_) {
+		if (sampler != VK_NULL_HANDLE)
+			vkDestroySampler(Device, sampler, nullptr);
+	}
+	thumbnailIcon_ = (ImTextureID)0;
+	thumbCache_.clear();
+	thumbSamplers_.clear();
 	initImGuiVulkanBackend();
+	loadThumbnailIcon();
 }
 
 /** @brief 见 IMGUIManager.hpp：保存 Instance 与分配器供后续 Init */
@@ -1336,7 +1441,9 @@ void UIManager::drawSequencerPanel()
     auto& seqPlayer = vulkanRender->getSequencePlayer();
     Sequence& sequence = vulkanRender->getCurrentSequence();
 
-    const double totalDuration = sequence.computeTotalDuration();
+    const double totalDuration = sequence.totalDuration > 0.0
+        ? sequence.totalDuration
+        : sequence.computeTotalDuration();
     const double currentTime = seqPlayer.currentTime();
 
     static int selectedTrackIdx = -1;
@@ -1480,7 +1587,6 @@ void UIManager::drawSequencerPanel()
                 selectedKeyframeIdx_ = -1;
                 sequencerEditTime_ = 0.0;
                 sequencerEditTimeSet_ = false;
-                seekTime_ = -1.0;
                 seqTimelineScrollY_ = 0.f;
                 loopPlayback = false;
                 sequenceRebindTrackIndices_ = std::move(bindingReport.unresolvedTrackIndices);
@@ -1599,10 +1705,7 @@ void UIManager::drawSequencerPanel()
     };
     auto isParentTrack = [&](int ti) -> bool {
         const auto& track = sequence.tracks[ti];
-        bool empty = track.animClips.empty() && track.cameraPathClips.empty()
-            && track.tweenClips.empty() && track.eventClips.empty()
-            && track.keyframeTrack.keyframes.empty() && track.animatorTrack.keyframes.empty();
-        return empty && !isSubTrack(ti);
+        return track.type == TrackType::Group;
     };
     auto getRowHeight = [&](int ti) -> float {
         return isParentTrack(ti) ? trackHeight * 0.5f : trackHeight;
@@ -1645,7 +1748,8 @@ void UIManager::drawSequencerPanel()
             bool selected = (ti == selectedTrackIdx);
             float rowH = getRowHeight(ti);
 
-            ImVec4 trackColor = (track.type == TrackType::AnimationClip) ? ImVec4(0.3f, 0.6f, 0.9f, 1.0f) :
+            ImVec4 trackColor = (track.type == TrackType::Group) ? ImVec4(0.65f, 0.65f, 0.65f, 1.0f) :
+                                (track.type == TrackType::AnimationClip) ? ImVec4(0.3f, 0.6f, 0.9f, 1.0f) :
                                 (track.type == TrackType::CameraPath) ? ImVec4(0.9f, 0.6f, 0.3f, 1.0f) :
                                 (track.type == TrackType::TransformTween) ? ImVec4(0.4f, 0.4f, 0.4f, 1.0f) :
                                 (track.type == TrackType::TransformKeyframe) ? ImVec4(0.9f, 0.9f, 0.3f, 1.0f) :
@@ -1730,19 +1834,18 @@ void UIManager::drawSequencerPanel()
             drawList->AddLine(ImVec2(editX, rowPos.y), ImVec2(editX, rowPos.y + rulerSpan), IM_COL32(255, 255, 0, 200), 1.0f);
         }
 
-        // 刻度尺点击区域
+        // 刻度尺拖动区域：激活后即使鼠标离开 ruler 仍由 ImGui 保持捕获。
         ImGui::InvisibleButton("##timelineRuler", ImVec2(timelineWidth, timelineHeight));
-        if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(0)) {
+        if (ImGui::IsItemActivated() && seqPlayer.isPlaying())
+            seqPlayer.pause();
+        if (ImGui::IsItemActive() && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
             float mouseX = ImGui::GetMousePos().x - contentOriginX;
-            double clickedTime = mouseX / pixelsPerSecond;
-            if (clickedTime >= 0.0) {
-                sequencerEditTime_ = clickedTime;
-                sequencerEditTimeSet_ = true;
-                if (!seqPlayer.isPlaying()) {
-                    seqPlayer.seek(sequencerEditTime_);
-                    vulkanRender->requestSequencerPreview();
-                }
-            }
+            const double dragTime = mouseX / pixelsPerSecond;
+            sequencerEditTime_ = std::clamp(dragTime, 0.0, std::max(totalDuration, 0.0));
+            sequencerEditTimeSet_ = true;
+            seqPlayer.seek(sequencerEditTime_);
+            vulkanRender->requestSequencerPreview();
         }
     }
 
@@ -1781,7 +1884,8 @@ void UIManager::drawSequencerPanel()
         ImGui::Dummy(ImVec2(timelineWidth, rowH));
         rowCursorY += rowH;
 
-        ImVec4 clipColor = (track.type == TrackType::AnimationClip) ? ImVec4(0.3f, 0.6f, 0.9f, 0.8f) :
+        ImVec4 clipColor = (track.type == TrackType::Group) ? ImVec4(0.5f, 0.5f, 0.5f, 0.8f) :
+                           (track.type == TrackType::AnimationClip) ? ImVec4(0.3f, 0.6f, 0.9f, 0.8f) :
                            (track.type == TrackType::CameraPath) ? ImVec4(0.9f, 0.6f, 0.3f, 0.8f) :
                            (track.type == TrackType::TransformTween) ? ImVec4(0.4f, 0.4f, 0.4f, 0.8f) :
                            (track.type == TrackType::TransformKeyframe) ? ImVec4(0.9f, 0.9f, 0.3f, 0.8f) :
@@ -1957,7 +2061,7 @@ void UIManager::drawSequencerPanel()
             // 父轨道：仅用作分组标签，不可编辑
             SequenceTrack parentTrack;
             parentTrack.name = entityName;
-            parentTrack.type = TrackType::AnimationClip;  // 占位，不渲染 clip
+            parentTrack.type = TrackType::Group;
             sequence.tracks.push_back(std::move(parentTrack));
 
             // Transform 子轨道
@@ -2061,18 +2165,37 @@ void UIManager::drawSequencerPanel()
         if (ImGui::InputText("##trackNameEdit", trackNameBuf, sizeof(trackNameBuf)))
             track.name = trackNameBuf;
 
-        const char* typeNames[] = { "AnimationClip", "CameraPath", "TransformTween (Deprecated)", "TransformKeyframe", "AnimatorKeyframe", "Event" };
-        int typeIdx = static_cast<int>(track.type);
+        const TrackType supportedTypes[] = {
+            TrackType::Group, TrackType::CameraPath, TrackType::TransformTween,
+            TrackType::TransformKeyframe, TrackType::AnimatorKeyframe
+        };
+        const char* typeNames[] = {
+            "Group", "CameraPath", "TransformTween (Deprecated)",
+            "TransformKeyframe", "AnimatorKeyframe"
+        };
+        int typeIdx = -1;
+        for (int i = 0; i < IM_ARRAYSIZE(supportedTypes); ++i) {
+            if (track.type == supportedTypes[i]) { typeIdx = i; break; }
+        }
         ImGui::SameLine();
         ImGui::SetNextItemWidth(120);
-        if (ImGui::Combo("Type", &typeIdx, typeNames, IM_ARRAYSIZE(typeNames))) {
-            SequenceTrack newTrack;
-            newTrack.name = track.name;
-            newTrack.type = static_cast<TrackType>(typeIdx);
-            sequence.tracks[selectedTrackIdx] = std::move(newTrack);
-            selectedClipIdx = -1;
-            selectedClipType = -1;
+        const char* typePreview = typeIdx >= 0 ? typeNames[typeIdx] : "Legacy (Disabled)";
+        if (ImGui::BeginCombo("Type", typePreview)) {
+            for (int i = 0; i < IM_ARRAYSIZE(supportedTypes); ++i) {
+                if (ImGui::Selectable(typeNames[i], typeIdx == i)) {
+                    SequenceTrack newTrack;
+                    newTrack.name = track.name;
+                    newTrack.type = supportedTypes[i];
+                    sequence.tracks[selectedTrackIdx] = std::move(newTrack);
+                    selectedClipIdx = -1;
+                    selectedClipType = -1;
+                    typeIdx = i;
+                }
+            }
+            ImGui::EndCombo();
         }
+        if (track.type == TrackType::AnimationClip || track.type == TrackType::Event)
+            ImGui::TextDisabled("Legacy track retained for compatibility; runtime evaluation is disabled.");
 
         ImGui::Separator();
 
@@ -2495,7 +2618,7 @@ void UIManager::drawSequencerPanel()
             ImGui::TextDisabled("Select a clip to edit properties");
         }
 
-        if (track.type != TrackType::TransformKeyframe) {
+        if (track.type == TrackType::CameraPath || track.type == TrackType::TransformTween) {
             ImGui::Separator();
             ImGui::Text("Add Clip");
 
@@ -2551,7 +2674,7 @@ void UIManager::drawSequencerPanel()
     if (ImGui::Button("Add Track##addTrack")) {
         SequenceTrack newTrack;
         newTrack.name = "Track" + std::to_string(sequence.tracks.size() + 1);
-        newTrack.type = TrackType::AnimationClip;
+        newTrack.type = TrackType::Group;
         sequence.tracks.push_back(std::move(newTrack));
     }
     ImGui::SameLine();
@@ -2727,8 +2850,13 @@ void UIManager::drawAnimatorPanel()
             });
         bool renamedGeneratedState = false;
         for (auto& state : statesForRename) {
-            const bool generatedState = state.name == oldName && state.clipName == oldName;
+            const bool generatedState =
+                state.motionType == StateMotionType::SingleClip
+                && state.name == oldName && state.clipName == oldName;
             if (state.clipName == oldName) state.clipName = newName;
+            for (auto& sample : state.blendSamples) {
+                if (sample.clipName == oldName) sample.clipName = newName;
+            }
             if (generatedState && newStateNameAvailable) {
                 state.name = newName;
                 renamedGeneratedState = true;
@@ -2845,13 +2973,19 @@ void UIManager::drawAnimatorPanel()
             if (ent->animatorControllerPath.empty()) {
                 snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
                          "Use New AnimController before saving");
-            } else if (ctrl.saveToFile(ent->animatorControllerPath)) {
-                animatorControllerAssetsDirty_ = true;
-                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_), "Saved: %s",
-                         std::filesystem::path(ent->animatorControllerPath).filename().string().c_str());
             } else {
-                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_), "Save failed: %s",
-                         ent->animatorControllerPath.c_str());
+                std::string validationError;
+                if (!validateAnimatorController(ctrl, clips, validationError)) {
+                    snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                             "Save blocked: %s", validationError.c_str());
+                } else if (ctrl.saveToFile(ent->animatorControllerPath)) {
+                    animatorControllerAssetsDirty_ = true;
+                    snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_), "Saved: %s",
+                             std::filesystem::path(ent->animatorControllerPath).filename().string().c_str());
+                } else {
+                    snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_), "Save failed: %s",
+                             ent->animatorControllerPath.c_str());
+                }
             }
         }
         ImGui::SameLine();
@@ -3257,15 +3391,167 @@ void UIManager::drawAnimatorPanel()
         snprintf(nameBuf, sizeof(nameBuf), "Name: %s", s.name.c_str());
         ImGui::TextUnformatted(nameBuf);
 
-        char clipNameBuf[256];
-        snprintf(clipNameBuf, sizeof(clipNameBuf), "%s", s.clipName.c_str());
-        ImGui::SetNextItemWidth(200);
-        if (ImGui::InputText("Clip Name##stateClipName", clipNameBuf, sizeof(clipNameBuf))) {
-            s.clipName = clipNameBuf;
+        const char* motionNames[] = { "Single Clip", "Blend Space 1D" };
+        int motionIndex = static_cast<int>(s.motionType);
+        if (ImGui::Combo("Motion Type##stateMotion", &motionIndex,
+                         motionNames, IM_ARRAYSIZE(motionNames))) {
+            s.motionType = static_cast<StateMotionType>(motionIndex);
         }
 
-        ImGui::DragFloat("Speed##stateSpeed", &s.speed, 0.01f, 0.f, 10.f, "%.2f");
+        const char* directionNames[] = { "Forward", "Reverse" };
+        int directionIndex = static_cast<int>(s.direction);
+        if (ImGui::Combo("Direction##stateDirection", &directionIndex,
+                         directionNames, IM_ARRAYSIZE(directionNames))) {
+            s.direction = static_cast<PlaybackDirection>(directionIndex);
+        }
+        ImGui::DragFloat("Play Rate##statePlayRate", &s.playRate,
+                         0.01f, 0.f, 10.f, "%.2f");
         ImGui::Checkbox("Loop##stateLoop", &s.loop);
+
+        if (s.motionType == StateMotionType::SingleClip) {
+            const char* preview = s.clipName.empty() ? "(select clip)" : s.clipName.c_str();
+            if (ImGui::BeginCombo("Clip##stateClip", preview)) {
+                for (const auto& clip : clips) {
+                    const bool selected = clip.name == s.clipName;
+                    if (ImGui::Selectable(clip.name.c_str(), selected))
+                        s.clipName = clip.name;
+                    if (selected) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+        } else {
+            const char* parameterPreview = s.blendParameter.empty()
+                ? "(select Float parameter)"
+                : s.blendParameter.c_str();
+            if (ImGui::BeginCombo("Blend Parameter##blendParam", parameterPreview)) {
+                for (const auto& param : ctrl.params()) {
+                    if (param.type != AnimatorParam::Type::Float) continue;
+                    const bool selected = param.name == s.blendParameter;
+                    if (ImGui::Selectable(param.name.c_str(), selected))
+                        s.blendParameter = param.name;
+                    if (selected) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+
+            ImGui::TextUnformatted("Samples");
+            int sampleToDelete = -1;
+            for (int sampleIndex = 0;
+                 sampleIndex < static_cast<int>(s.blendSamples.size());
+                 ++sampleIndex) {
+                auto& sample = s.blendSamples[sampleIndex];
+                ImGui::PushID(sampleIndex);
+                ImGui::SetNextItemWidth(150.f);
+                const char* samplePreview = sample.clipName.empty()
+                    ? "(select clip)"
+                    : sample.clipName.c_str();
+                if (ImGui::BeginCombo("##blendClip", samplePreview)) {
+                    for (const auto& clip : clips) {
+                        const bool selected = clip.name == sample.clipName;
+                        if (ImGui::Selectable(clip.name.c_str(), selected))
+                            sample.clipName = clip.name;
+                        if (selected) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(90.f);
+                ImGui::DragFloat("##blendPosition", &sample.position,
+                                 0.01f, -1000.f, 1000.f, "%.3f");
+                ImGui::SameLine();
+                if (ImGui::SmallButton("X")) sampleToDelete = sampleIndex;
+                ImGui::PopID();
+            }
+            if (sampleToDelete >= 0) {
+                s.blendSamples.erase(s.blendSamples.begin() + sampleToDelete);
+            }
+            if (ImGui::Button("+ Add Sample")) {
+                BlendSpace1DSample sample;
+                if (!clips.empty()) sample.clipName = clips.front().name;
+                sample.position = s.blendSamples.empty()
+                    ? 0.f
+                    : s.blendSamples.back().position + 1.f;
+                s.blendSamples.push_back(std::move(sample));
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Sort Samples")) {
+                std::stable_sort(
+                    s.blendSamples.begin(), s.blendSamples.end(),
+                    [](const BlendSpace1DSample& a, const BlendSpace1DSample& b) {
+                        return a.position < b.position;
+                    });
+            }
+
+            bool duplicatePosition = false;
+            auto sortedSamples = s.blendSamples;
+            std::stable_sort(
+                sortedSamples.begin(), sortedSamples.end(),
+                [](const BlendSpace1DSample& a, const BlendSpace1DSample& b) {
+                    return a.position < b.position;
+                });
+            for (size_t i = 1; i < sortedSamples.size(); ++i) {
+                if (std::abs(sortedSamples[i].position
+                             - sortedSamples[i - 1].position) <= 1e-5f) {
+                    duplicatePosition = true;
+                    break;
+                }
+            }
+
+            if (!sortedSamples.empty()) {
+                float minPosition = sortedSamples.front().position;
+                float maxPosition = sortedSamples.back().position;
+                if (std::abs(maxPosition - minPosition) <= 1e-5f) {
+                    minPosition -= 0.5f;
+                    maxPosition += 0.5f;
+                }
+                float axisValue = 0.f;
+                for (const auto& param : ctrl.params()) {
+                    if (param.type == AnimatorParam::Type::Float
+                        && param.name == s.blendParameter) {
+                        axisValue = param.value.f;
+                        break;
+                    }
+                }
+
+                const ImVec2 canvasPos = ImGui::GetCursorScreenPos();
+                const ImVec2 canvasSize(
+                    std::max(120.f, ImGui::GetContentRegionAvail().x), 34.f);
+                ImGui::InvisibleButton("##blendSpacePreview", canvasSize);
+                ImDrawList* drawList = ImGui::GetWindowDrawList();
+                const float left = canvasPos.x + 8.f;
+                const float right = canvasPos.x + canvasSize.x - 8.f;
+                const float centerY = canvasPos.y + 17.f;
+                drawList->AddLine(
+                    ImVec2(left, centerY), ImVec2(right, centerY),
+                    IM_COL32(150, 150, 150, 255), 2.f);
+                auto positionToX = [&](float value) {
+                    const float alpha = std::clamp(
+                        (value - minPosition) / (maxPosition - minPosition),
+                        0.f, 1.f);
+                    return left + (right - left) * alpha;
+                };
+                for (const auto& sample : sortedSamples) {
+                    const float x = positionToX(sample.position);
+                    drawList->AddLine(
+                        ImVec2(x, centerY - 7.f), ImVec2(x, centerY + 7.f),
+                        IM_COL32(110, 190, 255, 255), 2.f);
+                }
+                const float markerX = positionToX(axisValue);
+                drawList->AddCircleFilled(
+                    ImVec2(markerX, centerY), 4.f,
+                    IM_COL32(255, 210, 70, 255));
+            }
+
+            if (s.blendParameter.empty())
+                ImGui::TextColored(ImVec4(1.f, 0.4f, 0.3f, 1.f),
+                                   "BlendSpace requires a Float parameter.");
+            if (s.blendSamples.empty())
+                ImGui::TextColored(ImVec4(1.f, 0.4f, 0.3f, 1.f),
+                                   "BlendSpace requires at least one sample.");
+            if (duplicatePosition)
+                ImGui::TextColored(ImVec4(1.f, 0.4f, 0.3f, 1.f),
+                                   "Sample positions must be unique.");
+        }
 
         ImGui::Separator();
         ImGui::Text("Root Motion");
@@ -3345,8 +3631,28 @@ void UIManager::drawAnimatorPanel()
             char nameBuf[128];
             snprintf(nameBuf, sizeof(nameBuf), "%s", p.name.c_str());
             ImGui::SetNextItemWidth(100);
-            if (ImGui::InputText("##paramName", nameBuf, sizeof(nameBuf)))
-                p.name = nameBuf;
+            if (ImGui::InputText("##paramName", nameBuf, sizeof(nameBuf))) {
+                const std::string oldName = p.name;
+                const std::string newName = nameBuf;
+                if (!newName.empty() && oldName != newName) {
+                    if (ctrl.renameParameter(oldName, newName)) {
+                        auto& sequence = vulkanRender->getCurrentSequence();
+                        for (auto& track : sequence.tracks) {
+                            if (track.type != TrackType::AnimatorKeyframe
+                                || track.animatorTrack.targetEntityId != ent->entityId) {
+                                continue;
+                            }
+                            for (auto& keyframe : track.animatorTrack.keyframes) {
+                                for (auto& event : keyframe.events) {
+                                    if (event.paramName == oldName)
+                                        event.paramName = newName;
+                                }
+                            }
+                        }
+                        vulkanRender->requestSequencerPreview();
+                    }
+                }
+            }
 
             ImGui::SameLine();
             switch (p.type) {
@@ -3381,9 +3687,52 @@ void UIManager::drawAnimatorPanel()
             ImGui::PopID();
         }
         if (paramDel >= 0) {
-            auto np = ctrl.params();
-            np.erase(np.begin() + paramDel);
-            ctrl.configure(ctrl.states(), ctrl.transitions(), std::move(np), ctrl.currentStateName());
+            const std::string deletedName = ctrl.params()[paramDel].name;
+            bool referenced = std::any_of(
+                ctrl.states().begin(), ctrl.states().end(),
+                [&](const AnimatorState& state) {
+                    return state.motionType == StateMotionType::BlendSpace1D
+                        && state.blendParameter == deletedName;
+                });
+            if (!referenced) {
+                referenced = std::any_of(
+                    ctrl.transitions().begin(), ctrl.transitions().end(),
+                    [&](const AnimatorTransition& transition) {
+                        return std::any_of(
+                            transition.conditions.begin(), transition.conditions.end(),
+                            [&](const TransitionCondition& condition) {
+                                return condition.paramName == deletedName;
+                            });
+                    });
+            }
+            if (!referenced) {
+                for (const auto& track : vulkanRender->getCurrentSequence().tracks) {
+                    if (track.type != TrackType::AnimatorKeyframe
+                        || track.animatorTrack.targetEntityId != ent->entityId) {
+                        continue;
+                    }
+                    for (const auto& keyframe : track.animatorTrack.keyframes) {
+                        referenced = std::any_of(
+                            keyframe.events.begin(), keyframe.events.end(),
+                            [&](const AnimatorParamEvent& event) {
+                                return event.paramName == deletedName;
+                            });
+                        if (referenced) break;
+                    }
+                    if (referenced) break;
+                }
+            }
+
+            if (referenced) {
+                snprintf(animatorStatusMsg_, sizeof(animatorStatusMsg_),
+                         "Parameter '%s' is still referenced and cannot be deleted",
+                         deletedName.c_str());
+            } else {
+                auto np = ctrl.params();
+                np.erase(np.begin() + paramDel);
+                ctrl.configure(ctrl.states(), ctrl.transitions(),
+                               std::move(np), ctrl.currentStateName());
+            }
         }
     }
 

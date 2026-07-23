@@ -2,6 +2,7 @@
 
 #include "AnimationClip.hpp"
 
+#include <array>
 #include <string>
 #include <vector>
 
@@ -34,11 +35,33 @@ struct AnimatorParam {
     bool checkCondition(const TransitionCondition& condition) const;
 };
 
+/** @brief 状态的播放方向。播放进度始终正向累积，方向只影响采样时间映射。 */
+enum class PlaybackDirection {
+    Forward,
+    Reverse
+};
+
+/** @brief 状态使用的运动类型。 */
+enum class StateMotionType {
+    SingleClip,
+    BlendSpace1D
+};
+
+/** @brief BlendSpace1D 中的一个动画采样点。 */
+struct BlendSpace1DSample {
+    std::string clipName;
+    float position = 0.f;
+};
+
 /** @brief 单个动画状态。 */
 struct AnimatorState {
     std::string name;
+    StateMotionType motionType = StateMotionType::SingleClip;
     std::string clipName;
-    float speed = 1.f;
+    std::string blendParameter;
+    std::vector<BlendSpace1DSample> blendSamples;
+    float playRate = 1.f;
+    PlaybackDirection direction = PlaybackDirection::Forward;
     bool loop = true;
 
     // ── Root Motion ──
@@ -87,15 +110,47 @@ struct AnimatorEvent {
     bool boolValue = false;
 };
 
+/**
+ * @brief Sequencer 在一个确定时间点提供给 Animator 的输入快照。
+ *
+ * params 只包含该时间点已有关键帧覆盖的持续参数；未出现的参数继续使用
+ * AnimatorController 默认值。triggers 是只在该采样点有效一次的脉冲。
+ */
+struct AnimatorTimelineSample {
+    float time = 0.f;
+    std::vector<AnimatorParam> params;
+    std::vector<std::string> triggers;
+};
+
 /** @brief 驱动动画状态、过渡条件和交叉淡入淡出的运行时控制器。 */
 class AnimatorController {
 public:
+    /** @brief State Motion 中一个实际参与求值的动画片段。 */
+    struct ClipPoseSample {
+        const AnimationClip* clip = nullptr;
+        float sampleTime = 0.f;
+        float weight = 1.f;
+    };
+
+    /** @brief 一个 State 内部解析后的姿势指令，BlendSpace1D 最多包含两个片段。 */
+    struct StatePoseCommand {
+        const AnimatorState* state = nullptr;
+        std::array<ClipPoseSample, 2> samples{};
+        uint32_t sampleCount = 0;
+    };
+
+    /**
+     * @brief Animator 最终输出的两层姿势指令。
+     *
+     * poseA/poseB 分别表示当前和目标 State 的内部 SingleClip/BlendSpace 姿势，
+     * blendWeight 再表示两个 State 之间的交叉淡入淡出权重。
+     */
     struct BlendCommand {
-        const AnimationClip* clipA = nullptr;
-        const AnimationClip* clipB = nullptr;
+        const AnimatorState* stateA = nullptr;
+        const AnimatorState* stateB = nullptr;
+        StatePoseCommand poseA;
+        StatePoseCommand poseB;
         float blendWeight = 0.f;
-        float timeA = 0.f;
-        float timeB = 0.f;
     };
 
     /** @brief 配置状态机定义，并重置到默认状态。 */
@@ -131,7 +186,7 @@ public:
      * @brief 纯函数：在指定时间点计算状态机的 BlendCommand，不修改内部状态。
      *
      * 从 initialState 开始，应用给定的参数值，模拟在时间 t 秒内的状态演进，
-     * 返回该时间点的 BlendCommand。不修改 params_ / stateTime_ 等内部成员。
+     * 返回该时间点的 BlendCommand。不修改 params_ / stateProgress_ 等内部成员。
      *
      * @param t          模拟的时间点（秒），从 0 开始
      * @param clips      动画 clip 列表
@@ -143,6 +198,12 @@ public:
                                     const std::vector<AnimationClip>& clips,
                                     const std::vector<AnimatorParam>& paramValues = {},
                                     const std::string& initialState = {}) const;
+
+    /** @brief 按时间顺序应用 Sequencer 输入并纯函数求值状态机。 */
+    BlendCommand computeBlendAtTime(float t,
+                                    const std::vector<AnimationClip>& clips,
+                                    const std::vector<AnimatorTimelineSample>& timeline,
+                                    const std::string& initialState) const;
 
     void reset();
     /** @brief 直接切换到指定 state，跳过 transition。如果 name 不存在则忽略。 */
@@ -157,6 +218,9 @@ public:
     const std::vector<AnimatorParam>& params() const { return params_; }
     const std::string& defaultStateName() const { return defaultState_; }
 
+    /** @brief 将参数及其 Controller 内部引用原子重命名。 */
+    bool renameParameter(const std::string& oldName, const std::string& newName);
+
 private:
     std::vector<AnimatorState> states_;
     std::vector<AnimatorTransition> transitions_;
@@ -165,8 +229,8 @@ private:
     std::string defaultState_;
     std::string currentState_;
     std::string nextState_;
-    float stateTime_ = 0.f;
-    float nextStateTime_ = 0.f;
+    float stateProgress_ = 0.f;
+    float nextStateProgress_ = 0.f;
     float blendT_ = 0.f;
     float activeFadeDuration_ = 0.f;
     BlendCurve activeBlendCurve_ = BlendCurve::SmoothStep;
@@ -175,8 +239,7 @@ private:
     bool checkAllConditions(const AnimatorTransition& transition) const;
     bool exitTimeReached(const AnimatorTransition& transition,
                          const AnimatorState& state,
-                         const AnimationClip* clip,
-                         float previousStateTime) const;
+                         float previousProgress) const;
     void consumeTriggers(const AnimatorTransition& transition);
 
     AnimatorParam* findParam(const std::string& name);
@@ -184,7 +247,17 @@ private:
     const AnimatorState* findState(const std::string& name) const;
     const AnimationClip* findClip(const std::string& clipName,
                                   const std::vector<AnimationClip>& clips) const;
+    StatePoseCommand resolveStatePose(const AnimatorState& state,
+                                      const std::vector<AnimationClip>& clips,
+                                      const std::vector<AnimatorParam>& params,
+                                      float progress) const;
+    float effectiveDuration(const AnimatorState& state,
+                            const std::vector<AnimationClip>& clips,
+                            const std::vector<AnimatorParam>& params,
+                            float progress) const;
+    bool hasValidMotion(const AnimatorState& state,
+                        const std::vector<AnimationClip>& clips) const;
     static float sampleTime(const AnimatorState& state,
                             const AnimationClip* clip,
-                            float stateTime);
+                            float progress);
 };

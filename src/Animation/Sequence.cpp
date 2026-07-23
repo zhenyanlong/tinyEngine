@@ -7,6 +7,8 @@
 
 double SequenceTrack::totalDuration() const
 {
+    if (type == TrackType::Group || type == TrackType::AnimationClip || type == TrackType::Event)
+        return 0.0;
     double maxEnd = 0.0;
     auto endTime = [](const SequenceClipBase& c) { return c.startTime + c.duration; };
 
@@ -123,89 +125,82 @@ AnimatorKeyframeTrack::EvalResult AnimatorKeyframeTrack::evaluate(double t) cons
 {
     EvalResult result;
     result.initialState = initialState;
-    result.evalTime = t;
+    result.evalTime = std::max(0.0, t);
 
-    if (keyframes.empty()) {
-        return result;
-    }
-
-    std::unordered_map<std::string, AnimatorParam> paramMap;
-
+    constexpr double kStep = 0.05;
+    constexpr double kTimeEpsilon = 1e-6;
+    std::vector<double> sampleTimes{0.0, result.evalTime};
+    for (double sampleTime = kStep; sampleTime < result.evalTime; sampleTime += kStep)
+        sampleTimes.push_back(sampleTime);
     for (const auto& kf : keyframes) {
-        if (kf.time > t) break;
+        if (kf.time >= 0.0 && kf.time <= result.evalTime)
+            sampleTimes.push_back(kf.time);
+    }
+    std::sort(sampleTimes.begin(), sampleTimes.end());
+    sampleTimes.erase(std::unique(sampleTimes.begin(), sampleTimes.end(),
+        [](double a, double b) { return std::abs(a - b) <= kTimeEpsilon; }), sampleTimes.end());
 
-        for (const auto& ev : kf.events) {
+    auto findNextMatching = [&](double afterTime, const AnimatorParamEvent& source,
+                                double& nextTime) -> const AnimatorParamEvent* {
+        for (const auto& kf : keyframes) {
+            if (kf.time <= afterTime + kTimeEpsilon) continue;
+            for (const auto& candidate : kf.events) {
+                if (candidate.paramName == source.paramName && candidate.type == source.type) {
+                    nextTime = kf.time;
+                    return &candidate;
+                }
+            }
+        }
+        return nullptr;
+    };
+
+    auto samplePersistentParams = [&](double sampleTime) {
+        struct TimedEventRef { double time = 0.0; const AnimatorParamEvent* event = nullptr; };
+        std::unordered_map<std::string, TimedEventRef> latest;
+        for (const auto& kf : keyframes) {
+            if (kf.time > sampleTime + kTimeEpsilon) break;
+            for (const auto& ev : kf.events) {
+                if (ev.type != AnimatorEvent::Type::SetTrigger && !ev.paramName.empty())
+                    latest[ev.paramName] = TimedEventRef{kf.time, &ev};
+            }
+        }
+
+        std::vector<AnimatorParam> params;
+        params.reserve(latest.size());
+        for (const auto& [name, timed] : latest) {
+            const auto& ev = *timed.event;
             AnimatorParam param;
-            param.name = ev.paramName;
-
+            param.name = name;
             switch (ev.type) {
             case AnimatorEvent::Type::SetFloat: {
                 param.type = AnimatorParam::Type::Float;
-                auto it = paramMap.find(ev.paramName);
-                float prevVal = (it != paramMap.end() && it->second.type == AnimatorParam::Type::Float)
-                                    ? it->second.value.f : 0.f;
-
-                size_t nextKfIdx = 0;
-                for (size_t i = 0; i < keyframes.size(); ++i) {
-                    if (keyframes[i].time > kf.time) { nextKfIdx = i; break; }
-                }
-
-                bool hasInterp = (nextKfIdx > 0 && ev.interp != ParamInterp::Step);
-                float nextVal = ev.floatValue;
-
-                if (hasInterp && nextKfIdx < keyframes.size()) {
-                    const auto& nextKf = keyframes[nextKfIdx];
-                    for (const auto& nextEv : nextKf.events) {
-                        if (nextEv.paramName == ev.paramName && nextEv.type == AnimatorEvent::Type::SetFloat) {
-                            nextVal = nextEv.floatValue;
-                            double span = nextKf.time - kf.time;
-                            if (span > 0.0) {
-                                double localT = (t - kf.time) / span;
-                                localT = applyParamInterpCurve(localT, ev.interp);
-                                param.value.f = static_cast<float>(prevVal + (nextVal - prevVal) * localT);
-                            } else {
-                                param.value.f = ev.floatValue;
-                            }
-                            break;
-                        }
+                param.value.f = ev.floatValue;
+                double nextTime = 0.0;
+                if (ev.interp != ParamInterp::Step) {
+                    if (const auto* next = findNextMatching(timed.time, ev, nextTime)) {
+                        const double span = nextTime - timed.time;
+                        const double alpha = span > kTimeEpsilon
+                            ? applyParamInterpCurve((sampleTime - timed.time) / span, ev.interp)
+                            : 0.0;
+                        param.value.f = static_cast<float>(ev.floatValue
+                            + (next->floatValue - ev.floatValue) * alpha);
                     }
-                } else {
-                    param.value.f = ev.floatValue;
                 }
                 break;
             }
             case AnimatorEvent::Type::SetInt: {
                 param.type = AnimatorParam::Type::Int;
-                auto it = paramMap.find(ev.paramName);
-                int prevVal = (it != paramMap.end() && it->second.type == AnimatorParam::Type::Int)
-                                  ? it->second.value.i : 0;
-
-                size_t nextKfIdx = 0;
-                for (size_t i = 0; i < keyframes.size(); ++i) {
-                    if (keyframes[i].time > kf.time) { nextKfIdx = i; break; }
-                }
-
-                bool hasInterp = (nextKfIdx > 0 && ev.interp != ParamInterp::Step);
-                int nextVal = ev.intValue;
-
-                if (hasInterp && nextKfIdx < keyframes.size()) {
-                    const auto& nextKf = keyframes[nextKfIdx];
-                    for (const auto& nextEv : nextKf.events) {
-                        if (nextEv.paramName == ev.paramName && nextEv.type == AnimatorEvent::Type::SetInt) {
-                            nextVal = nextEv.intValue;
-                            double span = nextKf.time - kf.time;
-                            if (span > 0.0) {
-                                double localT = (t - kf.time) / span;
-                                localT = applyParamInterpCurve(localT, ev.interp);
-                                param.value.i = static_cast<int>(prevVal + (nextVal - prevVal) * localT);
-                            } else {
-                                param.value.i = ev.intValue;
-                            }
-                            break;
-                        }
+                param.value.i = ev.intValue;
+                double nextTime = 0.0;
+                if (ev.interp != ParamInterp::Step) {
+                    if (const auto* next = findNextMatching(timed.time, ev, nextTime)) {
+                        const double span = nextTime - timed.time;
+                        const double alpha = span > kTimeEpsilon
+                            ? applyParamInterpCurve((sampleTime - timed.time) / span, ev.interp)
+                            : 0.0;
+                        param.value.i = static_cast<int>(std::lround(ev.intValue
+                            + (next->intValue - ev.intValue) * alpha));
                     }
-                } else {
-                    param.value.i = ev.intValue;
                 }
                 break;
             }
@@ -214,18 +209,30 @@ AnimatorKeyframeTrack::EvalResult AnimatorKeyframeTrack::evaluate(double t) cons
                 param.value.b = ev.boolValue;
                 break;
             case AnimatorEvent::Type::SetTrigger:
-                param.type = AnimatorParam::Type::Trigger;
-                param.value.b = true;
-                break;
+                continue;
             }
-
-            paramMap[ev.paramName] = param;
+            params.push_back(param);
         }
+        std::sort(params.begin(), params.end(),
+                  [](const AnimatorParam& a, const AnimatorParam& b) { return a.name < b.name; });
+        return params;
+    };
+
+    for (const double sampleTime : sampleTimes) {
+        AnimatorTimelineSample sample;
+        sample.time = static_cast<float>(sampleTime);
+        sample.params = samplePersistentParams(sampleTime);
+        for (const auto& kf : keyframes) {
+            if (std::abs(kf.time - sampleTime) > kTimeEpsilon) continue;
+            for (const auto& ev : kf.events) {
+                if (ev.type == AnimatorEvent::Type::SetTrigger && !ev.paramName.empty())
+                    sample.triggers.push_back(ev.paramName);
+            }
+        }
+        result.timeline.push_back(std::move(sample));
     }
 
-    for (const auto& [name, param] : paramMap) {
-        result.params.push_back(param);
-    }
-
+    if (!result.timeline.empty())
+        result.params = result.timeline.back().params;
     return result;
 }

@@ -4,7 +4,6 @@
 #include "SequenceAssetLoader.hpp"
 
 #include <functional>
-#include <set>
 #include <string>
 #include <vector>
 
@@ -20,12 +19,10 @@ public:
     void seek(double t);
 
     struct FrameCallbacks {
-        std::function<void(double t, const std::string& clipName, double clipOffset, double playSpeed)> onAnimClipEval;
         std::function<void(double t, const std::string& pathAssetRelPath)> onCameraPathEval;
         std::function<void(double t, const TransformTweenClip& clip)> onTransformTweenEval;
         std::function<void(double t, uint64_t entityId, const TransformKeyframeTrack::EvalResult& result)> onTransformKeyframeEval;
         std::function<void(double t, uint64_t entityId, const AnimatorKeyframeTrack::EvalResult& result)> onAnimatorKeyframeEval;
-        std::function<void(const std::string& eventName)> onEvent;
     };
 
     void update(double dt, const FrameCallbacks& cb);
@@ -42,5 +39,4 @@ private:
     double          currentTime_ = 0.0;
     bool            playing_ = false;
     bool            loop_    = false;
-    std::set<size_t> firedEventClipHashes_;
 };
