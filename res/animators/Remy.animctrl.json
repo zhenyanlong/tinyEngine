@@ -1,9 +1,9 @@
 {
-  "defaultState": "Box1",
+  "defaultState": "RealJumpDown",
   "params": [
     {
       "defaultValue": false,
-      "name": "trigger01",
+      "name": "seatdown",
       "type": "Trigger"
     },
     {
@@ -12,24 +12,29 @@
       "type": "Bool"
     },
     {
-      "defaultValue": 0.6000000238418579,
-      "name": "float01",
+      "defaultValue": 0.30000001192092896,
+      "name": "walkspeed",
       "type": "Float"
     },
     {
       "defaultValue": false,
-      "name": "NewBool",
+      "name": "bool0",
       "type": "Bool"
     },
     {
       "defaultValue": false,
-      "name": "NewTrigger",
+      "name": "walk",
+      "type": "Trigger"
+    },
+    {
+      "defaultValue": false,
+      "name": "Idle",
       "type": "Trigger"
     }
   ],
   "states": [
     {
-      "blendParameter": "float01",
+      "blendParameter": "walkspeed",
       "direction": "Reverse",
       "loop": true,
       "motionType": "BlendSpace1D",
@@ -54,6 +59,54 @@
       "motionType": "SingleClip",
       "name": "RealJumpDown",
       "playRate": 1.0,
+      "rootBoneName": "mixamorig:Hips",
+      "rootMotion": "None"
+    },
+    {
+      "blendParameter": "walkspeed",
+      "direction": "Forward",
+      "loop": true,
+      "motionType": "BlendSpace1D",
+      "name": "walk",
+      "playRate": 1.0,
+      "rootBoneName": "mixamorig:Hips",
+      "rootMotion": "Locked",
+      "samples": [
+        {
+          "clipName": "CarefulWalk",
+          "position": 0.0
+        },
+        {
+          "clipName": "Walking",
+          "position": 1.0
+        }
+      ]
+    },
+    {
+      "clipName": "Idle",
+      "direction": "Forward",
+      "loop": true,
+      "motionType": "SingleClip",
+      "name": "Idle",
+      "playRate": 1.0,
+      "rootMotion": "None"
+    },
+    {
+      "clipName": "standup",
+      "direction": "Reverse",
+      "loop": true,
+      "motionType": "SingleClip",
+      "name": "seatdown",
+      "playRate": 1.0,
+      "rootMotion": "None"
+    },
+    {
+      "clipName": "seat idle",
+      "direction": "Forward",
+      "loop": true,
+      "motionType": "SingleClip",
+      "name": "seat idle",
+      "playRate": 1.0,
       "rootMotion": "None"
     }
   ],
@@ -63,7 +116,7 @@
       "conditions": [
         {
           "op": "True",
-          "param": "NewTrigger",
+          "param": "walk",
           "threshold": 0.0
         }
       ],
@@ -78,7 +131,7 @@
       "conditions": [
         {
           "op": "Greater",
-          "param": "float01",
+          "param": "walkspeed",
           "threshold": 1.0
         }
       ],
@@ -87,6 +140,69 @@
       "from": "Box1",
       "hasExitTime": false,
       "to": "RealJumpDown"
+    },
+    {
+      "blendCurve": "SmoothStep",
+      "conditions": null,
+      "exitTime": 1.0,
+      "fadeDuration": 0.20000000298023224,
+      "from": "RealJumpDown",
+      "hasExitTime": true,
+      "to": "Idle"
+    },
+    {
+      "blendCurve": "SmoothStep",
+      "conditions": [
+        {
+          "op": "True",
+          "param": "walk",
+          "threshold": 0.0
+        }
+      ],
+      "exitTime": 1.0,
+      "fadeDuration": 0.20000000298023224,
+      "from": "Idle",
+      "hasExitTime": false,
+      "to": "walk"
+    },
+    {
+      "blendCurve": "SmoothStep",
+      "conditions": [
+        {
+          "op": "True",
+          "param": "Idle",
+          "threshold": 0.0
+        }
+      ],
+      "exitTime": 1.0,
+      "fadeDuration": 0.20000000298023224,
+      "from": "walk",
+      "hasExitTime": false,
+      "to": "Idle"
+    },
+    {
+      "blendCurve": "SmoothStep",
+      "conditions": [
+        {
+          "op": "True",
+          "param": "seatdown",
+          "threshold": 0.0
+        }
+      ],
+      "exitTime": 1.0,
+      "fadeDuration": 0.20000000298023224,
+      "from": "Idle",
+      "hasExitTime": false,
+      "to": "seatdown"
+    },
+    {
+      "blendCurve": "SmoothStep",
+      "conditions": null,
+      "exitTime": 0.800000011920929,
+      "fadeDuration": 0.20000000298023224,
+      "from": "seatdown",
+      "hasExitTime": true,
+      "to": "seat idle"
     }
   ],
   "version": 2

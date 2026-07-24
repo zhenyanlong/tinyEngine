@@ -668,6 +668,7 @@ std::string SequenceAssetLoader::easeToStr(TweenEase e)
     case TweenEase::EaseInOut:   return "EaseInOut";
     case TweenEase::Cubic:       return "Cubic";
     case TweenEase::Exponential: return "Exponential";
+    case TweenEase::Step:        return "Step";
     }
     return "Linear";
 }
@@ -675,11 +676,13 @@ std::string SequenceAssetLoader::easeToStr(TweenEase e)
 TweenEase SequenceAssetLoader::strToEase(const std::string& s)
 {
     if (s == "Linear")      return TweenEase::Linear;
+    if (s == "SmoothStep")  return TweenEase::SmoothStep;
     if (s == "EaseIn")      return TweenEase::EaseIn;
     if (s == "EaseOut")     return TweenEase::EaseOut;
     if (s == "EaseInOut")   return TweenEase::EaseInOut;
     if (s == "Cubic")       return TweenEase::Cubic;
     if (s == "Exponential") return TweenEase::Exponential;
+    if (s == "Step" || s == "Cut") return TweenEase::Step;
     return TweenEase::SmoothStep;
 }
 

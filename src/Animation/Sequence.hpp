@@ -31,8 +31,9 @@ enum class TweenEase {
     EaseIn,             ///< 缓入（二次方）
     EaseOut,            ///< 缓出（二次方）
     EaseInOut,          ///< 缓入缓出组合
-    Cubic,              ///< 三次方插值
-    Exponential         ///< 指数插值
+    Cubic,              ///< 自动三次路径插值（Transform 关键帧使用旋转引导切线）
+    Exponential,        ///< 指数插值
+    Step                ///< 截断：保持当前关键帧，到下一关键帧时瞬间切换
 };
 
 /** @brief 参数插值模式（用于 Animator 关键帧之间的参数值过渡） */
@@ -57,6 +58,7 @@ inline const char* tweenEaseToString(TweenEase ease) {
     case TweenEase::EaseInOut:   return "EaseInOut";
     case TweenEase::Cubic:       return "Cubic";
     case TweenEase::Exponential: return "Exponential";
+    case TweenEase::Step:        return "Step";
     }
     return "Unknown";
 }
@@ -78,9 +80,13 @@ inline double applyEaseCurve(double t, TweenEase ease) {
             ? 2.0 * t * t
             : 1.0 - (-2.0 * t + 2.0) * (-2.0 * t + 2.0) / 4.0;
     case TweenEase::Cubic:
-        return t * t * t;
+        // TransformKeyframeTrack 对 Cubic 使用空间 Hermite 曲线。
+        // 无切线信息的旧 TransformTween 则退化为平滑的两点三次曲线。
+        return t * t * (3.0 - 2.0 * t);
     case TweenEase::Exponential:
         return (t <= 0.0) ? 0.0 : std::pow(2.0, 10.0 * (t - 1.0));
+    case TweenEase::Step:
+        return (t < 1.0) ? 0.0 : 1.0;
     }
     return t;
 }

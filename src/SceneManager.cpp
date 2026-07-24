@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cfloat>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -941,12 +942,56 @@ void SceneManager::setEntityAnimationData(uint64_t entityId,
                                          std::vector<AnimationClip> clips)
 {
     if (auto* e = getModelEntity(entityId)) {
+        // Runtime-only controllers used to be regenerated on every animation reload.
+        // Preserve a controller that the user has edited but not saved yet; only
+        // rebuild the exact default controller previously generated from the clips.
+        const auto& states = e->animatorController.states();
+        const bool generatedStateCountMatches =
+            (states.empty()
+             && e->animatorController.definitionRevision() == 0)
+            || (!states.empty()
+                && states.size() == e->animationClips.size());
+        bool controllerWasGenerated =
+            e->animatorControllerPath.empty()
+            && e->animatorController.transitions().empty()
+            && e->animatorController.params().empty()
+            && generatedStateCountMatches;
+        for (size_t i = 0; controllerWasGenerated && i < states.size(); ++i) {
+            const auto& state = states[i];
+            const std::string expectedName = e->animationClips[i].name.empty()
+                ? "Clip" + std::to_string(i)
+                : e->animationClips[i].name;
+            controllerWasGenerated =
+                state.motionType == StateMotionType::SingleClip
+                && state.name == expectedName
+                && state.clipName == e->animationClips[i].name
+                && state.blendParameter.empty()
+                && state.blendSamples.empty()
+                && std::abs(state.playRate - 1.f) <= 1e-6f
+                && state.direction == PlaybackDirection::Forward
+                && state.loop
+                && state.rootMotion == AnimatorState::RootMotionMode::None
+                && state.rootBoneName.empty();
+        }
+
         e->skeleton = std::move(skeleton);
         e->animationClips = std::move(clips);
-        // 仅当实体没有已绑定的 AnimatorController 时才创建默认状态机。
-        // 若实体已从 .scene.json 恢复了 controller，则保留现有 Controller 不覆盖。
-        if (e->animatorControllerPath.empty())
+        ++e->animationDataRevision;
+        if (e->animationDataRevision == 0)
+            ++e->animationDataRevision;
+
+        if (controllerWasGenerated)
             e->animatorController.configureFromClips(e->animationClips);
+
+        // Model instances created later can reuse this cache entry. Keep it in
+        // sync so they do not inherit the pre-import clip collection.
+        if (!e->meshResourceKey.empty()) {
+            auto cacheIt = modelResourceCache_.find(e->meshResourceKey);
+            if (cacheIt != modelResourceCache_.end()) {
+                cacheIt->second.skeleton = e->skeleton;
+                cacheIt->second.animationClips = e->animationClips;
+            }
+        }
     }
 }
 

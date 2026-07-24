@@ -3,6 +3,8 @@
 #include "AnimationClip.hpp"
 
 #include <array>
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -95,7 +97,7 @@ struct AnimatorTransition {
     std::string toState;
     float fadeDuration = 0.2f;
     bool hasExitTime = false;
-    float exitTime = 1.f;
+    float exitTime = 1.f; ///< 累计归一化进度；Loop 状态允许 >1 表示多轮播放
     BlendCurve blendCurve = BlendCurve::SmoothStep;
     std::vector<TransitionCondition> conditions;
 };
@@ -217,9 +219,31 @@ public:
     const std::vector<AnimatorTransition>& transitions() const { return transitions_; }
     const std::vector<AnimatorParam>& params() const { return params_; }
     const std::string& defaultStateName() const { return defaultState_; }
+    uint64_t definitionRevision() const { return definitionRevision_; }
+
+    /** @brief 不重置运行时播放状态地替换单个 State/Transition 定义。 */
+    bool updateState(size_t index, AnimatorState state);
+    bool updateTransition(size_t index, AnimatorTransition transition);
+    /** @brief 标记通过受控外部编辑完成的一次定义变化。 */
+    void markDefinitionChanged() { bumpDefinitionRevision(); }
+
+    /** @brief 查询 Sequencer 等外部系统持有的名称引用是否仍有效。 */
+    bool hasState(const std::string& name) const { return findState(name) != nullptr; }
+    bool hasParameter(const std::string& name, AnimatorParam::Type type) const;
+
+    /**
+     * @brief 从同一资产的另一个实例同步状态机定义。
+     *
+     * preserveRuntimeValues=true 时按 name/type 保留本实例参数值，并尽量保留
+     * 当前 State/Transition 进度；定义已不兼容时回退到 reset()。
+     */
+    void replaceDefinitionFrom(const AnimatorController& source,
+                               bool preserveRuntimeValues = true);
 
     /** @brief 将参数及其 Controller 内部引用原子重命名。 */
     bool renameParameter(const std::string& oldName, const std::string& newName);
+    /** @brief 原子重命名 State，并保留运行时播放/过渡进度。 */
+    bool renameState(const std::string& oldName, const std::string& newName);
 
 private:
     std::vector<AnimatorState> states_;
@@ -235,6 +259,7 @@ private:
     float activeFadeDuration_ = 0.f;
     BlendCurve activeBlendCurve_ = BlendCurve::SmoothStep;
     bool transitioning_ = false;
+    uint64_t definitionRevision_ = 0;
 
     bool checkAllConditions(const AnimatorTransition& transition) const;
     bool exitTimeReached(const AnimatorTransition& transition,
@@ -260,4 +285,5 @@ private:
     static float sampleTime(const AnimatorState& state,
                             const AnimationClip* clip,
                             float progress);
+    void bumpDefinitionRevision();
 };

@@ -1,5 +1,5 @@
 {
-  "binary": "bin/anim/Remy.anim.bin",
+  "binary": "bin/anim/Remy.mesh_Stand Up.anim.bin",
   "clips": [
     {
       "channels": [
@@ -7,15 +7,15 @@
           "boneIndex": 1,
           "interpolation": "Linear",
           "target": "Translation",
-          "timeCount": 2,
-          "valueCount": 2
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 1,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 1,
@@ -35,8 +35,8 @@
           "boneIndex": 2,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 2,
@@ -56,8 +56,8 @@
           "boneIndex": 3,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 3,
@@ -77,8 +77,8 @@
           "boneIndex": 4,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 4,
@@ -98,8 +98,8 @@
           "boneIndex": 5,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 5,
@@ -119,8 +119,8 @@
           "boneIndex": 6,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 6,
@@ -140,8 +140,8 @@
           "boneIndex": 7,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 7,
@@ -161,8 +161,8 @@
           "boneIndex": 8,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 8,
@@ -182,8 +182,8 @@
           "boneIndex": 9,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 9,
@@ -203,8 +203,8 @@
           "boneIndex": 10,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 10,
@@ -224,8 +224,8 @@
           "boneIndex": 11,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 11,
@@ -245,8 +245,8 @@
           "boneIndex": 12,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 12,
@@ -266,8 +266,8 @@
           "boneIndex": 13,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 13,
@@ -287,8 +287,8 @@
           "boneIndex": 14,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 14,
@@ -308,8 +308,8 @@
           "boneIndex": 15,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 134,
+          "valueCount": 134
         },
         {
           "boneIndex": 15,
@@ -329,8 +329,8 @@
           "boneIndex": 16,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 16,
@@ -350,8 +350,8 @@
           "boneIndex": 17,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 17,
@@ -371,8 +371,8 @@
           "boneIndex": 18,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 18,
@@ -382,111 +382,6 @@
           "valueCount": 2
         },
         {
-          "boneIndex": 19,
-          "interpolation": "Linear",
-          "target": "Translation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 19,
-          "interpolation": "Linear",
-          "target": "Rotation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 19,
-          "interpolation": "Linear",
-          "target": "Scale",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 20,
-          "interpolation": "Linear",
-          "target": "Translation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 20,
-          "interpolation": "Linear",
-          "target": "Rotation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 20,
-          "interpolation": "Linear",
-          "target": "Scale",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 21,
-          "interpolation": "Linear",
-          "target": "Translation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 21,
-          "interpolation": "Linear",
-          "target": "Rotation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 21,
-          "interpolation": "Linear",
-          "target": "Scale",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 22,
-          "interpolation": "Linear",
-          "target": "Translation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 22,
-          "interpolation": "Linear",
-          "target": "Rotation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 22,
-          "interpolation": "Linear",
-          "target": "Scale",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 23,
-          "interpolation": "Linear",
-          "target": "Translation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 23,
-          "interpolation": "Linear",
-          "target": "Rotation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 23,
-          "interpolation": "Linear",
-          "target": "Scale",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
           "boneIndex": 24,
           "interpolation": "Linear",
           "target": "Translation",
@@ -497,8 +392,8 @@
           "boneIndex": 24,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 24,
@@ -518,8 +413,8 @@
           "boneIndex": 25,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 25,
@@ -539,8 +434,8 @@
           "boneIndex": 26,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 26,
@@ -560,8 +455,8 @@
           "boneIndex": 27,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 27,
@@ -581,8 +476,8 @@
           "boneIndex": 28,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 28,
@@ -602,8 +497,8 @@
           "boneIndex": 29,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 29,
@@ -623,8 +518,8 @@
           "boneIndex": 30,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 30,
@@ -644,8 +539,8 @@
           "boneIndex": 31,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 31,
@@ -665,8 +560,8 @@
           "boneIndex": 32,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 32,
@@ -686,8 +581,8 @@
           "boneIndex": 33,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 33,
@@ -707,8 +602,8 @@
           "boneIndex": 34,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 34,
@@ -728,8 +623,8 @@
           "boneIndex": 35,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 35,
@@ -749,8 +644,8 @@
           "boneIndex": 36,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 36,
@@ -770,8 +665,8 @@
           "boneIndex": 37,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 37,
@@ -791,8 +686,8 @@
           "boneIndex": 38,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 145,
+          "valueCount": 145
         },
         {
           "boneIndex": 38,
@@ -812,8 +707,8 @@
           "boneIndex": 39,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 142,
+          "valueCount": 142
         },
         {
           "boneIndex": 39,
@@ -833,8 +728,8 @@
           "boneIndex": 40,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 141,
+          "valueCount": 141
         },
         {
           "boneIndex": 40,
@@ -854,8 +749,8 @@
           "boneIndex": 41,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 145,
+          "valueCount": 145
         },
         {
           "boneIndex": 41,
@@ -875,8 +770,8 @@
           "boneIndex": 42,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 143,
+          "valueCount": 143
         },
         {
           "boneIndex": 42,
@@ -896,8 +791,8 @@
           "boneIndex": 43,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 145,
+          "valueCount": 145
         },
         {
           "boneIndex": 43,
@@ -917,8 +812,8 @@
           "boneIndex": 44,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 141,
+          "valueCount": 141
         },
         {
           "boneIndex": 44,
@@ -938,8 +833,8 @@
           "boneIndex": 45,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 143,
+          "valueCount": 143
         },
         {
           "boneIndex": 45,
@@ -959,8 +854,8 @@
           "boneIndex": 46,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 46,
@@ -980,8 +875,8 @@
           "boneIndex": 47,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 145,
+          "valueCount": 145
         },
         {
           "boneIndex": 47,
@@ -1001,8 +896,8 @@
           "boneIndex": 48,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 145,
+          "valueCount": 145
         },
         {
           "boneIndex": 48,
@@ -1022,8 +917,8 @@
           "boneIndex": 49,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 131,
+          "valueCount": 131
         },
         {
           "boneIndex": 49,
@@ -1043,8 +938,8 @@
           "boneIndex": 50,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 144,
+          "valueCount": 144
         },
         {
           "boneIndex": 50,
@@ -1064,8 +959,8 @@
           "boneIndex": 51,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 51,
@@ -1085,8 +980,8 @@
           "boneIndex": 52,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 141,
+          "valueCount": 141
         },
         {
           "boneIndex": 52,
@@ -1127,8 +1022,8 @@
           "boneIndex": 54,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 140,
+          "valueCount": 140
         },
         {
           "boneIndex": 54,
@@ -1148,8 +1043,8 @@
           "boneIndex": 55,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 55,
@@ -1169,8 +1064,8 @@
           "boneIndex": 56,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 146,
+          "valueCount": 146
         },
         {
           "boneIndex": 56,
@@ -1190,232 +1085,22 @@
           "boneIndex": 57,
           "interpolation": "Linear",
           "target": "Rotation",
-          "timeCount": 1,
-          "valueCount": 1
+          "timeCount": 143,
+          "valueCount": 143
         },
         {
           "boneIndex": 57,
-          "interpolation": "Linear",
-          "target": "Scale",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 58,
-          "interpolation": "Linear",
-          "target": "Translation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 58,
-          "interpolation": "Linear",
-          "target": "Rotation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 58,
-          "interpolation": "Linear",
-          "target": "Scale",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 59,
-          "interpolation": "Linear",
-          "target": "Translation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 59,
-          "interpolation": "Linear",
-          "target": "Rotation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 59,
-          "interpolation": "Linear",
-          "target": "Scale",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 60,
-          "interpolation": "Linear",
-          "target": "Translation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 60,
-          "interpolation": "Linear",
-          "target": "Rotation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 60,
-          "interpolation": "Linear",
-          "target": "Scale",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 61,
-          "interpolation": "Linear",
-          "target": "Translation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 61,
-          "interpolation": "Linear",
-          "target": "Rotation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 61,
-          "interpolation": "Linear",
-          "target": "Scale",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 62,
-          "interpolation": "Linear",
-          "target": "Translation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 62,
-          "interpolation": "Linear",
-          "target": "Rotation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 62,
-          "interpolation": "Linear",
-          "target": "Scale",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 63,
-          "interpolation": "Linear",
-          "target": "Translation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 63,
-          "interpolation": "Linear",
-          "target": "Rotation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 63,
-          "interpolation": "Linear",
-          "target": "Scale",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 64,
-          "interpolation": "Linear",
-          "target": "Translation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 64,
-          "interpolation": "Linear",
-          "target": "Rotation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 64,
-          "interpolation": "Linear",
-          "target": "Scale",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 65,
-          "interpolation": "Linear",
-          "target": "Translation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 65,
-          "interpolation": "Linear",
-          "target": "Rotation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 65,
-          "interpolation": "Linear",
-          "target": "Scale",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 66,
-          "interpolation": "Linear",
-          "target": "Translation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 66,
-          "interpolation": "Linear",
-          "target": "Rotation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 66,
-          "interpolation": "Linear",
-          "target": "Scale",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 67,
-          "interpolation": "Linear",
-          "target": "Translation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 67,
-          "interpolation": "Linear",
-          "target": "Rotation",
-          "timeCount": 2,
-          "valueCount": 2
-        },
-        {
-          "boneIndex": 67,
           "interpolation": "Linear",
           "target": "Scale",
           "timeCount": 2,
           "valueCount": 2
         }
       ],
-      "duration": 0.03333333507180214,
-      "name": "default pose"
+      "duration": 4.833333492279053,
+      "name": "standup"
     }
   ],
-  "name": "Remy.anim",
+  "name": "Remy.mesh_Stand Up.anim",
   "rootModel": "content/Remy/Remy.mesh.ast",
   "skeleton": {
     "boneCount": 68,

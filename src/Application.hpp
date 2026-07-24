@@ -83,9 +83,17 @@ public:
                      const std::string& subFolder = "",
                      std::string* outAnimFbxPath = nullptr);
 
+    struct AnimationImportReport {
+        std::string assetPath;
+        std::vector<std::string> importedClipNames;
+        size_t refreshedEntityCount = 0;
+        size_t totalClipCount = 0;
+    };
+
     /** @brief 导入 Mixamo without-skin 动画 FBX，链接到指定 mesh.ast 的骨架。 */
     bool importAnimationFbx(const std::string& fbxPath,
-                            const std::string& targetMeshAstRelPath);
+                            const std::string& targetMeshAstRelPath,
+                            AnimationImportReport* report = nullptr);
 
     /** @brief 返回资源根目录 */
     std::string getResRoot() const { return modelRegistry_.getResRoot(); }
@@ -112,7 +120,25 @@ public:
     // ── Sequencer scene-control API ───────────────────────────────────────────
     bool            isSequencerControlEnabled() const { return sequencerControlEnabled_; }
     void            setSequencerControlEnabled(bool enabled);
+    bool            isSequencerCameraFollowEnabled() const {
+        return sequencerCameraFollowEnabled_;
+    }
+    void            setSequencerCameraFollowEnabled(bool enabled);
     bool            isEntitySequencerAnimatorControlled(uint64_t entityId) const;
+    /**
+     * @brief 通知 Animator 定义发生变化并使 Sequencer/Root Motion 缓存失效。
+     *
+     * synchronizeBoundInstances=true 时，将当前实体的定义同步到所有绑定同一
+     * .animctrl.json 的实体，同时保留各实体自己的运行时参数与播放进度。
+     */
+    void            notifyAnimatorControllerDefinitionChanged(
+                        uint64_t entityId,
+                        bool synchronizeBoundInstances = false);
+    /** @brief 原子重命名 State，并同步同 Controller 实例及当前 Sequence 引用。 */
+    bool            renameAnimatorState(uint64_t entityId,
+                                        const std::string& oldName,
+                                        const std::string& newName,
+                                        std::string* error = nullptr);
 
     struct SequenceCaptureSettings {
         double startTime = 0.0;
@@ -218,6 +244,9 @@ private:
     // Sequencer transport is independent from scene authority. When disabled,
     // the playhead may still move but no camera/transform/animator output is applied.
     bool               sequencerControlEnabled_ = false;
+    // Editor viewport preference only. Capture always follows the evaluated
+    // Sequence camera, regardless of this setting.
+    bool               sequencerCameraFollowEnabled_ = true;
     double             lastSequencerAnimatorEvalTime_ = -1.0;
 
     bool               sequenceCaptureActive_ = false;
@@ -294,6 +323,9 @@ private:
                                         const std::string& modelPathOrRel,
                                         bool refreshRegistryAfterWrite,
                                         uint64_t entityId = 0);
+    void invalidateAnimatorDefinition(SceneManager::ModelEntity& entity);
+    void invalidateAnimationData(SceneManager::ModelEntity& entity);
+    void detectAnimatorDefinitionChanges();
 
     /** @brief 为每个实体的 (材质, skin) 创建独立运行时蒙皮绑定。 */
     void convertModelMaterialsToSkinned();

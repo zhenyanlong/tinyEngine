@@ -119,9 +119,12 @@ public:
     char     animatorStatusMsg_[256]{};
     std::vector<std::string> animatorControllerAssets_; ///< 与当前模型动画片段兼容的控制器资产绝对路径。
     uint64_t animatorControllerAssetsEntityId_ = 0;
+    uint64_t animatorObservedAnimationDataRevision_ = 0;
     bool     animatorControllerAssetsDirty_ = true;
     int      animatorRenamingClipIdx_ = -1;
     char     animatorClipRenameBuffer_[128]{};
+    int      animatorRenamingStateIdx_ = -1;
+    char     animatorStateRenameBuffer_[128]{};
 
     // ── PiP (Picture-in-Picture) ──────────────────────────────────────────
     bool showPipWindow_ = false;
@@ -254,6 +257,7 @@ private:
 
 	// ── Import Animation state ───────────────────────────────────────────
 	std::string              importAnimFbxPath_;           ///< 用户通过文件对话框选择的 FBX 路径
+	std::string              importAnimStatus_;            ///< 最近一次动画导入与场景刷新结果
 	bool                     showMeshPicker_ = false;      ///< 选择目标 mesh 的弹窗可见
 	int                      meshPickerSelected_ = 0;      ///< mesh 列表当前选中的索引
 

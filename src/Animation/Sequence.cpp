@@ -5,6 +5,168 @@
 #include <unordered_map>
 #include <glm/gtc/quaternion.hpp>
 
+namespace {
+
+constexpr double kKeyTimeEpsilon = 1e-8;
+constexpr float kVectorEpsilonSq = 1e-10f;
+constexpr float kMaxAutoTangentFactor = 1.5f;
+constexpr glm::vec3 kLocalForwardAxis{0.0f, 0.0f, 1.0f};
+
+bool isFinite(const glm::vec3& value)
+{
+    return std::isfinite(value.x)
+        && std::isfinite(value.y)
+        && std::isfinite(value.z);
+}
+
+glm::vec3 normalizedOr(const glm::vec3& value, const glm::vec3& fallback)
+{
+    const float lengthSq = glm::dot(value, value);
+    if (isFinite(value) && lengthSq > kVectorEpsilonSq)
+        return value / std::sqrt(lengthSq);
+
+    const float fallbackLengthSq = glm::dot(fallback, fallback);
+    if (isFinite(fallback) && fallbackLengthSq > kVectorEpsilonSq)
+        return fallback / std::sqrt(fallbackLengthSq);
+
+    return kLocalForwardAxis;
+}
+
+glm::vec3 positionChordAt(
+    const std::vector<TransformKeyframe>& keys,
+    size_t keyIndex)
+{
+    if (keys.size() < 2)
+        return kLocalForwardAxis;
+    if (keyIndex == 0)
+        return keys[1].position - keys[0].position;
+    if (keyIndex + 1 >= keys.size())
+        return keys[keyIndex].position - keys[keyIndex - 1].position;
+    return keys[keyIndex + 1].position - keys[keyIndex - 1].position;
+}
+
+glm::vec3 autoTangentDirection(
+    const std::vector<TransformKeyframe>& keys,
+    size_t keyIndex)
+{
+    const glm::vec3 chordDirection =
+        normalizedOr(positionChordAt(keys, keyIndex), kLocalForwardAxis);
+
+    const glm::quat& rotation = keys[keyIndex].rotation;
+    const float rotationLengthSq = glm::dot(rotation, rotation);
+    if (!std::isfinite(rotationLengthSq)
+        || rotationLengthSq <= kVectorEpsilonSq) {
+        return chordDirection;
+    }
+
+    glm::vec3 rotationAxis =
+        normalizedOr(
+            glm::normalize(rotation) * kLocalForwardAxis,
+            chordDirection);
+
+    // Imported models commonly use +Z as forward while cameras use -Z.
+    // Pick the sign that follows the local motion chord so Cubic Auto is
+    // independent of that convention and cannot create a backwards loop.
+    if (glm::dot(rotationAxis, chordDirection) < 0.0f)
+        rotationAxis = -rotationAxis;
+    return rotationAxis;
+}
+
+float segmentSpeed(
+    const TransformKeyframe& first,
+    const TransformKeyframe& second)
+{
+    const double timeSpan = second.time - first.time;
+    if (timeSpan <= kKeyTimeEpsilon)
+        return 0.0f;
+
+    const float distance = glm::length(second.position - first.position);
+    if (!std::isfinite(distance))
+        return 0.0f;
+    return distance / static_cast<float>(timeSpan);
+}
+
+float curvatureFactor(const glm::vec3& first, const glm::vec3& second)
+{
+    const float dotValue = glm::clamp(glm::dot(first, second), -1.0f, 1.0f);
+    const float angle = std::acos(dotValue);
+    const float cosQuarterAngle = std::cos(angle * 0.25f);
+    const float denominator = cosQuarterAngle * cosQuarterAngle;
+    if (!std::isfinite(denominator) || denominator <= 1e-4f)
+        return kMaxAutoTangentFactor;
+    return glm::clamp(1.0f / denominator, 1.0f, kMaxAutoTangentFactor);
+}
+
+glm::vec3 autoTangentVelocity(
+    const std::vector<TransformKeyframe>& keys,
+    size_t keyIndex)
+{
+    float speedSum = 0.0f;
+    int speedCount = 0;
+    if (keyIndex > 0) {
+        speedSum += segmentSpeed(keys[keyIndex - 1], keys[keyIndex]);
+        ++speedCount;
+    }
+    if (keyIndex + 1 < keys.size()) {
+        speedSum += segmentSpeed(keys[keyIndex], keys[keyIndex + 1]);
+        ++speedCount;
+    }
+    if (speedCount == 0)
+        return glm::vec3(0.0f);
+
+    const glm::vec3 direction = autoTangentDirection(keys, keyIndex);
+    float factorSum = 0.0f;
+    int factorCount = 0;
+    if (keyIndex > 0) {
+        factorSum += curvatureFactor(
+            autoTangentDirection(keys, keyIndex - 1), direction);
+        ++factorCount;
+    }
+    if (keyIndex + 1 < keys.size()) {
+        factorSum += curvatureFactor(
+            direction, autoTangentDirection(keys, keyIndex + 1));
+        ++factorCount;
+    }
+
+    const float averageSpeed = speedSum / static_cast<float>(speedCount);
+    const float factor = factorCount > 0
+        ? factorSum / static_cast<float>(factorCount)
+        : 1.0f;
+    return direction * averageSpeed * factor;
+}
+
+glm::vec3 cubicAutoPosition(
+    const std::vector<TransformKeyframe>& keys,
+    size_t firstIndex,
+    float normalizedTime)
+{
+    const TransformKeyframe& first = keys[firstIndex];
+    const TransformKeyframe& second = keys[firstIndex + 1];
+    const float timeSpan =
+        static_cast<float>(std::max(second.time - first.time, 0.0));
+
+    const glm::vec3 tangent0 =
+        autoTangentVelocity(keys, firstIndex) * timeSpan;
+    const glm::vec3 tangent1 =
+        autoTangentVelocity(keys, firstIndex + 1) * timeSpan;
+
+    const float t2 = normalizedTime * normalizedTime;
+    const float t3 = t2 * normalizedTime;
+    const float h00 = 2.0f * t3 - 3.0f * t2 + 1.0f;
+    const float h10 = t3 - 2.0f * t2 + normalizedTime;
+    const float h01 = -2.0f * t3 + 3.0f * t2;
+    const float h11 = t3 - t2;
+
+    const glm::vec3 position =
+        h00 * first.position + h10 * tangent0
+        + h01 * second.position + h11 * tangent1;
+    if (!isFinite(position))
+        return glm::mix(first.position, second.position, normalizedTime);
+    return position;
+}
+
+} // namespace
+
 double SequenceTrack::totalDuration() const
 {
     if (type == TrackType::Group || type == TrackType::AnimationClip || type == TrackType::Event)
@@ -125,11 +287,27 @@ TransformKeyframeTrack::EvalResult TransformKeyframeTrack::evaluate(double t) co
 
     const double timeSpan = next.time - prev.time;
     double normalizedT = (timeSpan > 0.0) ? (t - prev.time) / timeSpan : 0.0;
-    normalizedT = applyEaseCurve(normalizedT, prev.easeToNext);
+    normalizedT = std::clamp(normalizedT, 0.0, 1.0);
 
-    result.position = glm::mix(prev.position, next.position, static_cast<float>(normalizedT));
-    result.rotation = glm::normalize(glm::slerp(prev.rotation, next.rotation, static_cast<float>(normalizedT)));
-    result.scale = glm::mix(prev.scale, next.scale, static_cast<float>(normalizedT));
+    if (prev.easeToNext == TweenEase::Cubic) {
+        const float cubicT = static_cast<float>(normalizedT);
+        const float smoothT =
+            cubicT * cubicT * (3.0f - 2.0f * cubicT);
+        result.position = cubicAutoPosition(keyframes, prevIdx, cubicT);
+        result.rotation = glm::normalize(
+            glm::slerp(prev.rotation, next.rotation, smoothT));
+        result.scale = glm::mix(prev.scale, next.scale, smoothT);
+    } else {
+        normalizedT = applyEaseCurve(normalizedT, prev.easeToNext);
+        result.position = glm::mix(
+            prev.position, next.position, static_cast<float>(normalizedT));
+        result.rotation = glm::normalize(
+            glm::slerp(
+                prev.rotation, next.rotation,
+                static_cast<float>(normalizedT)));
+        result.scale = glm::mix(
+            prev.scale, next.scale, static_cast<float>(normalizedT));
+    }
     result.valid = true;
 
     return result;

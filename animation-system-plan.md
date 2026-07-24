@@ -354,7 +354,7 @@ struct AnimatorTransition {
     std::string                     toState;
     float                           fadeDuration = 0.2f;   // 秒
     bool                            hasExitTime  = false;
-    float                           exitTime     = 1.0f;   // 归一化 [0,1]
+    float                           exitTime     = 1.0f;   // 累计归一化进度；Loop 时 >1 表示多轮
     std::vector<TransitionCondition> conditions;
 };
 ```
@@ -536,7 +536,7 @@ private:
 
 **具体任务：**
 
-- [x] **B6-1** 将有符号 speed 拆分为非负 `playRate` 与 `PlaybackDirection`，使用始终正向累积的归一化播放进度实现 Forward/Reverse、Loop 和方向无关的 Exit Time
+- [x] **B6-1** 将有符号 speed 拆分为非负 `playRate` 与 `PlaybackDirection`，使用始终正向累积的归一化播放进度实现 Forward/Reverse、Loop 和方向无关的 Exit Time；Loop 状态的 1/2/3 分别表示完成 1/2/3 轮，非 Loop 状态上限为 1
 - [x] **B6-2** 新增 `StateMotionType::SingleClip/BlendSpace1D`、Float blendParameter 与带 position 的 Sample 列表；区间外钳制到端点，区间内在相邻 Sample 间线性混合并按归一化相位同步不同时长 Clip
 - [x] **B6-3** 将 `BlendCommand` 重构为 State 内部 Sample 混合 + State 间 Cross-fade 两层结构，支持 Single↔Single、Single↔BlendSpace 和 BlendSpace↔BlendSpace
 - [x] **B6-4** 将 `.animctrl.json` 升级为 version 2，并向后迁移 version 1 的 clipName/speed；负 speed 迁移为 Reverse + abs(speed)
@@ -567,9 +567,9 @@ enum class TrackType {
     Event,              // 触发一个命名事件（供逻辑层响应）
 };
 
-// 插值模式（7种混合曲线）
+// 插值模式（7 种混合曲线 + 1 种无过渡截断）
 enum class TweenEase {
-    Linear, SmoothStep, EaseIn, EaseOut, EaseInOut, Cubic, Exponential
+    Linear, SmoothStep, EaseIn, EaseOut, EaseInOut, Cubic, Exponential, Step
 };
 
 // 时间轴上的一个片段（通用基类）
@@ -655,7 +655,7 @@ struct Sequence {
 - [x] **C1-3** 实现各 clip 类型的 `evaluate(localT)` 方法：
   - `TransformTweenClip::evaluate(localT)`：按 ease 曲线插值 start→end TRS
   - `TransformKeyframeTrack::evaluate(t)`：查找前后关键帧，按 `easeToNext` 插值混合
-  - `applyEaseCurve(t, ease)`：通用曲线求值函数，支持 7 种混合模式
+  - `applyEaseCurve(t, ease)`：通用曲线求值函数，支持 7 种混合曲线和 Step 截断模式
 
 ---
 
@@ -775,8 +775,11 @@ struct CameraPath {
 **C4-A TransformTweenClip（旧版，保留兼容）**
 
 - [x] **C4-1** 在 `Sequence.hpp` 中确认 `TransformTweenClip` 结构已包含 start/end TRS 和 ease 模式
-- [x] **C4-2** 实现 7 种 ease 函数（`applyEaseCurve(t, ease)`）：
+- [x] **C4-2** 实现 8 种 ease 模式（`applyEaseCurve(t, ease)`）：
   - Linear、SmoothStep、EaseIn、EaseOut、EaseInOut、Cubic、Exponential
+  - Cubic 在 TransformKeyframe 上实现为 `Cubic (Auto)` 空间 Hermite 曲线：使用关键帧 Rotation 旋转后的本地 Z 轴生成自动切线，并自动选择与位移方向一致的 `+Z/-Z`，同时兼容模型和相机前向约定；按相邻位移/时间估算速度并限制曲率，Rotation/Scale 使用平滑进度
+  - 无相邻关键帧切线信息的旧 TransformTween 将 Cubic 退化为两点 SmoothStep；Animator `ParamInterp::Cubic` 仍保持标量 `t³`
+  - Step（UI 显示为 `Cut (Step)`）：下一关键帧之前保持当前值，到点后瞬时切换
 - [x] **C4-3** 在 `SequencePlayer::update` 的 `onTransformTweenEval` callback 中，根据 `entity` 名称找到对应对象并更新其 `ObjectTransform`：
   - `"main"` → 更新 `Application::mainModelTransform`
   - `"box:<id>"` → 调用 `sceneMgr_.setBoxPosition(id, pos)`（当前 box 只支持位移，旋转和缩放为后续扩展）
@@ -889,7 +892,7 @@ struct CameraPath {
 - [x] **C5-1** 新建 `src/Animation/SequenceAssetLoader.hpp` / `.cpp`
 - [x] **C5-2** 实现 `SequenceAssetLoader::saveSequence(path, seq)` 和 `loadSequence(path, seq)` — nlohmann/json 实现，支持所有 5 种 TrackType（含 TransformKeyframeTrack）
 - [x] **C5-3** 实现 `SequenceAssetLoader::saveCameraPath(path, camPath)` 和 `loadCameraPath(path, camPath)` — 加载后按 time 排序
-- [x] **C5-4** 实现 7 种 TweenEase 的双向字符串转换（`easeToStr` / `strToEase`）
+- [x] **C5-4** 实现 8 种 TweenEase 的双向字符串转换（`easeToStr` / `strToEase`），加载时兼容 `Step` / `Cut`
 - [x] **C5-5** TransformKeyframeTrack 完整序列化：targetEntityId + keyframes[]（time/position/rotation/scale/easeToNext），加载后按 time 排序
 - [x] **C5-6** 在 `res/sequences/` 目录下提供一个示例 `.seq.json` 文件
 
@@ -914,8 +917,8 @@ struct CameraPath {
 - [x] **C6-3** 实现片段属性编辑器（Sequencer 底部区域）：
   - 选中 `AnimTrackClip` → 显示 clipName 输入、offset、speed
   - 选中 `CameraPathClip` → 显示 path 路径输入
-  - 选中 `TransformTweenClip` → 显示 start/end TRS 的 InputFloat3 和 ease 下拉（7种模式）
-  - 选中 `TransformKeyframe` → 显示 time/position/rotation/scale/easeToNext 编辑
+  - 选中 `TransformTweenClip` → 显示 start/end TRS 的 InputFloat3 和 ease 下拉（8 种模式）
+  - 选中 `TransformKeyframe` → 显示 time/position/rotation/scale/easeToNext 编辑；`Cubic (Auto)` 提示切线跟随关键帧旋转与运动方向
 - [x] **C6-4** 实现录制控制区域（位于底部）：
   - "Start Recording" / "Stop Recording" 按钮（触发 `Application::recordingCameraPath_`）
   - 录制中显示红色 "Recording..." + 已录制时长

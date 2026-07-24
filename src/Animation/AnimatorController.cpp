@@ -15,6 +15,42 @@ bool nearlyEqual(float a, float b) {
     return std::abs(a - b) <= kFloatEpsilon;
 }
 
+bool exitTimeReachedForProgress(
+    const AnimatorTransition& transition,
+    const AnimatorState& state,
+    float previousProgress,
+    float currentProgress)
+{
+    if (!transition.hasExitTime) return true;
+
+    const float requestedProgress = std::max(transition.exitTime, 0.f);
+    if (!state.loop) {
+        // A non-looping clip holds its final pose after normalized progress 1.
+        return currentProgress >= std::min(requestedProgress, 1.f);
+    }
+    if (requestedProgress <= kFloatEpsilon) return true;
+
+    // Values above one are cumulative: 2.0 means two complete loops, 3.0
+    // means three. Once reached, keep the exit gate open for conditions.
+    if (requestedProgress > 1.f)
+        return currentProgress >= requestedProgress;
+
+    // Values in (0, 1] are phase gates and are checked again every loop.
+    const float elapsed = std::max(0.f, currentProgress - previousProgress);
+    if (elapsed >= 1.f) return true;
+
+    const float previousWrapped =
+        previousProgress - std::floor(previousProgress);
+    const float currentWrapped =
+        currentProgress - std::floor(currentProgress);
+    const bool wrapped = currentWrapped < previousWrapped;
+    return wrapped
+        ? requestedProgress > previousWrapped
+            || requestedProgress <= currentWrapped
+        : previousWrapped < requestedProgress
+            && currentWrapped >= requestedProgress;
+}
+
 } // namespace
 
 void AnimatorParam::setFloat(float v) {
@@ -87,6 +123,7 @@ void AnimatorController::configure(std::vector<AnimatorState> states,
         defaultState_ = states_.front().name;
     }
     reset();
+    bumpDefinitionRevision();
 }
 
 void AnimatorController::configureFromClips(const std::vector<AnimationClip>& clips) {
@@ -330,6 +367,7 @@ AnimatorController::BlendCommand AnimatorController::computeBlendAtTime(
         const float step = targetTime - elapsed;
         const float safeDt = std::max(step, 0.f);
         const float previousProgress = stateProgress;
+        bool stateChangedThisStep = false;
 
         current = findState(curState);
         if (!current) break;
@@ -367,6 +405,7 @@ AnimatorController::BlendCommand AnimatorController::computeBlendAtTime(
                     blendT = 0.f;
                     transitioning = false;
                     consumed = false;
+                    stateChangedThisStep = true;
                 }
             }
         }
@@ -375,7 +414,7 @@ AnimatorController::BlendCommand AnimatorController::computeBlendAtTime(
         applySample(sample);
 
         // 检查新的过渡（仅在非过渡状态或过渡刚完成时）
-        if (!transitioning && !consumed) {
+        if (!transitioning && !consumed && !stateChangedThisStep) {
             current = findState(curState);
             if (!current) break;
 
@@ -389,33 +428,15 @@ AnimatorController::BlendCommand AnimatorController::computeBlendAtTime(
                 if (!target || !hasValidMotion(*target, clips))
                     continue;
 
-                // exitTime 表示沿播放方向累积的归一化进度，与采样方向解耦。
-                bool exitOk = true;
-                if (transition.hasExitTime) {
-                    const float targetProgress = std::clamp(transition.exitTime, 0.f, 1.f);
-                    if (!hasValidMotion(*current, clips)) {
-                        exitOk = false;
-                    } else if (!current->loop) {
-                        exitOk = stateProgress >= targetProgress;
-                    } else if (targetProgress <= kFloatEpsilon) {
-                        exitOk = true;
-                    } else {
-                        const float delta = std::max(0.f, stateProgress - previousProgress);
-                        if (delta >= 1.f) {
-                            exitOk = true;
-                        } else {
-                            const float prevWrapped =
-                                previousProgress - std::floor(previousProgress);
-                            const float currentWrapped =
-                                stateProgress - std::floor(stateProgress);
-                            const bool wrapped = currentWrapped < prevWrapped;
-                            exitOk = wrapped
-                                ? (targetProgress > prevWrapped || targetProgress <= currentWrapped)
-                                : (prevWrapped < targetProgress
-                                   && currentWrapped >= targetProgress);
-                        }
-                    }
-                }
+                // Exit Time uses forward accumulated progress even for Reverse
+                // sampling. The transition-completion step is skipped above so
+                // previousProgress always belongs to this same current state.
+                const bool exitOk =
+                    (!transition.hasExitTime
+                     || hasValidMotion(*current, clips))
+                    && exitTimeReachedForProgress(
+                        transition, *current,
+                        previousProgress, stateProgress);
 
                 if (!exitOk) continue;
 
@@ -526,6 +547,100 @@ void AnimatorController::setActiveState(const std::string& name) {
     transitioning_ = false;
 }
 
+bool AnimatorController::updateState(size_t index, AnimatorState state) {
+    if (index >= states_.size()) return false;
+    // State rename needs to update transitions/default/Sequence references
+    // atomically and is intentionally handled by a dedicated workflow.
+    if (state.name != states_[index].name) return false;
+    states_[index] = std::move(state);
+
+    if (!findState(defaultState_) && !states_.empty())
+        defaultState_ = states_.front().name;
+    if (!findState(currentState_))
+        reset();
+    else if (transitioning_ && !findState(nextState_)) {
+        nextState_.clear();
+        nextStateProgress_ = 0.f;
+        blendT_ = 0.f;
+        activeFadeDuration_ = 0.f;
+        transitioning_ = false;
+    }
+
+    bumpDefinitionRevision();
+    return true;
+}
+
+bool AnimatorController::updateTransition(
+    size_t index, AnimatorTransition transition) {
+    if (index >= transitions_.size()) return false;
+    transitions_[index] = std::move(transition);
+    bumpDefinitionRevision();
+    return true;
+}
+
+bool AnimatorController::hasParameter(
+    const std::string& name, AnimatorParam::Type type) const {
+    const AnimatorParam* param = findParam(name);
+    return param && param->type == type;
+}
+
+void AnimatorController::replaceDefinitionFrom(
+    const AnimatorController& source, bool preserveRuntimeValues) {
+    const std::vector<AnimatorParam> oldParams = params_;
+    const std::string oldCurrentState = currentState_;
+    const std::string oldNextState = nextState_;
+    const float oldStateProgress = stateProgress_;
+    const float oldNextStateProgress = nextStateProgress_;
+    const float oldBlendT = blendT_;
+    const float oldFadeDuration = activeFadeDuration_;
+    const BlendCurve oldBlendCurve = activeBlendCurve_;
+    const bool oldTransitioning = transitioning_;
+
+    states_ = source.states_;
+    transitions_ = source.transitions_;
+    params_ = source.params_;
+    defaultState_ = source.defaultState_;
+
+    if (preserveRuntimeValues) {
+        for (auto& param : params_) {
+            const auto it = std::find_if(
+                oldParams.begin(), oldParams.end(),
+                [&](const AnimatorParam& oldParam) {
+                    return oldParam.name == param.name
+                        && oldParam.type == param.type;
+                });
+            if (it != oldParams.end() && param.type != AnimatorParam::Type::Trigger)
+                param.value = it->value;
+        }
+    }
+
+    const bool canPreserveCurrent =
+        preserveRuntimeValues && findState(oldCurrentState);
+    const bool canPreserveTransition =
+        canPreserveCurrent && oldTransitioning && findState(oldNextState);
+    if (canPreserveCurrent) {
+        currentState_ = oldCurrentState;
+        stateProgress_ = oldStateProgress;
+        nextState_ = canPreserveTransition ? oldNextState : std::string{};
+        nextStateProgress_ = canPreserveTransition ? oldNextStateProgress : 0.f;
+        blendT_ = canPreserveTransition ? oldBlendT : 0.f;
+        activeFadeDuration_ = canPreserveTransition ? oldFadeDuration : 0.f;
+        activeBlendCurve_ = canPreserveTransition
+            ? oldBlendCurve : BlendCurve::SmoothStep;
+        transitioning_ = canPreserveTransition;
+    } else {
+        reset();
+    }
+
+    bumpDefinitionRevision();
+}
+
+void AnimatorController::bumpDefinitionRevision() {
+    ++definitionRevision_;
+    if (definitionRevision_ == 0)
+        definitionRevision_ = 1;
+}
+
 bool AnimatorController::checkAllConditions(const AnimatorTransition& transition) const {
     return std::all_of(
         transition.conditions.begin(), transition.conditions.end(),
@@ -538,20 +653,8 @@ bool AnimatorController::checkAllConditions(const AnimatorTransition& transition
 bool AnimatorController::exitTimeReached(const AnimatorTransition& transition,
                                          const AnimatorState& state,
                                          float previousProgress) const {
-    if (!transition.hasExitTime) return true;
-    const float targetProgress = std::clamp(transition.exitTime, 0.f, 1.f);
-    if (!state.loop) return stateProgress_ >= targetProgress;
-    if (targetProgress <= kFloatEpsilon) return true;
-
-    const float elapsed = std::max(0.f, stateProgress_ - previousProgress);
-    if (elapsed >= 1.f) return true;
-
-    const float previousWrapped = previousProgress - std::floor(previousProgress);
-    const float currentWrapped = stateProgress_ - std::floor(stateProgress_);
-    const bool wrapped = currentWrapped < previousWrapped;
-    return wrapped
-        ? targetProgress > previousWrapped || targetProgress <= currentWrapped
-        : previousWrapped < targetProgress && currentWrapped >= targetProgress;
+    return exitTimeReachedForProgress(
+        transition, state, previousProgress, stateProgress_);
 }
 
 void AnimatorController::consumeTriggers(const AnimatorTransition& transition) {
@@ -602,6 +705,38 @@ bool AnimatorController::renameParameter(const std::string& oldName,
     for (auto& state : states_) {
         if (state.blendParameter == oldName) state.blendParameter = newName;
     }
+    bumpDefinitionRevision();
+    return true;
+}
+
+bool AnimatorController::renameState(const std::string& oldName,
+                                     const std::string& newName) {
+    if (oldName.empty() || newName.empty() || oldName == newName
+        || newName == "AnyState") {
+        return false;
+    }
+
+    auto stateIt = std::find_if(
+        states_.begin(), states_.end(),
+        [&](const AnimatorState& state) { return state.name == oldName; });
+    if (stateIt == states_.end() || findState(newName))
+        return false;
+
+    stateIt->name = newName;
+    for (auto& transition : transitions_) {
+        if (transition.fromState == oldName)
+            transition.fromState = newName;
+        if (transition.toState == oldName)
+            transition.toState = newName;
+    }
+    if (defaultState_ == oldName)
+        defaultState_ = newName;
+    if (currentState_ == oldName)
+        currentState_ = newName;
+    if (nextState_ == oldName)
+        nextState_ = newName;
+
+    bumpDefinitionRevision();
     return true;
 }
 

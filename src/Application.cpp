@@ -1337,6 +1337,177 @@ void Application::setSequencerControlEnabled(bool enabled)
     }
 }
 
+void Application::setSequencerCameraFollowEnabled(bool enabled)
+{
+    if (sequenceCaptureActive_ || sequencerCameraFollowEnabled_ == enabled)
+        return;
+
+    sequencerCameraFollowEnabled_ = enabled;
+    sequenceCameraActive_ = false;
+    if (enabled && sequencerControlEnabled_)
+        sequencerPreviewPending_ = true;
+}
+
+void Application::invalidateAnimatorDefinition(
+    SceneManager::ModelEntity& entity)
+{
+    entity.pendingSequencerBlend = {};
+    entity.hasPendingSequencerBlend = false;
+    entity.rootMotionInitialized = false;
+    entity.rootMotionClipHistory.clear();
+    entity.observedAnimatorDefinitionRevision =
+        entity.animatorController.definitionRevision();
+
+    if (isEntitySequencerAnimatorControlled(entity.entityId)) {
+        sequencerPreviewPending_ = true;
+        lastSequencerAnimatorEvalTime_ = -1.0;
+    }
+}
+
+void Application::invalidateAnimationData(SceneManager::ModelEntity& entity)
+{
+    if (entity.previewClipIndex >= static_cast<int>(entity.animationClips.size())) {
+        entity.previewClipIndex = -1;
+        entity.previewTime = 0.f;
+    }
+    invalidateAnimatorDefinition(entity);
+}
+
+void Application::detectAnimatorDefinitionChanges()
+{
+    for (auto& entity : sceneMgr_.getModelEntities()) {
+        if (entity.observedAnimatorDefinitionRevision
+            == entity.animatorController.definitionRevision()) {
+            continue;
+        }
+        invalidateAnimatorDefinition(entity);
+    }
+}
+
+void Application::notifyAnimatorControllerDefinitionChanged(
+    uint64_t entityId, bool synchronizeBoundInstances)
+{
+    auto* sourceEntity = sceneMgr_.getModelEntity(entityId);
+    if (!sourceEntity) return;
+
+    std::vector<uint64_t> affectedEntityIds{entityId};
+    if (synchronizeBoundInstances
+        && !sourceEntity->animatorControllerPath.empty()) {
+        auto normalizedControllerPath = [&](const std::string& path) {
+            if (path.empty()) return std::string{};
+            std::filesystem::path resolved(path);
+            if (resolved.is_relative())
+                resolved = std::filesystem::path(getResRoot()) / resolved;
+            std::error_code ec;
+            const auto canonical =
+                std::filesystem::weakly_canonical(resolved, ec);
+            if (!ec) resolved = canonical;
+            return normalizeSequenceBindingPath(resolved.generic_string());
+        };
+        const std::string sourcePath = normalizedControllerPath(
+            sourceEntity->animatorControllerPath);
+        for (auto& entity : sceneMgr_.getModelEntities()) {
+            if (entity.entityId == entityId
+                || normalizedControllerPath(entity.animatorControllerPath)
+                    != sourcePath) {
+                continue;
+            }
+            entity.animatorController.replaceDefinitionFrom(
+                sourceEntity->animatorController, true);
+            affectedEntityIds.push_back(entity.entityId);
+        }
+    }
+
+    for (const uint64_t affectedId : affectedEntityIds) {
+        if (auto* entity = sceneMgr_.getModelEntity(affectedId))
+            invalidateAnimatorDefinition(*entity);
+    }
+}
+
+bool Application::renameAnimatorState(uint64_t entityId,
+                                      const std::string& oldName,
+                                      const std::string& newName,
+                                      std::string* error)
+{
+    auto fail = [&](const std::string& message) {
+        if (error) *error = message;
+        return false;
+    };
+    if (oldName.empty() || newName.empty())
+        return fail("State name cannot be empty");
+    if (oldName == newName)
+        return true;
+    if (newName == "AnyState")
+        return fail("'AnyState' is reserved");
+
+    auto* sourceEntity = sceneMgr_.getModelEntity(entityId);
+    if (!sourceEntity || !sourceEntity->animatorController.hasState(oldName))
+        return fail("Source State no longer exists");
+    if (sourceEntity->animatorController.hasState(newName))
+        return fail("A State with that name already exists");
+
+    auto normalizedControllerPath = [&](const std::string& path) {
+        if (path.empty()) return std::string{};
+        std::filesystem::path resolved(path);
+        if (resolved.is_relative())
+            resolved = std::filesystem::path(getResRoot()) / resolved;
+        std::error_code ec;
+        const auto canonical = std::filesystem::weakly_canonical(resolved, ec);
+        if (!ec) resolved = canonical;
+        return normalizeSequenceBindingPath(resolved.generic_string());
+    };
+
+    const std::string sourcePath =
+        normalizedControllerPath(sourceEntity->animatorControllerPath);
+    std::vector<uint64_t> referencedEntityIds;
+    std::vector<uint64_t> renameEntityIds;
+    for (auto& entity : sceneMgr_.getModelEntities()) {
+        const bool sameController =
+            entity.entityId == entityId
+            || (!sourcePath.empty()
+                && normalizedControllerPath(entity.animatorControllerPath)
+                    == sourcePath);
+        if (!sameController) continue;
+
+        referencedEntityIds.push_back(entity.entityId);
+        const bool hasOld = entity.animatorController.hasState(oldName);
+        const bool hasNew = entity.animatorController.hasState(newName);
+        if (hasOld && hasNew)
+            return fail("A bound Controller instance has conflicting State names");
+        if (hasOld)
+            renameEntityIds.push_back(entity.entityId);
+    }
+
+    for (const uint64_t affectedId : renameEntityIds) {
+        auto* entity = sceneMgr_.getModelEntity(affectedId);
+        if (!entity
+            || !entity->animatorController.renameState(oldName, newName)) {
+            return fail("Failed to rename State in a bound Controller instance");
+        }
+    }
+
+    const std::unordered_set<uint64_t> referencedIds(
+        referencedEntityIds.begin(), referencedEntityIds.end());
+    for (auto& track : currentSequence_.tracks) {
+        if (track.type == TrackType::AnimatorKeyframe
+            && referencedIds.count(track.animatorTrack.targetEntityId) != 0
+            && track.animatorTrack.initialState == oldName) {
+            track.animatorTrack.initialState = newName;
+        }
+    }
+
+    for (const uint64_t affectedId : referencedEntityIds) {
+        if (auto* entity = sceneMgr_.getModelEntity(affectedId))
+            invalidateAnimatorDefinition(*entity);
+    }
+    if (sequencerControlEnabled_) {
+        sequencerPreviewPending_ = true;
+        lastSequencerAnimatorEvalTime_ = -1.0;
+    }
+    if (error) error->clear();
+    return true;
+}
+
 void Application::destroyEntitySkinBindings(SceneManager::ModelEntity& ent)
 {
     std::unordered_set<SkinBindingId> uniqueBindings;
@@ -1466,6 +1637,11 @@ void Application::drawFrame(float dt)
     if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
         throw std::runtime_error("Failed to acquire swap chain image!");
 
+    // Animator definition edits happen in UIManager::prepareFrame(). Detect
+    // every revision change before Sequencer evaluation so the current
+    // playhead is recomputed in the same rendered frame.
+    detectAnimatorDefinitionChanges();
+
     // ── Sequencer 驱动 ───────────────────────────────────────────────────────
     sequenceCameraActive_ = false;
     {
@@ -1489,6 +1665,8 @@ void Application::drawFrame(float dt)
                     it = cameraPathCache_.emplace(pathAssetRelPath, std::move(path)).first;
                 }
                 auto result = it->second.evaluate(localT);
+                if (!sequencerCameraFollowEnabled_ && !sequenceCaptureActive_)
+                    return;
                 camera_.Position = result.position;
                 camera_.SetOrientation(result.orientation);
                 camera_.FovDeg = result.fovDeg;
@@ -1541,6 +1719,8 @@ void Application::drawFrame(float dt)
                     if (!cameraEntity || !cameraEntity->isCamera())
                         return;
                     cameraEntity->syncCameraFromTransform();
+                    if (!sequencerCameraFollowEnabled_ && !sequenceCaptureActive_)
+                        return;
                     camera_.Position = cameraEntity->cameraData.position;
                     camera_.SetOrientation(cameraEntity->cameraData.orientation);
                     camera_.FovDeg = cameraEntity->cameraData.fovDeg;
@@ -1690,12 +1870,56 @@ void Application::drawFrame(float dt)
                 ent.rootMotionClipHistory.clear();
             }
 
+            auto decomposeTransform = [](const glm::mat4& transform) {
+                BoneLocalTransform result;
+                glm::vec3 skew{};
+                glm::vec4 perspective{};
+                if (glm::decompose(
+                        transform, result.scale, result.rotation,
+                        result.translation, skew, perspective)) {
+                    result.rotation = glm::normalize(result.rotation);
+                }
+                return result;
+            };
+
+            // Root Motion must be extracted in skeleton/model space. A selected
+            // bone such as Mixamo Hips commonly inherits a 0.01 scale from an
+            // Armature parent; using its local translation directly as world
+            // displacement makes the actor move roughly 100x too far.
             auto evaluateClipRoot = [&](const AnimationClip& clip,
                                         float sampleTime,
                                         int rootBoneIdx) {
-                return clip.evaluateBoneLocalTransformParts(
-                    rootBoneIdx, sampleTime,
-                    skeleton->bones[rootBoneIdx].localBindTransform);
+                std::vector<int> ancestorChain;
+                for (int boneIndex = rootBoneIdx;
+                     boneIndex >= 0
+                     && boneIndex < static_cast<int>(skeleton->bones.size());
+                     boneIndex = skeleton->bones[boneIndex].parentIndex) {
+                    ancestorChain.push_back(boneIndex);
+                }
+                std::reverse(ancestorChain.begin(), ancestorChain.end());
+
+                glm::mat4 animatedGlobal(1.f);
+                bool hasParent = false;
+                int parentIndex = -1;
+                for (const int boneIndex : ancestorChain) {
+                    const auto& bone = skeleton->bones[boneIndex];
+                    const glm::mat4 animatedLocal =
+                        clip.evaluateBoneLocalTransform(
+                            boneIndex, sampleTime, bone.localBindTransform);
+                    const glm::mat4 bindToAnimatedLocal =
+                        bone.globalBindTransform
+                        * glm::inverse(bone.localBindTransform)
+                        * animatedLocal;
+                    animatedGlobal = hasParent
+                        ? animatedGlobal
+                            * glm::inverse(
+                                skeleton->bones[parentIndex].globalBindTransform)
+                            * bindToAnimatedLocal
+                        : bindToAnimatedLocal;
+                    hasParent = true;
+                    parentIndex = boneIndex;
+                }
+                return decomposeTransform(animatedGlobal);
             };
 
             auto evaluateStateRootDelta =
@@ -1748,25 +1972,26 @@ void Application::drawFrame(float dt)
                                     (endRoot.translation - previous.translation)
                                     + (currentRoot.translation - startRoot.translation);
                                 const glm::quat first =
-                                    endRoot.rotation * glm::inverse(previous.rotation);
+                                    glm::inverse(previous.rotation) * endRoot.rotation;
                                 const glm::quat second =
-                                    currentRoot.rotation * glm::inverse(startRoot.rotation);
-                                delta.rotation = glm::normalize(second * first);
+                                    glm::inverse(startRoot.rotation) * currentRoot.rotation;
+                                delta.rotation = glm::normalize(first * second);
                             } else {
                                 delta.translation =
                                     (startRoot.translation - previous.translation)
                                     + (currentRoot.translation - endRoot.translation);
                                 const glm::quat first =
-                                    startRoot.rotation * glm::inverse(previous.rotation);
+                                    glm::inverse(previous.rotation) * startRoot.rotation;
                                 const glm::quat second =
-                                    currentRoot.rotation * glm::inverse(endRoot.rotation);
-                                delta.rotation = glm::normalize(second * first);
+                                    glm::inverse(endRoot.rotation) * currentRoot.rotation;
+                                delta.rotation = glm::normalize(first * second);
                             }
                         } else {
                             delta.translation =
                                 currentRoot.translation - previous.translation;
                             delta.rotation = glm::normalize(
-                                currentRoot.rotation * glm::inverse(previous.rotation));
+                                glm::inverse(previous.rotation)
+                                * currentRoot.rotation);
                         }
                         sampleDeltas[sampleIndex] = delta;
                         validWeight += sample.weight;
@@ -1831,40 +2056,109 @@ void Application::drawFrame(float dt)
                     transitionWeight));
             }
 
-            const AnimatorState* rootMotionState = blendCommand.stateA;
-            if ((!rootMotionState
-                 || rootMotionState->rootMotion == AnimatorState::RootMotionMode::None)
-                && blendCommand.stateB) {
-                rootMotionState = blendCommand.stateB;
-            }
+            auto usesRootMotion = [](const AnimatorState* state) {
+                return state
+                    && state->rootMotion != AnimatorState::RootMotionMode::None;
+            };
+            const bool anyFollow =
+                (blendCommand.stateA
+                 && blendCommand.stateA->rootMotion
+                    == AnimatorState::RootMotionMode::Follow)
+                || (blendCommand.stateB
+                    && blendCommand.stateB->rootMotion
+                       == AnimatorState::RootMotionMode::Follow);
 
-            if (rootMotionState
-                && rootMotionState->rootMotion != AnimatorState::RootMotionMode::None) {
-                const int rootBoneIdx = rootBoneIndex(rootMotionState);
-
-                if (rootMotionState->rootMotion == AnimatorState::RootMotionMode::Locked) {
-                    localTransforms[rootBoneIdx] = skeleton->bones[rootBoneIdx].localBindTransform;
-                    ent.rootMotionInitialized = false;
-                } else if (rootMotionState->rootMotion
-                           == AnimatorState::RootMotionMode::Follow) {
-                    BoneLocalTransform rootPose = evaluateStatePose(
-                        rootMotionState == blendCommand.stateB
-                            ? blendCommand.poseB
-                            : blendCommand.poseA,
-                        rootBoneIdx,
-                        skeleton->bones[rootBoneIdx].localBindTransform);
-                    if (ent.rootMotionInitialized && finalRootDelta.valid) {
-                        ent.transform.position += finalRootDelta.translation;
-                        ent.transform.rotation =
-                            finalRootDelta.rotation * ent.transform.rotation;
-                    }
-                    ent.rootMotionInitialized = true;
-                    localTransforms[rootBoneIdx] = glm::mat4_cast(rootPose.rotation)
-                                                 * glm::scale(glm::mat4(1.f), rootPose.scale);
+            // Remove extracted motion from each participating State before the
+            // State-transition blend. Follow uses the clip's playback-start pose
+            // as its in-place reference; Locked uses the skeleton bind pose.
+            auto adjustedStateRootPose =
+                [&](const AnimatorController::StatePoseCommand& statePose,
+                    int boneIndex) {
+                const glm::mat4& bindTransform =
+                    skeleton->bones[boneIndex].localBindTransform;
+                BoneLocalTransform pose = evaluateStatePose(
+                    statePose, boneIndex, bindTransform);
+                const AnimatorState* state = statePose.state;
+                if (!usesRootMotion(state)
+                    || rootBoneIndex(state) != boneIndex) {
+                    return pose;
                 }
-            } else {
-                ent.rootMotionInitialized = false;
+                if (state->rootMotion
+                    == AnimatorState::RootMotionMode::Locked) {
+                    return decomposeTransform(bindTransform);
+                }
+
+                auto referencePose = statePose;
+                for (uint32_t sampleIndex = 0;
+                     sampleIndex < referencePose.sampleCount;
+                     ++sampleIndex) {
+                    auto& sample = referencePose.samples[sampleIndex];
+                    if (!sample.clip) continue;
+                    sample.sampleTime =
+                        state->direction == PlaybackDirection::Reverse
+                        ? sample.clip->duration : 0.f;
+                }
+                return evaluateStatePose(
+                    referencePose, boneIndex, bindTransform);
+            };
+
+            std::array<int, 2> adjustedRootBones{-1, -1};
+            size_t adjustedRootBoneCount = 0;
+            auto addAdjustedRootBone = [&](const AnimatorState* state) {
+                if (!usesRootMotion(state)) return;
+                const int boneIndex = rootBoneIndex(state);
+                for (size_t i = 0; i < adjustedRootBoneCount; ++i) {
+                    if (adjustedRootBones[i] == boneIndex) return;
+                }
+                adjustedRootBones[adjustedRootBoneCount++] = boneIndex;
+            };
+            addAdjustedRootBone(blendCommand.stateA);
+            addAdjustedRootBone(blendCommand.stateB);
+
+            for (size_t i = 0; i < adjustedRootBoneCount; ++i) {
+                const int boneIndex = adjustedRootBones[i];
+                const glm::mat4& bindTransform =
+                    skeleton->bones[boneIndex].localBindTransform;
+                BoneLocalTransform pose = adjustedStateRootPose(
+                    blendCommand.poseA, boneIndex);
+                if (blendCommand.poseB.sampleCount > 0) {
+                    const BoneLocalTransform target = adjustedStateRootPose(
+                        blendCommand.poseB, boneIndex);
+                    pose.translation = glm::mix(
+                        pose.translation, target.translation, transitionWeight);
+                    pose.rotation = glm::normalize(glm::slerp(
+                        pose.rotation, target.rotation, transitionWeight));
+                    pose.scale = glm::mix(
+                        pose.scale, target.scale, transitionWeight);
+                } else if (blendCommand.poseA.sampleCount == 0) {
+                    pose = decomposeTransform(bindTransform);
+                }
+                localTransforms[boneIndex] = pose.toMatrix();
             }
+
+            const bool finiteRootDelta =
+                std::isfinite(finalRootDelta.translation.x)
+                && std::isfinite(finalRootDelta.translation.y)
+                && std::isfinite(finalRootDelta.translation.z)
+                && std::isfinite(finalRootDelta.rotation.w)
+                && std::isfinite(finalRootDelta.rotation.x)
+                && std::isfinite(finalRootDelta.rotation.y)
+                && std::isfinite(finalRootDelta.rotation.z);
+            if (ent.rootMotionInitialized && anyFollow
+                && finalRootDelta.valid && finiteRootDelta) {
+                const glm::quat actorRotation =
+                    glm::normalize(ent.transform.rotation);
+                const glm::vec3 actorLocalDelta =
+                    finalRootDelta.translation * ent.transform.scale;
+                ent.transform.position += actorRotation * actorLocalDelta;
+                ent.transform.rotation = glm::normalize(
+                    actorRotation * finalRootDelta.rotation);
+            } else if (finalRootDelta.valid && !finiteRootDelta) {
+                std::cerr << "[RootMotion] discarded non-finite delta for entity "
+                          << ent.entityId << "\n";
+                ent.rootMotionClipHistory.clear();
+            }
+            ent.rootMotionInitialized = anyFollow && finiteRootDelta;
         }
 
         std::vector<glm::mat4> finalBoneMatrices;
@@ -2545,6 +2839,7 @@ bool Application::ensureAnimationAssetForMeshAst(const std::string& meshAstRelPa
     std::vector<AnimationClip> mergedClips;
     std::shared_ptr<Skeleton> mergedSkeleton;
     std::vector<std::string> loadedPaths;
+    std::unordered_set<std::string> mergedClipNames;
     bool anyLoaded = false;
 
     // 加载单个 .anim.ast 文件，累积到 mergedClips
@@ -2556,8 +2851,21 @@ bool Application::ensureAnimationAssetForMeshAst(const std::string& meshAstRelPa
                 mergedSkeleton = std::move(animAsset.skeleton);
                 anyLoaded = true;
             }
-            for (auto& clip : animAsset.clips)
+            for (auto& clip : animAsset.clips) {
+                const std::string originalName =
+                    clip.name.empty() ? std::string("Clip") : clip.name;
+                std::string uniqueName = originalName;
+                for (size_t suffix = 1; mergedClipNames.count(uniqueName) != 0; ++suffix)
+                    uniqueName = originalName + "_" + std::to_string(suffix);
+                if (uniqueName != clip.name) {
+                    std::cerr << "[AnimationAsset] duplicate clip name '" << clip.name
+                              << "' from " << astRel << "; using runtime name '"
+                              << uniqueName << "'\n";
+                    clip.name = uniqueName;
+                }
+                mergedClipNames.insert(clip.name);
                 mergedClips.push_back(std::move(clip));
+            }
             loadedPaths.push_back(stripResPrefix(astRel));
             return true;
         }
@@ -3670,10 +3978,13 @@ bool Application::importModel(const std::string& sourcePath,
 // ─── Import Animation FBX ─────────────────────────────────────────────────────
 
 bool Application::importAnimationFbx(const std::string& fbxPath,
-                                     const std::string& targetMeshAstRelPath)
+                                     const std::string& targetMeshAstRelPath,
+                                     AnimationImportReport* report)
 {
     namespace fs = std::filesystem;
     std::error_code ec;
+    if (report)
+        *report = {};
 
     if (fbxPath.empty() || targetMeshAstRelPath.empty()) {
         std::cerr << "[ImportAnim] empty path\n";
@@ -3810,6 +4121,28 @@ bool Application::importAnimationFbx(const std::string& fbxPath,
     // Derive a unique name from the source FBX
     const std::string clipStem = sanitizeAssetName(fs::path(fbxPath).stem().string());
 
+    // Clip names are controller/Sequencer identifiers, so keep them unique across
+    // every animation asset already linked by the target mesh. Persist the chosen
+    // names in the asset rather than relying only on a runtime alias.
+    std::unordered_set<std::string> existingClipNames;
+    for (const auto& astRel : existingAnimAsts) {
+        AnimationAsset existingAsset;
+        if (!AnimationAssetLoader::load(astRel, existingAsset, nullptr))
+            continue;
+        for (const auto& clip : existingAsset.clips)
+            existingClipNames.insert(clip.name);
+    }
+    for (auto& clip : retargetResult.retargetedClips) {
+        std::string base = clip.name.empty() ? clipStem : clip.name;
+        if (existingClipNames.count(base) != 0)
+            base = clipStem.empty() ? std::string("ImportedClip") : clipStem;
+        std::string uniqueName = base;
+        for (size_t suffix = 1; existingClipNames.count(uniqueName) != 0; ++suffix)
+            uniqueName = base + "_" + std::to_string(suffix);
+        clip.name = std::move(uniqueName);
+        existingClipNames.insert(clip.name);
+    }
+
     // Check for clip name conflicts with existing animation assets
     std::string animStem = animName + "_" + clipStem;
     {
@@ -3846,6 +4179,12 @@ bool Application::importAnimationFbx(const std::string& fbxPath,
     std::ofstream meshOut(meshAstAbs);
     if (meshOut.is_open()) {
         meshOut << meshJson.dump(2) << "\n";
+        meshOut.close();
+        if (!meshOut) {
+            std::cerr << "[ImportAnim] failed to finalize mesh .ast update: "
+                      << meshAstAbs << "\n";
+            return false;
+        }
     } else {
         std::cerr << "[ImportAnim] failed to update mesh .ast: " << meshAstAbs << "\n";
         return false;
@@ -3853,16 +4192,55 @@ bool Application::importAnimationFbx(const std::string& fbxPath,
 
     modelRegistry_.refresh();
 
-    // 6. If target entity is already loaded in the scene, apply the animation
-    const auto& ents = sceneMgr_.getModelEntities();
-    for (const auto& ent : ents) {
-        if (ent.astRelPath == targetMeshAstRelPath) {
-            sceneMgr_.setEntityAnimationData(ent.entityId, dstSkeleton,
-                                             retargetResult.retargetedClips);
-            std::cout << "[ImportAnim] applied animation to entity " << ent.entityId
-                      << " (" << ent.displayName << ")\n";
-            break;
+    // 6. Reload the target mesh's complete animation collection for every scene
+    // instance. Normalization handles res/ prefixes, slash direction and case.
+    auto normalizedAssetKey = [&](std::string path) {
+        fs::path parsed(path);
+        if (parsed.is_absolute()) {
+            std::error_code relativeError;
+            const fs::path relative = fs::relative(parsed, resRootPath, relativeError);
+            if (!relativeError)
+                path = relative.generic_string();
         }
+        path = normalizeSequenceBindingPath(std::move(path));
+        if (path.rfind("res/", 0) == 0)
+            path.erase(0, 4);
+        return path;
+    };
+    const std::string targetAssetKey = normalizedAssetKey(normalizedMeshAstRel);
+    std::vector<uint64_t> matchingEntityIds;
+    for (const auto& ent : sceneMgr_.getModelEntities()) {
+        if (normalizedAssetKey(ent.astRelPath) == targetAssetKey)
+            matchingEntityIds.push_back(ent.entityId);
+    }
+
+    size_t refreshedEntityCount = 0;
+    size_t totalClipCount = 0;
+    for (const uint64_t entityId : matchingEntityIds) {
+        auto* entity = sceneMgr_.getModelEntity(entityId);
+        const uint64_t previousRevision =
+            entity ? entity->animationDataRevision : 0;
+        ensureAnimationAssetForMeshAst(
+            normalizedMeshAstRel, "", false, entityId);
+        entity = sceneMgr_.getModelEntity(entityId);
+        if (!entity || entity->animationDataRevision == previousRevision)
+            continue;
+
+        invalidateAnimationData(*entity);
+        ++refreshedEntityCount;
+        totalClipCount = entity->animationClips.size();
+        std::cout << "[ImportAnim] refreshed entity " << entity->entityId
+                  << " (" << entity->displayName << ") with "
+                  << entity->animationClips.size() << " total clip(s)\n";
+    }
+
+    if (report) {
+        report->assetPath = animAstRel;
+        report->refreshedEntityCount = refreshedEntityCount;
+        report->totalClipCount = totalClipCount;
+        report->importedClipNames.reserve(retargetResult.retargetedClips.size());
+        for (const auto& clip : retargetResult.retargetedClips)
+            report->importedClipNames.push_back(clip.name);
     }
 
     std::cout << "[ImportAnim] imported " << fbxPath << " → " << animAstRel

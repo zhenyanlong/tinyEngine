@@ -70,10 +70,12 @@ public:
         // 每实体独立的动画状态（下沉自 SceneManager 全局单例）
         std::shared_ptr<Skeleton> skeleton;
         std::vector<AnimationClip> animationClips;
+        uint64_t animationDataRevision = 0; ///< clips/skeleton 被重新装载时递增，供 UI/Sequencer 失效缓存。
         std::string animationAssetPath; ///< 提供当前 clips 的 .anim.ast 路径，用于元数据编辑与持久化。
         std::vector<std::string> animationAssetPaths; ///< mesh.ast 中引用的全部 .anim.ast 路径
         AnimatorController animatorController;
         std::string animatorControllerPath; ///< 当前绑定的 .animctrl.json 资产路径；为空表示运行时临时控制器。
+        uint64_t observedAnimatorDefinitionRevision = 0; ///< Application 最近处理过的 Controller 定义版本。
         // ── 预览模式 ─────────────────────────────────────────
         int previewClipIndex = -1;   // >=0 时覆盖状态机，直接播放 animationClips[previewClipIndex]
         float previewTime = 0.f;     // 预览 clip 的当前时间

@@ -3,7 +3,12 @@
     "content/Remy/Remy.anim.ast",
     "content/Remy/Remy.mesh_Body Block.anim.ast",
     "content/Remy/Remy.mesh_Body Block_alt.anim.ast",
-    "content/Remy/Remy.mesh_Jumping Down.anim.ast"
+    "content/Remy/Remy.mesh_Jumping Down.anim.ast",
+    "content/Remy/Remy.mesh_Seated Idle.anim.ast",
+    "content/Remy/Remy.mesh_Stand Up.anim.ast",
+    "content/Remy/Remy.mesh_CarefulWalking.anim.ast",
+    "content/Remy/Remy.mesh_Walking.anim.ast",
+    "content/Remy/Remy.mesh_Happy Idle.anim.ast"
   ],
   "materials": [
     "content/Remy/Shoesmat.material.ast",
