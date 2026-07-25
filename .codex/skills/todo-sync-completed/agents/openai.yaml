@@ -1,4 +1,0 @@
-interface:
-  display_name: "Todo Sync Completed"
-  short_description: "Move completed tinyEngine todos into Done"
-  default_prompt: "Use $todo-sync-completed to update todolist.md from the current context and TDD."

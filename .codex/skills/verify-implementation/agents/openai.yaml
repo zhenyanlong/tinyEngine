@@ -1,4 +1,0 @@
-interface:
-  display_name: "Verify Implementation"
-  short_description: "Audit tinyEngine plan and progress claims against code evidence."
-  default_prompt: "Use $verify-implementation to audit tinyEngine unchecked progress and plan items against the current codebase."
