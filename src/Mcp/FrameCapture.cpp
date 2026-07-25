@@ -78,7 +78,8 @@ void FrameCapture::destroy(const VulkanContext& ctx)
     available_ = false;
 }
 
-nlohmann::json FrameCapture::request(int currentFrameCount, bool includeUi)
+nlohmann::json FrameCapture::request(int currentFrameCount, bool includeUi,
+                                     bool writePng)
 {
     if (status_ == Status::Pending || status_ == Status::Submitted) {
         return {{"error", {{"code", "capture_busy"},
@@ -93,8 +94,10 @@ nlohmann::json FrameCapture::request(int currentFrameCount, bool includeUi)
     requestedFrame_ = currentFrameCount;
     capturedFrame_ = 0;
     includeUi_ = includeUi;
+    writePng_ = writePng;
     outputPath_.clear();
     outputBytes_ = 0;
+    outputRgba_.clear();
     errorCode_.clear();
     errorMessage_.clear();
     status_ = Status::Pending;
@@ -103,7 +106,8 @@ nlohmann::json FrameCapture::request(int currentFrameCount, bool includeUi)
         {"jobId", jobId_},
         {"status", statusName(status_)},
         {"requestedFrame", requestedFrame_},
-        {"includeUi", includeUi_}
+        {"includeUi", includeUi_},
+        {"writePng", writePng_}
     };
 }
 
@@ -120,12 +124,17 @@ nlohmann::json FrameCapture::query(uint64_t jobId) const
         {"requestedFrame", requestedFrame_},
         {"capturedFrame", capturedFrame_},
         {"includeUi", includeUi_},
+        {"writePng", writePng_},
         {"width", extent_.width},
         {"height", extent_.height}
     };
     if (status_ == Status::Ready) {
-        result["path"] = outputPath_;
-        result["mimeType"] = "image/png";
+        if (writePng_) {
+            result["path"] = outputPath_;
+            result["mimeType"] = "image/png";
+        } else {
+            result["pixelFormat"] = "RGBA8";
+        }
         result["bytes"] = outputBytes_;
     } else if (status_ == Status::Failed) {
         result["error"] = {
@@ -134,6 +143,35 @@ nlohmann::json FrameCapture::query(uint64_t jobId) const
         };
     }
     return result;
+}
+
+bool FrameCapture::takeReadyRgba(uint64_t jobId,
+                                 std::vector<uint8_t>& rgba,
+                                 uint32_t& width,
+                                 uint32_t& height,
+                                 std::string* error)
+{
+    if (error)
+        error->clear();
+    if (jobId == 0 || jobId != jobId_) {
+        if (error) *error = "Unknown capture job id";
+        return false;
+    }
+    if (status_ != Status::Ready) {
+        if (error) *error = "Captured RGBA data is not ready";
+        return false;
+    }
+    const size_t expectedBytes =
+        static_cast<size_t>(extent_.width)
+        * static_cast<size_t>(extent_.height) * 4u;
+    if (outputRgba_.size() != expectedBytes) {
+        if (error) *error = "Captured RGBA data has an invalid size";
+        return false;
+    }
+    rgba = std::move(outputRgba_);
+    width = extent_.width;
+    height = extent_.height;
+    return true;
 }
 
 bool FrameCapture::shouldRenderUi() const
@@ -230,13 +268,20 @@ void FrameCapture::complete(const VulkanContext& ctx)
     }
     vkUnmapMemory(ctx.getDevice(), readbackMemory_);
 
+    outputRgba_ = std::move(rgba);
+    outputBytes_ = outputRgba_.size();
+    if (!writePng_) {
+        status_ = Status::Ready;
+        return;
+    }
+
     const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
     const std::filesystem::path path = std::filesystem::path(captureDirectory_)
         / ("tiny_capture_" + std::to_string(now) + "_" + std::to_string(jobId_) + ".png");
 
     if (stbi_write_png(path.string().c_str(), static_cast<int>(extent_.width),
-                       static_cast<int>(extent_.height), 4, rgba.data(),
+                       static_cast<int>(extent_.height), 4, outputRgba_.data(),
                        static_cast<int>(extent_.width * 4u)) == 0) {
         failActiveJob("capture_png_failed", "Failed to encode the captured frame as PNG");
         return;

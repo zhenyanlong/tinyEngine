@@ -23,6 +23,8 @@
 #include "Mcp/CommandBridge.hpp"
 #include "Mcp/FrameCapture.hpp"
 #include "Mcp/IpcServer.hpp"
+#include "Video/MediaFoundationVideoEncoder.hpp"
+#include "Video/SequenceCaptureTarget.hpp"
 #include <glm/glm.hpp>
 #include <unordered_map>
 #include <vector>
@@ -145,6 +147,8 @@ public:
         double endTime = 0.0;
         int fps = 30;
         bool includeUi = false;
+        bool keepPngFrames = false;
+        int videoBitrateMbps = 12;
         std::string takeName;
     };
     bool beginSequenceCapture(const SequenceCaptureSettings& settings,
@@ -157,6 +161,9 @@ public:
     const std::string& getSequenceCaptureStatus() const { return sequenceCaptureStatus_; }
     const std::string& getSequenceCaptureOutputDirectory() const {
         return sequenceCaptureOutputDirectory_;
+    }
+    const std::string& getSequenceCaptureVideoPath() const {
+        return sequenceCaptureVideoPath_;
     }
 
 
@@ -247,32 +254,46 @@ private:
     // Editor viewport preference only. Capture always follows the evaluated
     // Sequence camera, regardless of this setting.
     bool               sequencerCameraFollowEnabled_ = true;
+    uint64_t           activeSequenceCameraEntityId_ = 0;
     double             lastSequencerAnimatorEvalTime_ = -1.0;
 
     bool               sequenceCaptureActive_ = false;
     bool               sequenceCaptureStopRequested_ = false;
     bool               sequenceCaptureCancelRequested_ = false;
     bool               sequenceCaptureFramePending_ = false;
+    bool               sequenceCaptureReadbackSubmitted_ = false;
+    bool               sequenceCaptureFrameReady_ = false;
     bool               sequenceCaptureWarmupFramePending_ = false;
     bool               sequenceCaptureIncludeUi_ = false;
-    uint64_t           sequenceCaptureJobId_ = 0;
+    bool               sequenceCaptureKeepPngFrames_ = false;
     uint32_t           sequenceCaptureFrameCount_ = 0;
     uint32_t           sequenceCaptureTotalFrames_ = 0;
     uint32_t           sequenceCaptureWarmupFrameCount_ = 0;
     uint32_t           sequenceCaptureWarmupTotalFrames_ = 0;
     uint32_t           sequenceCaptureWidth_ = 0;
     uint32_t           sequenceCaptureHeight_ = 0;
+    uint32_t           sequenceCaptureVideoWidth_ = 0;
+    uint32_t           sequenceCaptureVideoHeight_ = 0;
+    uint32_t           sequenceCaptureSwapchainRebuilds_ = 0;
     int                sequenceCaptureFps_ = 30;
+    int                sequenceCaptureVideoBitrateMbps_ = 12;
     double             sequenceCaptureStartTime_ = 0.0;
     double             sequenceCaptureEndTime_ = 0.0;
     std::string        sequenceCaptureOutputDirectory_;
+    std::string        sequenceCaptureVideoPath_;
     std::string        sequenceCaptureStatus_ = "Idle";
+    std::string        sequenceCaptureReadbackError_;
+    std::vector<uint8_t> sequenceCapturePendingRgba_;
+    bool               sequenceCaptureWindowResizeLocked_ = false;
+    bool               sequenceCaptureWindowWasResizable_ = true;
     double             sequenceCaptureSavedTime_ = 0.0;
     bool               sequenceCaptureSavedPlaying_ = false;
     bool               sequenceCaptureSavedLooping_ = false;
     glm::vec3          sequenceCaptureSavedCameraPosition_{0.f};
     glm::quat          sequenceCaptureSavedCameraOrientation_{1.f, 0.f, 0.f, 0.f};
     float              sequenceCaptureSavedCameraFov_ = 45.f;
+    float              sequenceCaptureSavedCameraNear_ = 0.1f;
+    float              sequenceCaptureSavedCameraFar_ = 500.f;
     struct SequenceCaptureSavedEntity {
         uint64_t entityId = 0;
         ObjectTransform transform;
@@ -292,6 +313,8 @@ private:
     // ── MCP / IPC state ────────────────────────────────────────────────────────
     std::unique_ptr<IpcServer> ipc_;
     FrameCapture               frameCapture_;
+    MediaFoundationVideoEncoder sequenceVideoEncoder_;
+    SequenceCaptureTarget      sequenceCaptureTarget_;
     int                        mcpPort_ = 9527;
     int                        exitAfterFrames_ = -1;
     int                        frameCount_ = 0;
@@ -307,6 +330,7 @@ private:
     void gameLoop();
     void drawFrame(float dt);
     void recordCommandBuffer(VkCommandBuffer cb, uint32_t imageIndex);
+    void recordSequenceCapturePass(VkCommandBuffer cb, uint32_t imageIndex);
     void recreateSwapChain();
     void processInput(GLFWwindow* w);
     void tryPickMainModel(float cx, float cy);

@@ -33,6 +33,7 @@
 // STB_IMAGE_IMPLEMENTATION defined globally; only TextureManager.cpp implements it
 #undef STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
+#include <stb_image_write.h>
 
 namespace {
 
@@ -959,6 +960,8 @@ bool Application::beginSequenceCapture(const SequenceCaptureSettings& settings,
     }
     if (settings.fps < 1 || settings.fps > 240)
         return fail("Capture FPS must be in the range 1..240");
+    if (settings.videoBitrateMbps < 1 || settings.videoBitrateMbps > 200)
+        return fail("Video bitrate must be in the range 1..200 Mbps");
     if (!(settings.endTime > settings.startTime))
         return fail("Capture end time must be greater than start time");
     if (settings.startTime < 0.0)
@@ -1030,12 +1033,39 @@ bool Application::beginSequenceCapture(const SequenceCaptureSettings& settings,
     if (ec)
         return fail("Cannot create take directory: " + ec.message());
 
+    const VkExtent2D captureExtent = swapChain_.getExtent();
+    if (captureExtent.width == 0 || captureExtent.height == 0)
+        return fail("The current framebuffer has an invalid size");
+    std::string captureTargetError;
+    if (!sequenceCaptureTarget_.create(
+            ctx_, fbMgr_, rpMgr_,
+            captureExtent.width, captureExtent.height,
+            &captureTargetError)) {
+        return fail("Cannot create the fixed-resolution capture target: "
+                    + captureTargetError);
+    }
+    const std::filesystem::path videoPath =
+        output / (output.filename().string() + ".mp4");
+    std::string encoderError;
+    if (!sequenceVideoEncoder_.begin(
+            videoPath,
+            captureExtent.width,
+            captureExtent.height,
+            settings.fps,
+            static_cast<uint32_t>(settings.videoBitrateMbps) * 1'000'000u,
+            &encoderError)) {
+        sequenceCaptureTarget_.destroy(ctx_);
+        return fail("Cannot start MP4 recording: " + encoderError);
+    }
+
     sequenceCaptureSavedTime_ = seqPlayer_.currentTime();
     sequenceCaptureSavedPlaying_ = seqPlayer_.isPlaying();
     sequenceCaptureSavedLooping_ = seqPlayer_.isLooping();
     sequenceCaptureSavedCameraPosition_ = camera_.Position;
     sequenceCaptureSavedCameraOrientation_ = camera_.GetOrientation();
     sequenceCaptureSavedCameraFov_ = camera_.FovDeg;
+    sequenceCaptureSavedCameraNear_ = camera_.NearPlane;
+    sequenceCaptureSavedCameraFar_ = camera_.FarPlane;
     sequenceCaptureSavedEntities_.clear();
     sequenceCaptureSavedEntities_.reserve(
         sceneMgr_.getModelEntities().size());
@@ -1049,23 +1079,40 @@ bool Application::beginSequenceCapture(const SequenceCaptureSettings& settings,
     sequenceCaptureEndTime_ = settings.endTime;
     sequenceCaptureFps_ = settings.fps;
     sequenceCaptureIncludeUi_ = settings.includeUi;
+    sequenceCaptureKeepPngFrames_ = settings.keepPngFrames;
+    sequenceCaptureVideoBitrateMbps_ = settings.videoBitrateMbps;
     sequenceCaptureTotalFrames_ = totalFrames;
     sequenceCaptureFrameCount_ = 0;
     sequenceCaptureWarmupTotalFrames_ = static_cast<uint32_t>(
         std::max(0.0, std::ceil(
             settings.startTime * static_cast<double>(settings.fps) - 1e-9)));
     sequenceCaptureWarmupFrameCount_ = 0;
-    sequenceCaptureWidth_ = swapChain_.getExtent().width;
-    sequenceCaptureHeight_ = swapChain_.getExtent().height;
+    sequenceCaptureWidth_ = captureExtent.width;
+    sequenceCaptureHeight_ = captureExtent.height;
+    sequenceCaptureVideoWidth_ = sequenceVideoEncoder_.videoWidth();
+    sequenceCaptureVideoHeight_ = sequenceVideoEncoder_.videoHeight();
     sequenceCaptureOutputDirectory_ = std::filesystem::absolute(output).string();
+    sequenceCaptureVideoPath_ =
+        sequenceVideoEncoder_.outputPath().string();
     sequenceCaptureStatus_ = sequenceCaptureWarmupTotalFrames_ > 0
         ? "Pre-rolling"
         : "Recording";
     sequenceCaptureStopRequested_ = false;
     sequenceCaptureCancelRequested_ = false;
     sequenceCaptureFramePending_ = false;
+    sequenceCaptureReadbackSubmitted_ = false;
+    sequenceCaptureFrameReady_ = false;
     sequenceCaptureWarmupFramePending_ = false;
-    sequenceCaptureJobId_ = 0;
+    sequenceCapturePendingRgba_.clear();
+    sequenceCaptureReadbackError_.clear();
+    sequenceCaptureSwapchainRebuilds_ = 0;
+    sequenceCaptureWindowResizeLocked_ = false;
+    sequenceCaptureWindowWasResizable_ =
+        glfwGetWindowAttrib(window_, GLFW_RESIZABLE) == GLFW_TRUE;
+    if (settings.includeUi && sequenceCaptureWindowWasResizable_) {
+        glfwSetWindowAttrib(window_, GLFW_RESIZABLE, GLFW_FALSE);
+        sequenceCaptureWindowResizeLocked_ = true;
+    }
     sequenceCaptureActive_ = true;
     lastSequencerAnimatorEvalTime_ = -1.0;
     for (auto& entity : sceneMgr_.getModelEntities()) {
@@ -1095,11 +1142,19 @@ void Application::prepareSequenceCaptureFrame()
         return;
     }
     if (sequenceCaptureCancelRequested_) {
-        finishSequenceCapture("Cancelled", "Partial frames were kept");
+        finishSequenceCapture(
+            "Cancelled",
+            sequenceCaptureFrameCount_ > 0
+                ? "Partial video was finalized"
+                : "No video frames were captured");
         return;
     }
     if (sequenceCaptureStopRequested_) {
-        finishSequenceCapture("Stopped", "Partial frames were kept");
+        finishSequenceCapture(
+            "Stopped",
+            sequenceCaptureFrameCount_ > 0
+                ? "Partial video was finalized"
+                : "No video frames were captured");
         return;
     }
     if (sequenceCaptureFrameCount_ >= sequenceCaptureTotalFrames_) {
@@ -1126,21 +1181,11 @@ void Application::prepareSequenceCaptureFrame()
           / static_cast<double>(sequenceCaptureFps_);
     seqPlayer_.seek(captureTime);
     sequencerPreviewPending_ = true;
-
-    const json request =
-        frameCapture_.request(frameCount_, sequenceCaptureIncludeUi_);
-    if (request.contains("error")) {
-        finishSequenceCapture(
-            "Failed",
-            request["error"].value("message", std::string{"Frame capture request failed"}));
-        return;
-    }
-    sequenceCaptureJobId_ = request.value("jobId", uint64_t(0));
-    if (sequenceCaptureJobId_ == 0) {
-        finishSequenceCapture("Failed", "Frame capture returned an invalid job id");
-        return;
-    }
     sequenceCaptureFramePending_ = true;
+    sequenceCaptureReadbackSubmitted_ = false;
+    sequenceCaptureFrameReady_ = false;
+    sequenceCapturePendingRgba_.clear();
+    sequenceCaptureReadbackError_.clear();
 }
 
 void Application::finishSequenceCaptureFrame()
@@ -1159,53 +1204,56 @@ void Application::finishSequenceCaptureFrame()
     if (!sequenceCaptureFramePending_)
         return;
 
-    const json result = frameCapture_.query(sequenceCaptureJobId_);
-    if (result.contains("error")) {
+    if (!sequenceCaptureFrameReady_)
+        return;
+    if (!sequenceCaptureReadbackError_.empty()) {
         finishSequenceCapture(
             "Failed",
-            result["error"].value("message", std::string{"Frame capture failed"}));
-        return;
-    }
-    const std::string status = result.value("status", std::string{});
-    if (status == "pending" || status == "submitted")
-        return;
-    if (status != "ready") {
-        finishSequenceCapture("Failed", "Frame capture did not complete successfully");
+            "Cannot read the offscreen capture frame: "
+                + sequenceCaptureReadbackError_);
         return;
     }
 
-    const std::filesystem::path source = result.value("path", std::string{});
-    std::ostringstream fileName;
-    fileName << "frame_" << std::setw(6) << std::setfill('0')
-             << sequenceCaptureFrameCount_ << ".png";
-    const std::filesystem::path destination =
-        std::filesystem::path(sequenceCaptureOutputDirectory_) / fileName.str();
+    std::string frameError;
+    if (!sequenceVideoEncoder_.writeRgbaFrame(
+            sequenceCapturePendingRgba_,
+            sequenceCaptureFrameCount_, &frameError)) {
+        finishSequenceCapture(
+            "Failed", "Cannot encode video frame: " + frameError);
+        return;
+    }
 
-    std::error_code ec;
-    std::filesystem::rename(source, destination, ec);
-    if (ec) {
-        ec.clear();
-        std::filesystem::copy_file(
-            source, destination,
-            std::filesystem::copy_options::overwrite_existing, ec);
-        if (!ec) {
-            std::error_code removeError;
-            std::filesystem::remove(source, removeError);
+    if (sequenceCaptureKeepPngFrames_) {
+        std::ostringstream fileName;
+        fileName << "frame_" << std::setw(6) << std::setfill('0')
+                 << sequenceCaptureFrameCount_ << ".png";
+        const std::filesystem::path destination =
+            std::filesystem::path(sequenceCaptureOutputDirectory_)
+            / fileName.str();
+        if (stbi_write_png(
+                destination.string().c_str(),
+                static_cast<int>(sequenceCaptureWidth_),
+                static_cast<int>(sequenceCaptureHeight_), 4,
+                sequenceCapturePendingRgba_.data(),
+                static_cast<int>(sequenceCaptureWidth_ * 4u)) == 0) {
+            ++sequenceCaptureFrameCount_;
+            finishSequenceCapture(
+                "Failed", "Cannot store the offscreen capture PNG frame");
+            return;
         }
-    }
-    if (ec) {
-        finishSequenceCapture("Failed", "Cannot store captured frame: " + ec.message());
-        return;
     }
 
     ++sequenceCaptureFrameCount_;
     sequenceCaptureFramePending_ = false;
-    sequenceCaptureJobId_ = 0;
+    sequenceCaptureReadbackSubmitted_ = false;
+    sequenceCaptureFrameReady_ = false;
+    sequenceCapturePendingRgba_.clear();
+    sequenceCaptureReadbackError_.clear();
 
     if (sequenceCaptureCancelRequested_) {
-        finishSequenceCapture("Cancelled", "Partial frames were kept");
+        finishSequenceCapture("Cancelled", "Partial video was finalized");
     } else if (sequenceCaptureStopRequested_) {
-        finishSequenceCapture("Stopped", "Partial frames were kept");
+        finishSequenceCapture("Stopped", "Partial video was finalized");
     } else if (sequenceCaptureFrameCount_ >= sequenceCaptureTotalFrames_) {
         finishSequenceCapture("Completed");
     }
@@ -1219,25 +1267,97 @@ void Application::finishSequenceCapture(const std::string& outcome,
 
     sequenceCaptureActive_ = false;
     sequenceCaptureFramePending_ = false;
+    sequenceCaptureReadbackSubmitted_ = false;
+    sequenceCaptureFrameReady_ = false;
     sequenceCaptureWarmupFramePending_ = false;
     sequenceCaptureStopRequested_ = false;
     sequenceCaptureCancelRequested_ = false;
+    sequenceCapturePendingRgba_.clear();
+    sequenceCaptureReadbackError_.clear();
+    sequenceCaptureTarget_.destroy(ctx_);
+    if (sequenceCaptureWindowResizeLocked_) {
+        glfwSetWindowAttrib(
+            window_, GLFW_RESIZABLE,
+            sequenceCaptureWindowWasResizable_ ? GLFW_TRUE : GLFW_FALSE);
+        sequenceCaptureWindowResizeLocked_ = false;
+    }
 
+    std::string finalOutcome = outcome;
+    std::string finalMessage = message;
+    bool videoFinalized = false;
+    uintmax_t videoBytes = 0;
+    if (sequenceVideoEncoder_.isActive()) {
+        if (sequenceCaptureFrameCount_ == 0) {
+            sequenceVideoEncoder_.abort();
+            std::error_code removeError;
+            std::filesystem::remove(
+                sequenceCaptureVideoPath_, removeError);
+        } else {
+            std::string encoderError;
+            videoFinalized =
+                sequenceVideoEncoder_.finalize(&encoderError);
+            if (!videoFinalized) {
+                finalOutcome = "Failed";
+                if (!finalMessage.empty())
+                    finalMessage += "; ";
+                finalMessage += encoderError;
+            }
+        }
+    }
+    if (videoFinalized) {
+        std::error_code sizeError;
+        videoBytes = std::filesystem::file_size(
+            sequenceCaptureVideoPath_, sizeError);
+        if (sizeError)
+            videoBytes = 0;
+    }
+
+    const double capturedDuration =
+        sequenceCaptureFps_ > 0
+            ? static_cast<double>(sequenceCaptureFrameCount_)
+                / static_cast<double>(sequenceCaptureFps_)
+            : 0.0;
+    const bool captureComplete =
+        finalOutcome == "Completed"
+        && sequenceCaptureFrameCount_ == sequenceCaptureTotalFrames_
+        && videoFinalized;
     json manifest = {
-        {"version", 1},
+        {"version", 2},
         {"sequence", currentSequence_.name},
-        {"status", outcome},
-        {"message", message},
+        {"status", finalOutcome},
+        {"message", finalMessage},
+        {"complete", captureComplete},
         {"fps", sequenceCaptureFps_},
         {"startTime", sequenceCaptureStartTime_},
         {"endTime", sequenceCaptureEndTime_},
         {"capturedFrames", sequenceCaptureFrameCount_},
         {"plannedFrames", sequenceCaptureTotalFrames_},
+        {"capturedDuration", capturedDuration},
         {"preRollFrames", sequenceCaptureWarmupFrameCount_},
         {"width", sequenceCaptureWidth_},
         {"height", sequenceCaptureHeight_},
+        {"captureTarget", "fixed_offscreen"},
+        {"swapchainRebuilds", sequenceCaptureSwapchainRebuilds_},
+        {"lastShotCameraEntityId",
+            activeSequenceCameraEntityId_ != 0
+                ? json(activeSequenceCameraEntityId_) : json(nullptr)},
         {"includeUi", sequenceCaptureIncludeUi_},
-        {"framePattern", "frame_%06d.png"}
+        {"keepPngFrames", sequenceCaptureKeepPngFrames_},
+        {"framePattern",
+            sequenceCaptureKeepPngFrames_
+                ? json("frame_%06d.png") : json(nullptr)},
+        {"video", {
+            {"file",
+                std::filesystem::path(sequenceCaptureVideoPath_)
+                    .filename().string()},
+            {"container", "mp4"},
+            {"codec", "h264"},
+            {"finalized", videoFinalized},
+            {"bitrateMbps", sequenceCaptureVideoBitrateMbps_},
+            {"width", sequenceCaptureVideoWidth_},
+            {"height", sequenceCaptureVideoHeight_},
+            {"bytes", videoBytes}
+        }}
     };
     if (currentSequence_.cameraShotTrack) {
         manifest["cameraShots"] = json::array();
@@ -1257,9 +1377,9 @@ void Application::finishSequenceCapture(const std::string& outcome,
             out << manifest.dump(2) << '\n';
     }
 
-    sequenceCaptureStatus_ = outcome;
-    if (!message.empty())
-        sequenceCaptureStatus_ += ": " + message;
+    sequenceCaptureStatus_ = finalOutcome;
+    if (!finalMessage.empty())
+        sequenceCaptureStatus_ += ": " + finalMessage;
 
     seqPlayer_.seek(sequenceCaptureSavedTime_);
     if (sequenceCaptureSavedPlaying_)
@@ -1269,6 +1389,8 @@ void Application::finishSequenceCapture(const std::string& outcome,
     camera_.Position = sequenceCaptureSavedCameraPosition_;
     camera_.SetOrientation(sequenceCaptureSavedCameraOrientation_);
     camera_.FovDeg = sequenceCaptureSavedCameraFov_;
+    camera_.NearPlane = sequenceCaptureSavedCameraNear_;
+    camera_.FarPlane = sequenceCaptureSavedCameraFar_;
     for (const auto& saved : sequenceCaptureSavedEntities_) {
         if (auto* entity = sceneMgr_.getModelEntity(saved.entityId)) {
             entity->transform = saved.transform;
@@ -1277,6 +1399,7 @@ void Application::finishSequenceCapture(const std::string& outcome,
     }
     sequenceCaptureSavedEntities_.clear();
     sequenceCameraActive_ = false;
+    activeSequenceCameraEntityId_ = 0;
     sequencerPreviewPending_ = sequencerControlEnabled_;
     lastSequencerAnimatorEvalTime_ = -1.0;
     for (auto& entity : sceneMgr_.getModelEntities()) {
@@ -1644,6 +1767,7 @@ void Application::drawFrame(float dt)
 
     // ── Sequencer 驱动 ───────────────────────────────────────────────────────
     sequenceCameraActive_ = false;
+    activeSequenceCameraEntityId_ = 0;
     {
         seqPlayer_.setSequenceRef(currentSequence_);
         const bool sequencerPreviewRequested =
@@ -1719,11 +1843,14 @@ void Application::drawFrame(float dt)
                     if (!cameraEntity || !cameraEntity->isCamera())
                         return;
                     cameraEntity->syncCameraFromTransform();
+                    activeSequenceCameraEntityId_ = cameraEntity->entityId;
                     if (!sequencerCameraFollowEnabled_ && !sequenceCaptureActive_)
                         return;
                     camera_.Position = cameraEntity->cameraData.position;
                     camera_.SetOrientation(cameraEntity->cameraData.orientation);
                     camera_.FovDeg = cameraEntity->cameraData.fovDeg;
+                    camera_.NearPlane = cameraEntity->cameraData.nearPlane;
+                    camera_.FarPlane = cameraEntity->cameraData.farPlane;
                     sequenceCameraActive_ = true;
                 };
         }
@@ -2229,10 +2356,30 @@ void Application::drawFrame(float dt)
 
     result = vkQueuePresentKHR(ctx_.getPresentQueue(), &pi);
 
-    if (frameCapture_.isSubmitted()) {
+    if (frameCapture_.isSubmitted()
+        || sequenceCaptureReadbackSubmitted_) {
         VkFence captureFence = cmdMgr_.getInFlightFenceVal(currentFrame_);
-        if (vkWaitForFences(ctx_.getDevice(), 1, &captureFence, VK_TRUE, UINT64_MAX) == VK_SUCCESS)
+        const VkResult captureWait = vkWaitForFences(
+            ctx_.getDevice(), 1, &captureFence,
+            VK_TRUE, UINT64_MAX);
+        if (captureWait == VK_SUCCESS
+            && frameCapture_.isSubmitted()) {
             frameCapture_.complete(ctx_);
+        }
+        if (sequenceCaptureReadbackSubmitted_
+            && !sequenceCaptureFrameReady_) {
+            sequenceCapturePendingRgba_.clear();
+            sequenceCaptureReadbackError_.clear();
+            if (captureWait != VK_SUCCESS) {
+                sequenceCaptureReadbackError_ =
+                    "Waiting for the offscreen capture fence failed";
+            } else if (!sequenceCaptureTarget_.readRgba(
+                           ctx_, sequenceCapturePendingRgba_,
+                           &sequenceCaptureReadbackError_)) {
+                sequenceCapturePendingRgba_.clear();
+            }
+            sequenceCaptureFrameReady_ = true;
+        }
     }
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || framebufferResized_) {
@@ -2245,6 +2392,211 @@ void Application::drawFrame(float dt)
     currentFrame_ = (currentFrame_ + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
+void Application::recordSequenceCapturePass(
+    VkCommandBuffer cb, uint32_t imageIndex)
+{
+    if (!sequenceCaptureActive_
+        || !sequenceCaptureFramePending_
+        || sequenceCaptureReadbackSubmitted_
+        || sequenceCaptureFrameReady_
+        || !sequenceCaptureTarget_.isReady()) {
+        return;
+    }
+
+    const VkExtent2D extent = sequenceCaptureTarget_.extent();
+    const glm::mat4 captureView = camera_.GetViewMatrix();
+    glm::mat4 captureProj = glm::perspective(
+        glm::radians(camera_.FovDeg),
+        static_cast<float>(extent.width)
+            / static_cast<float>(extent.height),
+        camera_.NearPlane, camera_.FarPlane);
+    captureProj[1][1] *= -1.0f;
+    matMgr_.updateAllPipUBOs(
+        imageIndex, captureView, captureProj);
+
+    std::array<VkClearValue, 2> clears{};
+    if (ui_) {
+        const ImVec4 color = ui_->getClearColor();
+        clears[0].color = {
+            color.x * color.w, color.y * color.w,
+            color.z * color.w, color.w
+        };
+    } else {
+        clears[0].color = {0.f, 0.f, 0.f, 1.f};
+    }
+    clears[1].depthStencil = {1.f, 0};
+
+    VkRenderPassBeginInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    renderPassInfo.renderPass = rpMgr_.getPipRenderPass();
+    renderPassInfo.framebuffer = sequenceCaptureTarget_.framebuffer();
+    renderPassInfo.renderArea.offset = {0, 0};
+    renderPassInfo.renderArea.extent = extent;
+    renderPassInfo.clearValueCount =
+        static_cast<uint32_t>(clears.size());
+    renderPassInfo.pClearValues = clears.data();
+
+    TINYENGINE(cb, "Sequence Capture Render Pass");
+    vkCmdBeginRenderPass(
+        cb, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+    VkViewport viewport{};
+    viewport.width = static_cast<float>(extent.width);
+    viewport.height = static_cast<float>(extent.height);
+    viewport.minDepth = 0.f;
+    viewport.maxDepth = 1.f;
+    vkCmdSetViewport(cb, 0, 1, &viewport);
+    VkRect2D scissor{{0, 0}, extent};
+    vkCmdSetScissor(cb, 0, 1, &scissor);
+
+    const auto& allEntities = sceneMgr_.getModelEntities();
+    const MaterialId fallbackMaterial =
+        matMgr_.isValid(sceneMgr_.getModelMaterialId())
+            ? sceneMgr_.getModelMaterialId()
+            : matMgr_.getDefaultMeshMaterialId();
+
+    for (const auto& entity : allEntities) {
+        // Camera Actors are editor visualizations, never photographed scene
+        // content. A visible camera prop should be a normal Mesh Entity.
+        if (entity.isCamera()
+            || !entity.visible
+            || entity.indexCount == 0
+            || !entity.vertexBuffer
+            || !entity.indexBuffer) {
+            continue;
+        }
+
+        VkBuffer vertexBuffer = entity.vertexBuffer;
+        VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(
+            cb, 0, 1, &vertexBuffer, &offset);
+        vkCmdBindIndexBuffer(
+            cb, entity.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+
+        glm::mat4 model = entity.transform.GetModelMatrix()
+            * glm::mat4_cast(entity.modelRotationOffset);
+        PushConstants push{
+            model,
+            glm::mat4(glm::transpose(
+                glm::inverse(glm::mat3(model))))
+        };
+
+        const MaterialId entityMaterial =
+            matMgr_.isValid(entity.materialId)
+                ? entity.materialId : fallbackMaterial;
+        auto drawRange = [&](MaterialId materialId,
+                             SkinBindingId skinBinding,
+                             uint32_t indexOffset,
+                             uint32_t indexCount) {
+            if (!matMgr_.isValid(materialId))
+                materialId = fallbackMaterial;
+            const bool skinned =
+                matMgr_.isValidSkinBinding(skinBinding);
+            const VkPipeline pipeline = skinned
+                ? pipeMgr_.getSkinnedPipeline()
+                : matMgr_.getPipeline(
+                    materialId, ctx_, pipeMgr_);
+            const VkPipelineLayout layout = skinned
+                ? pipeMgr_.getSkinnedPipelineLayout()
+                : pipeMgr_.getMainPipelineLayout();
+            const VkDescriptorSet descriptorSet = skinned
+                ? matMgr_.getSkinPipDescriptorSet(
+                    skinBinding, imageIndex)
+                : matMgr_.getPipDescriptorSet(
+                    materialId, imageIndex);
+
+            vkCmdBindPipeline(
+                cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            vkCmdPushConstants(
+                cb, layout, VK_SHADER_STAGE_VERTEX_BIT,
+                0, sizeof(PushConstants), &push);
+            vkCmdBindDescriptorSets(
+                cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                layout, 0, 1, &descriptorSet, 0, nullptr);
+            vkCmdDrawIndexed(
+                cb, indexCount, 1, indexOffset, 0, 0);
+        };
+
+        if (entity.subMeshes.empty()) {
+            drawRange(
+                entityMaterial, entity.skinBindingId,
+                0, entity.indexCount);
+        } else {
+            for (size_t subMeshIndex = 0;
+                 subMeshIndex < entity.subMeshes.size();
+                 ++subMeshIndex) {
+                const auto& subMesh =
+                    entity.subMeshes[subMeshIndex];
+                MaterialId materialId = entityMaterial;
+                if (subMesh.materialSlot >= 0
+                    && subMesh.materialSlot
+                        < static_cast<int>(
+                            entity.subMeshMaterials.size())) {
+                    const MaterialId slotMaterial =
+                        entity.subMeshMaterials[
+                            subMesh.materialSlot];
+                    if (matMgr_.isValid(slotMaterial))
+                        materialId = slotMaterial;
+                }
+                const SkinBindingId skinBinding =
+                    subMeshIndex
+                            < entity.subMeshSkinBindings.size()
+                        ? static_cast<SkinBindingId>(
+                            entity.subMeshSkinBindings[
+                                subMeshIndex])
+                        : kInvalidSkinBindingId;
+                drawRange(
+                    materialId, skinBinding,
+                    subMesh.indexOffset,
+                    subMesh.indexCount);
+            }
+        }
+    }
+
+    if (sceneMgr_.getInstanceCount() > 0
+        && sceneMgr_.getInstanceBuffer() != VK_NULL_HANDLE) {
+        const MaterialId boxMaterial =
+            matMgr_.getDefaultBoxMaterialId();
+        const VkPipeline boxPipeline = matMgr_.getPipeline(
+            boxMaterial, ctx_, pipeMgr_);
+        vkCmdBindPipeline(
+            cb, VK_PIPELINE_BIND_POINT_GRAPHICS, boxPipeline);
+        const VkDescriptorSet descriptorSet =
+            matMgr_.getPipDescriptorSet(
+                boxMaterial, imageIndex);
+        vkCmdBindDescriptorSets(
+            cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            pipeMgr_.getBoxPipelineLayout(),
+            0, 1, &descriptorSet, 0, nullptr);
+        VkBuffer buffers[] = {
+            sceneMgr_.getCubeVertexBuffer(),
+            sceneMgr_.getInstanceBuffer()
+        };
+        VkDeviceSize offsets[] = {0, 0};
+        vkCmdBindVertexBuffers(
+            cb, 0, 2, buffers, offsets);
+        vkCmdBindIndexBuffer(
+            cb, sceneMgr_.getCubeIndexBuffer(),
+            0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(
+            cb, sceneMgr_.getCubeIndexCount(),
+            sceneMgr_.getInstanceCount(), 0, 0, 0);
+    }
+
+    if (sequenceCaptureIncludeUi_
+        && ImGui::GetCurrentContext()) {
+        ImDrawData* drawData = ImGui::GetDrawData();
+        if (drawData && drawData->Valid) {
+            TINYENGINE(cb, "Sequence Capture ImGui Overlay");
+            ImGui_ImplVulkan_RenderDrawData(drawData, cb);
+        }
+    }
+
+    vkCmdEndRenderPass(cb);
+    sequenceCaptureTarget_.recordReadback(cb);
+    sequenceCaptureReadbackSubmitted_ = true;
+}
+
 void Application::recordCommandBuffer(VkCommandBuffer cb, uint32_t imageIndex)
 {
     vkResetCommandBuffer(cb, 0);
@@ -2254,6 +2606,8 @@ void Application::recordCommandBuffer(VkCommandBuffer cb, uint32_t imageIndex)
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (vkBeginCommandBuffer(cb, &bi) != VK_SUCCESS)
         throw std::runtime_error("Failed to begin recording command buffer!");
+
+    recordSequenceCapturePass(cb, imageIndex);
 
     // ── PiP Render Pass (if Camera Actor selected) ──────────────────────────────
     bool renderPipForCamera = false;
@@ -2274,7 +2628,8 @@ void Application::recordCommandBuffer(VkCommandBuffer cb, uint32_t imageIndex)
         renderPipForCamera = true;
     }
     
-    if (renderPipForCamera && pipCameraPtr) {
+    if (!sequenceCaptureReadbackSubmitted_
+        && renderPipForCamera && pipCameraPtr) {
         constexpr uint32_t pw = FramebufferManager::kPipWidth;
         constexpr uint32_t ph = FramebufferManager::kPipHeight;
 
@@ -2328,9 +2683,9 @@ void Application::recordCommandBuffer(VkCommandBuffer cb, uint32_t imageIndex)
             if (!ent.visible || ent.indexCount == 0 || !ent.vertexBuffer || !ent.indexBuffer)
                 continue;
 
-            // 跳过当前预览的 Camera 实体本身：PiP 相机位于该 Actor 原点，
-            // 若绘制 Camera 模型会从内部遮挡整个预览画面。
-            if (renderPipForCamera && ent.entityId == selectedCameraEntityId_)
+            // Camera Actor meshes are editor visualizations. A camera preview
+            // represents photographed output, so no Camera Actor should appear.
+            if (ent.isCamera())
                 continue;
 
             VkBuffer vb = ent.vertexBuffer; VkDeviceSize off = 0;
@@ -2459,6 +2814,10 @@ void Application::recordCommandBuffer(VkCommandBuffer cb, uint32_t imageIndex)
 
             for (size_t ei = 0; ei < allEnts.size(); ++ei) {
                 const auto& ent = allEnts[ei];
+                const bool shotOutputView =
+                    sequenceCameraActive_ || sequenceCaptureActive_;
+                if (shotOutputView && ent.isCamera())
+                    continue;
                 if (!ent.visible || ent.indexCount == 0 || !ent.vertexBuffer || !ent.indexBuffer)
                     continue;
 
@@ -2558,10 +2917,11 @@ void Application::recordCommandBuffer(VkCommandBuffer cb, uint32_t imageIndex)
 
 void Application::recreateSwapChain()
 {
-    if (sequenceCaptureActive_) {
-        finishSequenceCapture(
-            "Failed",
-            "Capture stopped because the framebuffer size or swapchain changed");
+    const bool resumeSequenceCapture = sequenceCaptureActive_;
+    if (resumeSequenceCapture) {
+        ++sequenceCaptureSwapchainRebuilds_;
+        sequenceCaptureStatus_ =
+            "Swapchain rebuilding (recording frame is paused)";
     }
 
     int w = 0, h = 0;
@@ -2571,6 +2931,8 @@ void Application::recreateSwapChain()
         glfwWaitEvents();
     }
     vkDeviceWaitIdle(ctx_.getDevice());
+    if (resumeSequenceCapture)
+        sequenceCaptureTarget_.destroy(ctx_);
 
     // ImGui Vulkan 后端重建会销毁 texture descriptor，PiP 在下一帧重新注册。
     pipTextureCreated_ = false;
@@ -2615,6 +2977,25 @@ void Application::recreateSwapChain()
     pickSys_.create(ctx_, cmdMgr_);
     cmdMgr_.allocateCommandBuffers(ctx_, swapChain_.getImageCount());
     cmdMgr_.resetImagesInFlight(swapChain_.getImageCount());
+
+    if (resumeSequenceCapture && sequenceCaptureActive_) {
+        std::string captureTargetError;
+        if (!sequenceCaptureTarget_.create(
+                ctx_, fbMgr_, rpMgr_,
+                sequenceCaptureWidth_, sequenceCaptureHeight_,
+                &captureTargetError)) {
+            finishSequenceCapture(
+                "Failed",
+                "Cannot resume the fixed-resolution capture target after "
+                "swapchain rebuild: " + captureTargetError);
+        } else {
+            sequenceCaptureStatus_ =
+                sequenceCaptureWarmupFrameCount_
+                        < sequenceCaptureWarmupTotalFrames_
+                    ? "Pre-rolling"
+                    : "Recording";
+        }
+    }
 }
 
 // ─── Picking ──────────────────────────────────────────────────────────────────
@@ -3475,6 +3856,10 @@ bool Application::loadScene(const std::string& path)
 
         // Reset UI state
         ui_->selectedEntityId_ = 0;
+        selectedCameraEntityId_ = 0;
+        sequenceCameraActive_ = false;
+        sequencerPreviewPending_ = sequencerControlEnabled_;
+        lastSequencerAnimatorEvalTime_ = -1.0;
         mainModelSelected  = false;
         pickedBoxEntityId  = 0;
         mainModelTransform = ObjectTransform{};
@@ -4337,6 +4722,7 @@ void Application::cleanUp()
     }
 
     thumbnailRenderer_.destroy(ctx_, matMgr_, sceneMgr_);
+    sequenceCaptureTarget_.destroy(ctx_);
     frameCapture_.destroy(ctx_);
     pickSys_.destroy(ctx_, cmdMgr_);
     sceneMgr_.destroy(ctx_);

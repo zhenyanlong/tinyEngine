@@ -60,6 +60,16 @@ target_link_libraries(${PROJECT_NAME}
         glfw ${GLFW_LIBRARIES}
         glm::glm
         )
+if (WIN32)
+    # Sequence video recording uses the Windows-provided Media Foundation
+    # H.264 encoder and MP4 sink; no bundled third-party codec is required.
+    target_link_libraries(${PROJECT_NAME}
+            mfplat
+            mfreadwrite
+            mfuuid
+            ole32
+            )
+endif()
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE
         GLM_FORCE_DEPTH_ZERO_TO_ONE

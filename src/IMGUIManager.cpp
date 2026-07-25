@@ -3177,12 +3177,16 @@ void UIManager::drawSequencerPanel()
     ImGui::Separator();
     ImGui::Text("Sequence Recording");
     ImGui::TextDisabled(
-        "Fixed-timestep PNG capture at the current framebuffer resolution. "
-        "The Camera / Shot track selects each recorded view.");
+        "Fixed-timestep H.264/MP4 recording to a fixed offscreen target. "
+        "Window resize/rebuild pauses and resumes the same frame.");
+    ImGui::TextDisabled(
+        "Camera Actors are excluded from Shot output. Video currently has no audio.");
     static double captureStartTime = 0.0;
     static double captureEndTime = -1.0;
     static int captureFps = 30;
+    static int captureBitrateMbps = 12;
     static bool captureIncludeUi = false;
+    static bool captureKeepPngFrames = false;
     static char captureTakeName[128] = "SequenceTake";
     if (captureEndTime < 0.0)
         captureEndTime = std::max(totalDuration, 0.0);
@@ -3200,7 +3204,7 @@ void UIManager::drawSequencerPanel()
         if (ImGui::Button("Stop After Current Frame"))
             vulkanRender->stopSequenceCapture();
         ImGui::SameLine();
-        if (ImGui::Button("Cancel (Keep Partial)"))
+        if (ImGui::Button("Cancel (Finalize Partial)"))
             vulkanRender->cancelSequenceCapture();
     } else {
         ImGui::SetNextItemWidth(150.f);
@@ -3223,19 +3227,38 @@ void UIManager::drawSequencerPanel()
         ImGui::DragInt("FPS", &captureFps, 1.f, 1, 240);
         ImGui::SameLine();
         ImGui::Checkbox("Include UI", &captureIncludeUi);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "Composites the current ImGui draw data into the fixed capture target.\n"
+                "The window resize border is locked while this option records.");
+        }
+        ImGui::SetNextItemWidth(90.f);
+        ImGui::DragInt(
+            "Bitrate Mbps", &captureBitrateMbps, 1.f, 1, 200);
+        ImGui::SameLine();
+        ImGui::Checkbox("Keep PNG Frames", &captureKeepPngFrames);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "Optionally preserve lossless frame_%%06d.png files next to the MP4.\n"
+                "Disabled by default to avoid large intermediate output.");
+        }
 
         const bool canRecord =
             sequencerControl
             && sequence.cameraShotTrack
             && !sequence.cameraShotTrack->keyframes.empty()
+            && captureBitrateMbps >= 1
+            && captureBitrateMbps <= 200
             && captureEndTime > captureStartTime;
         ImGui::BeginDisabled(!canRecord);
-        if (ImGui::Button("Record PNG Sequence")) {
+        if (ImGui::Button("Record Video (MP4)")) {
             Application::SequenceCaptureSettings settings;
             settings.startTime = captureStartTime;
             settings.endTime = captureEndTime;
             settings.fps = captureFps;
             settings.includeUi = captureIncludeUi;
+            settings.keepPngFrames = captureKeepPngFrames;
+            settings.videoBitrateMbps = captureBitrateMbps;
             settings.takeName = captureTakeName;
             std::string captureError;
             if (!vulkanRender->beginSequenceCapture(settings, &captureError)) {
@@ -3254,8 +3277,13 @@ void UIManager::drawSequencerPanel()
                        vulkanRender->getSequenceCaptureStatus().c_str());
     if (!vulkanRender->getSequenceCaptureOutputDirectory().empty()) {
         ImGui::TextWrapped(
-            "Output: %s",
+            "Output Folder: %s",
             vulkanRender->getSequenceCaptureOutputDirectory().c_str());
+    }
+    if (!vulkanRender->getSequenceCaptureVideoPath().empty()) {
+        ImGui::TextWrapped(
+            "Video: %s",
+            vulkanRender->getSequenceCaptureVideoPath().c_str());
     }
 
     if (animatorStatusMsg_[0]) {

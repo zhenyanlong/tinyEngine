@@ -1,6 +1,6 @@
 # tinyEngine 技术设计文档
 
-> 最后更新：2026-07-24
+> 最后更新：2026-07-25
 
 ---
 
@@ -51,7 +51,9 @@ tinyEngine/
 │   │   ├── CommandBridge.hpp/.cpp # IPC 线程到引擎主线程的命令队列
 │   │   ├── IpcServer.hpp/.cpp     # localhost TCP + NDJSON 请求/响应
 │   │   ├── SceneSnapshot.hpp/.cpp # schema v2 场景/动画/世界包围盒快照
-│   │   └── FrameCapture.hpp/.cpp  # Swapchain 回读、PNG 与可选 UI 捕获
+│   │   └── FrameCapture.hpp/.cpp  # Swapchain 回读、RGBA/PNG 与可选 UI 捕获
+│   ├── Video/
+│   │   └── MediaFoundationVideoEncoder.hpp/.cpp  # Windows H.264/MP4 编码
 │   └── Animation/                 # 动画子系统
 │       ├── Skeleton.hpp/.cpp      # Bone / Skeleton 数据结构 + computeFinalMatrices
 │       ├── AnimationClip.hpp/.cpp # AnimChannel / AnimationClip + 关键帧求值
@@ -587,7 +589,7 @@ Phase C 提供时间轴驱动的多轨道动画系统；状态机事件统一存
 - Animator 事件编辑：事件类型下拉 / 参数名输入 / 值控件 / 插值模式下拉；这是状态切换参数事件的唯一 Sequencer 编辑入口
 - `Track Actions` 只处理显式 Group/子轨道选择和带确认的级联删除；轨道类型创建后不可变，避免破坏层级与序列化不变量
 - 下方参数编辑区默认约占 Sequencer 高度的 45%，通过水平分隔条调整，并保留时间线与参数区的最小可用高度
-- `Sequence Recording` 可配置开始/结束时间、FPS、Take 名称和是否包含 UI，显示录制进度并提供 Stop/Cancel
+- `Sequence Recording` 可配置开始/结束时间、FPS、H.264 bitrate、Take 名称、是否包含 UI 及是否保留 PNG，显示录制进度并提供 Stop/Cancel
 - TransformTween 轨道类型在 UI 中标记为 "(Deprecated)"，颜色改为灰色
 - 已移除 Mute/Solo 按钮（功能未实现，简化代码）
 - Sequence 加载后按“现有持久化 ID → 唯一 astRelPath/displayName → 旧 `[T]/[A]` 轨道名称”顺序恢复目标；无法唯一匹配时弹出 `Rebind Sequence Tracks` 手动绑定，未绑定轨道以红色 `Target Missing` 标记
@@ -602,12 +604,17 @@ Phase C 提供时间轴驱动的多轨道动画系统；状态机事件统一存
 - Clip Preview 使用独立预览请求恢复正常工作，不再被 Sequencer 每帧覆盖
 
 **C9 — 固定步长 Sequence 录制**
-- 录制输出为 `res/bin/sequence_captures/<take>/frame_%06d.png`，并写入含状态、范围、FPS、分辨率、帧数和中止原因的 `capture.json`
-- 当前 `Record PNG Sequence` 只生成无损逐帧图片和 manifest，不包含 MP4/H.264 编码或音频轨道；视频封装属于后续独立功能
+- 默认输出为 `res/bin/sequence_captures/<take>/<take>.mp4`，使用 Windows Media Foundation Sink Writer 编码 H.264 并封装 MP4；系统 API 不属于外部源码，因此没有新增第三方 Git 子模块
+- `SequenceCaptureTarget` 使用录制开始时锁定的宽高创建独立离屏 Color/Depth framebuffer 和 host-visible readback；默认录制不再依赖窗口 Swapchain image
+- `Keep PNG Frames` 可选把同一份离屏 RGBA 保存为 `frame_%06d.png`；默认关闭时 RGBA 直接交给视频编码器，不产生中间 PNG
+- `capture.json` version 2 记录状态、范围、FPS、源/视频分辨率、帧数、H.264 bitrate、MP4 文件名/大小/Finalize 状态、PNG 保留策略，以及 `complete/capturedDuration/captureTarget/swapchainRebuilds`
+- 当前视频没有音频轨道；Stop/Cancel 会 Finalize 已编码帧，尽量留下可播放的部分 MP4，零帧录制则删除空文件
 - 每个输出帧严格求值于 `startTime + frameIndex / fps`；非零起点先从 0 固定步长预滚至开始时间，以累积状态机、Trigger 与 Root Motion
-- 复用 `FrameCapture` 的顺序 GPU readback；Sequence 录制与 MCP 单帧截图互斥，防止共享 readback 状态冲突
+- Sequence 录制与 MCP 单帧截图仍互斥；两者使用独立 readback 资源，Swapchain 重建不会再让 Sequence 录制 job 失效
 - 录制期间暂停不受 Sequencer 管理的实时 Animator 时间，并在完成/停止/取消后恢复原播放头、播放/循环状态、主摄像机及所有实体 Transform
-- 窗口 resize、应用关闭或捕获失败会安全结束录制、保留已完成 PNG，并将原因写入 manifest
+- 窗口 resize/最小化/恢复或 Shader 引发的 Swapchain 重建只暂停当前固定步长帧；离屏 target 按原录制尺寸重建后重试同一 `frameIndex`，Media Foundation encoder 不 Finalize、不丢帧
+- `Include UI` 会把同一份 ImGui DrawData 合成到离屏 target；为保持 UI 像素布局稳定，该模式录制期间临时锁定窗口 resize 属性并在结束后恢复
+- Camera Actor 几何体定义为编辑器可视化：自由编辑主视图和 Pick 保留；Shot 主视图、PiP 与 Sequence Capture 统一排除全部 Camera Actor
 
 **已知 Bug（待新会话修复）**：
 - **Animator Panel 入口不直观**：绑定 Controller 的入口隐藏在 Animator 面板内部的资产列表 Selectable 中，需要在 `tinyEngineOperationWindow` 先勾选 "Animator" 打开面板，再在左侧侧边栏的 "Animator Controllers" 区点击资产项。没有独立的"绑定"或"加载"按钮。
@@ -693,15 +700,16 @@ struct MaterialAssetDesc {
 
 场景持久化：将实体/材质/相机保存为 `.scene.json` 或从中恢复。
 
-**.scene.json 格式**（v1）：
+**.scene.json 格式**（v2）：
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "entities": [
     {
       "entityId": 1002,
-      "astRelPath": "materials/viking_room.ast",
+      "type": "mesh",
+      "astRelPath": "content/viking_room.mesh.ast",
       "displayName": "Viking Room",
       "position": [0, 0, 0],
       "rotation": [0, 0, 0, 1],
@@ -715,6 +723,21 @@ struct MaterialAssetDesc {
           "override": { "albedoPath": "res/models/.../custom.png", "roughness": 0.8 }
         }
       ]
+    },
+    {
+      "entityId": 1003,
+      "type": "camera",
+      "displayName": "Camera_1003",
+      "position": [5, 3, 8],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "camera": {
+        "fovDeg": 45,
+        "nearPlane": 0.1,
+        "farPlane": 100,
+        "previewEnabled": true
+      }
     }
   ],
   "boxes": [
@@ -728,11 +751,13 @@ struct MaterialAssetDesc {
 }
 ```
 
+`entities[]` 使用显式字符串 `type: "mesh" | "camera"`。Mesh 保存资产、材质和 Animator 数据；Camera Actor 保存稳定 Entity ID、名称、TRS、可见性和镜头参数。顶层 `camera` 仍表示编辑器主视角，不是 Camera Actor。
+
 **materialOverride 机制：** 保存时对比当前材质与 `.ast` 参考值（params + albedoPath/normalPath），仅当有差异时写入。加载时先通过 `loadMaterialFromAsset()` 从 `.ast` 重建材质，再叠加 `materialOverride`。
 
 **subMaterialOverrides 机制：** 对于含 `subMaterials` 数组的入口 `.ast`，保存时对比每个槽位当前材质与该槽位 `.ast` 参考值的差异，写入 `subMaterialOverrides` 数组（含 `slot`、`astRelPath`、可选的 `override`）。加载时先逐槽位加载子材质，再叠加各槽位的 `override`。
 
-**兼容性：** `entityId` 与并存的 `displayName` 均为可选字段，旧 v1 场景仍可加载；load 时优先读 `astRelPath`，回退 `displayName`（扫描 `res/models/`）；优先读 `orientation` 四元数，回退 `pitch/yaw`。保存后的新场景会固定实体 ID，为 Sequence 轨道提供跨进程稳定身份。
+**兼容性：** `entityId` 与并存的 `displayName` 均为可选字段，旧 v1 Mesh 仍按 `astRelPath` 优先、`displayName` 回退加载；无 `astRelPath` 且名称严格等于 `Camera_<entityId>` 的 v1 条目自动迁移为 Camera Actor。v1 未保存镜头参数，因此迁移时使用默认 FOV/Near/Far；下一次保存会写成 v2。加载前先校验版本、实体类型、重复 ID、TRS 和 Camera 镜头范围，再清空当前场景。
 
 | 关键方法 | 说明 |
 |---|---|
@@ -990,6 +1015,8 @@ struct PushConstants {
 | nlohmann/json | JSON 解析 | header-only 包含 |
 | RenderDoc | 图形调试捕获 | header + DLL 动态加载 |
 
+Sequence MP4 录制使用 Windows SDK 自带的 Media Foundation（`mfplat` / `mfreadwrite` / `mfuuid` / `ole32`），不引入外部源码或二进制，因此不属于第三方依赖，也无需新增 Git Submodule。
+
 ---
 
 ## 13. Shader 资源
@@ -1027,7 +1054,7 @@ TINYOBJLOADER_IMPLEMENTATION # tinyobjloader 实现编译
 | 多模型导入 | 已完成 | Content Browser 扫描 res/content/*.ast + 拖拽放置 + 材质自动加载 |
 | 新资产目录布局 | 已完成 | res/content/ (.ast) + res/bin/ (mesh/anim/texture payload) + 迁移脚本 + 旧目录兼容 |
 | 资源路径架构 | 已完成 | applicationResourceRoot() 从 exe 向上查找项目根，res/ 为唯一基准，移除 CMake 复制 |
-| 场景持久化 | 已完成 | SceneSerializer：astRelPath + materialOverride + 旧 materials/ → content/ 路径自动迁移 |
+| 场景持久化 | 已完成 | SceneSerializer v2：Mesh/Camera 显式类型、多个 Camera Actor 的稳定 ID/TRS/FOV/Near/Far/Preview 持久化、materialOverride，以及 v1 `Camera_<ID>`/旧 materials 路径迁移 |
 | materialOverride | 已完成 | 保存时对比 .ast 参考值仅写差异；加载时叠加到重建材质 |
 | 骨骼数据结构 | 已完成 | Phase A1：Bone / Skeleton + computeFinalMatrices |
 | 动画数据解析 | 已完成 | Phase A2：cgltf skin/anim → Skeleton / AnimationClip，含关键帧求值 |
@@ -1046,9 +1073,9 @@ TINYOBJLOADER_IMPLEMENTATION # tinyobjloader 实现编译
 | 蒙皮模型 GPU 拾取 | 已完成 | skinned pick pipeline 复用材质 bone UBO，按 submesh/当前动画姿势写入 Entity ID |
 | 重复蒙皮模型独立动画状态 | 已完成 | Controller 逐实体独立；SkinBinding 将 bone UBO/descriptor 从 MaterialId 中解耦，并按实体/材质/skinIndex 分配，主视口、PiP、Pick 三条路径一致使用 |
 | 多 .anim.ast 合并加载 | **已修复** | 2026-07-02：根因是 `loadAndApplyMaterialAsset` 传入的 `astRelPath` 可能是 `.material.ast` 路径，不含 `animations` 数组。修复：(1) `ensureAnimationAssetForMeshAst` 增加回退逻辑；(2) `loadAndApplyMaterialAsset` 中记录实体 `astRelPath` 供回退使用。<br>2026-07-13：修复同名 clip 跨文件问题，加载时自动 `_1`、`_2` 后缀去重。|
-| Sequencer | 已完成（Phase C1-C9） | AnimatorKeyframe 是唯一状态机驱动入口；默认关闭的 Sequencer Control 按轨道仲裁场景输出；主视口可独立选择是否跟随 Sequence Camera；支持确定性 Setter/Trigger 时间流、连续拖动 seek、显式 Group、稳定目标重绑定、全局 Camera/Shot 硬切与固定步长 PNG 序列录制 |
+| Sequencer | 已完成（Phase C1-C9） | AnimatorKeyframe 是唯一状态机驱动入口；默认关闭的 Sequencer Control 按轨道仲裁场景输出；主视口可独立选择是否跟随 Sequence Camera；支持确定性 Setter/Trigger 时间流、连续拖动 seek、显式 Group、稳定目标重绑定、全局 Camera/Shot 硬切，以及固定离屏 target 的固定步长 H.264/MP4 录制（Swapchain 重建续录、可选保留 PNG） |
 | Content Browser 离屏缩略图 | **修复中** | 使用离屏渲染（128×128）生成 mesh 缩略图，当前三个待修复问题：<br>1. **材质未显示**：glTF 材质已加载但渲染结果仍偏灰；OBJ/FBX 无 .ast 路径全用默认材质 — 需排查 UBO 更新或 descriptor set 绑定时机<br>2. **相机角度错误**：当前从 (1,1,1) 方向观察，用户反馈方向是反的，需调整摄像机朝向<br>3. **Remy skinned 模型全灰**：FBX 带动画蒙皮模型渲染结果为纯色，非蒙皮 pipeline 未正确处理其顶点数据 |
-| Sequencer Camera + PiP | 已完成 | Camera Actor 可视化并通过 PiP 预览；New Camera 复制主摄像机当前 Transform。每个 Sequence 可选一条全局 Camera/Shot 轨道；`Follow Sequence Camera` 仅控制编辑器主视口，录制始终按 Shot 硬切镜头；旧 CameraPath 仅作无 Shot 轨道资产兼容，详见 §16、§19 |
+| Sequencer Camera + PiP | 已完成 | Camera Actor 可视化并通过 PiP 预览；New Camera 复制主摄像机当前 Transform。每个 Sequence 可选一条全局 Camera/Shot 轨道；`Follow Sequence Camera` 仅控制编辑器主视口，录制始终按 Shot 硬切镜头；Camera Actor 几何仅在自由编辑/拾取视图显示，Shot/PiP/录制统一过滤；旧 CameraPath 仅作无 Shot 轨道资产兼容，详见 §16、§19 |
 | 资产系统扩充 | 待实现 | Phase D1-D3：AnimationAssetRegistry 资产注册、.ast 文件扩展（animationAssetPath/animControllerPath）、ImGui Assets 浏览器面板（TabBar 重构） |
 | PBR 管线 | 基础支持（metallic/roughness/ao） | 已有 |
 | 阴影 | 不支持 | 未规划 |
@@ -1257,12 +1284,14 @@ TINYOBJLOADER_IMPLEMENTATION # tinyobjloader 实现编译
 
 ### 19.4 固定步长逐帧录制
 
-- `Sequence Recording` 以指定 FPS 离线推进 Sequencer，并逐帧写出 PNG；输出目录同时包含 `capture.json`，可区分 completed/stopped/cancelled/failed。
+- `Sequence Recording` 以指定 FPS 离线推进 Sequencer，把固定尺寸 `SequenceCaptureTarget` 的 RGBA 回读转换为 BT.709 limited-range NV12，再由 Windows Media Foundation Sink Writer 编码为 H.264/MP4；无需 FFmpeg 或其他外部代码。
 - 录制是 Camera/Shot 的强制消费者：即使用户关闭 `Follow Sequence Camera`，录制帧仍由当前 Shot Camera 渲染；录制期间禁止切换跟随选项，结束后恢复录制前主摄像机并保留用户偏好。
-- 当前产物是 `frame_%06d.png` 图片序列而不是视频文件；实现中没有 FFmpeg、MP4/H.264 编码和音频录制步骤。后续若增加 `Record Video`，应复用现有确定性逐帧捕获，再作为独立后处理阶段编码，并允许选择是否保留 PNG。
+- `Record Video (MP4)` 默认只输出 `<take>.mp4`；`Keep PNG Frames` 可额外保留 `frame_%06d.png`。奇数 capture target 尺寸使用边缘像素补齐到下一组偶数宽高，以满足 NV12 2×2 chroma block 要求，源尺寸和实际视频尺寸分别写入 manifest。
+- `capture.json` version 2 记录视频 codec/container/bitrate/尺寸/字节数、完整性、实际时长、Swapchain 重建次数和 Finalize 结果；当前录制没有音频轨道。
 - 非零起始时间执行从 0 到 start 的固定步长预滚，保证 Animator 参数、Trigger、Transition 与 Root Motion 的累积结果一致。
-- 录制快照并恢复播放头、播放/循环状态、主摄像机和所有实体 Transform；停止或取消保留已经成功写出的帧。
-- 单帧 MCP Capture、Swapchain 重建和应用关闭均与录制生命周期互锁；resize/关闭会中止本次录制并生成保留部分结果的 manifest。
+- 录制快照并恢复播放头、播放/循环状态、主摄像机和所有实体 Transform；停止或取消会 Finalize 已编码帧，生成可播放的部分 MP4。
+- 单帧 MCP Capture 与 Sequence Capture 保持互斥；Swapchain 重建会暂停并重建固定尺寸离屏 target，然后从相同帧号继续。应用关闭或真实捕获/编码失败才 Finalize 部分结果。
+- Camera Actor 模型只属于编辑器辅助显示：自由主视图仍可见、可拾取；跟随 Shot 的主视图、PiP 和最终视频全部过滤 Camera Actor。
 
 ### 19.5 编辑器布局与验证
 
@@ -1270,5 +1299,8 @@ TINYOBJLOADER_IMPLEMENTATION # tinyobjloader 实现编译
 - Sequencer 轨道区/参数区增加水平分隔条；Animator 资源区/编辑区增加垂直分隔条；按钮行根据实际资源区宽度自动换行。
 - Sequencer 顶部新增 `Follow Sequence Camera` 勾选项；Sequencer Control 关闭或录制进行中时禁用，并通过状态文本区分“主视口跟随 Shot”和“主视口保持手动”。
 - CameraShot 专项 smoke test 通过：硬切求值、Transform 先于 Shot callback、存在 Shot 时抑制旧 CameraPath、JSON version 2 往返均正确。
-- 2026-07-24 最终 x64-release 构建通过；现有 `mcp_server/tests` 自动化回归 `10 passed`。此前 x64-debug 重链接仅因正在运行的 `tinyEngine.exe` 锁定输出文件返回 LNK1168，未强制终止用户进程。
+- Media Foundation 编码 smoke test 通过：321×241 RGBA 输入补齐为 322×242，60 帧成功生成 507551-byte MP4，并验证 `ftyp` / `moov` / `mdat` 容器块存在。
+- 2026-07-25 离屏录制运行时验收通过：`example01_withCamera` 按 0..20 s、30 FPS 完成 600/600 帧；录制中主动触发两次窗口 resize/Swapchain 重建，最终 MP4 仍为 20 秒、30 FPS，manifest 为 `Completed`、`complete=true`、`swapchainRebuilds=2`。
+- Camera Actor 过滤验收通过：保留单帧离屏 PNG 目视确认 Shot 输出包含正常场景与角色，但不包含 Camera Actor 模型；用户随后确认最终程序运行成功。
+- 2026-07-25 最终 x64-debug、x64-release 构建通过；现有 `mcp_server/tests` 自动化回归 `10 passed`。
 - `git diff --check` 通过（仅 Git 的 LF→CRLF 工作区提示）。

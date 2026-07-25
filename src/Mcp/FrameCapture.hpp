@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 class FrameCapture {
 public:
@@ -12,8 +13,12 @@ public:
                    const std::string& captureDirectory);
     void destroy(const VulkanContext& ctx);
 
-    nlohmann::json request(int currentFrameCount, bool includeUi = true);
+    nlohmann::json request(int currentFrameCount, bool includeUi = true,
+                           bool writePng = true);
     nlohmann::json query(uint64_t jobId) const;
+    bool takeReadyRgba(uint64_t jobId, std::vector<uint8_t>& rgba,
+                       uint32_t& width, uint32_t& height,
+                       std::string* error = nullptr);
     bool shouldRenderUi() const;
 
     bool record(VkCommandBuffer commandBuffer, VkImage swapChainImage,
@@ -46,8 +51,10 @@ private:
     int            requestedFrame_ = 0;
     int            capturedFrame_ = 0;
     bool           includeUi_ = true;
+    bool           writePng_ = true;
     std::string    outputPath_;
     uint64_t       outputBytes_ = 0;
+    std::vector<uint8_t> outputRgba_;
     std::string    errorCode_;
     std::string    errorMessage_;
 };

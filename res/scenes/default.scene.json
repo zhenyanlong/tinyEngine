@@ -3,21 +3,23 @@
   "camera": {
     "fov": 45.0,
     "orientation": [
-      -0.2185342013835907,
-      0.5013062953948975,
-      0.1293933391571045,
-      0.8271591067314148
+      -0.1491258591413498,
+      0.7019495368003845,
+      0.15021811425685883,
+      0.6800462007522583
     ],
     "position": [
-      11.476816177368164,
-      8.984668731689453,
-      16.564922332763672
+      22.365652084350586,
+      10.376434326171875,
+      0.7324756383895874
     ],
     "speed": 5.0
   },
   "entities": [
     {
       "astRelPath": "content/fantasy_game_inn.mesh.ast",
+      "displayName": "fantasy_game_inn",
+      "entityId": 1000,
       "materialOverride": {
         "roughness": 0.6449999809265137
       },
@@ -34,13 +36,15 @@
       ],
       "scale": [
         14.247499465942383,
-        14.238718032836914,
-        14.238718032836914
+        14.232356071472168,
+        14.232356071472168
       ],
       "visible": true
     },
     {
       "astRelPath": "content/8f882a96eb3b49a29cba9b87c71209cc.mesh.ast",
+      "displayName": "8f882a96eb3b49a29cba9b87c71209cc",
+      "entityId": 1001,
       "materialOverride": {
         "albedoPath": "res/models/8f882a96eb3b49a29cba9b87c71209cc/baseColor_1.jpg",
         "emissiveColor": [
@@ -193,6 +197,8 @@
     {
       "animatorControllerPath": "E:\\Projects\\tinyEngine\\res\\animators\\Remy.animctrl.json",
       "astRelPath": "content/Remy/Remy.mesh.ast",
+      "displayName": "Remy",
+      "entityId": 1002,
       "materialOverride": {
         "albedoPath": "E:\\Projects\\tinyEngine\\res\\bin\\texture\\Remy\\Remy_Shoesmat_albedo.png",
         "normalPath": "E:\\Projects\\tinyEngine\\res\\bin\\texture\\Remy\\Remy_Shoesmat_normal.png",
@@ -213,6 +219,50 @@
         1.0,
         1.0,
         1.0
+      ],
+      "visible": true
+    },
+    {
+      "displayName": "Camera_1003",
+      "entityId": 1003,
+      "materialId": 0,
+      "position": [
+        11.476816177368164,
+        8.984668731689453,
+        16.564922332763672
+      ],
+      "rotation": [
+        -0.19830478727817535,
+        0.3983587324619293,
+        0.08578768372535706,
+        0.8914179801940918
+      ],
+      "scale": [
+        1.0,
+        1.0,
+        0.9999998807907104
+      ],
+      "visible": true
+    },
+    {
+      "displayName": "Camera_1004",
+      "entityId": 1004,
+      "materialId": 0,
+      "position": [
+        15.612024307250977,
+        6.525012493133545,
+        -0.7387956380844116
+      ],
+      "rotation": [
+        -0.09847085922956467,
+        0.8438431620597839,
+        0.16033299267292023,
+        0.5025191903114319
+      ],
+      "scale": [
+        1.0000001192092896,
+        0.9999998807907104,
+        0.9999998211860657
       ],
       "visible": true
     }

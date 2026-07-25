@@ -1,3 +1,11 @@
+## 2026-07-25
+
+- [ ] Replaced Swapchain-bound Sequence frame recording with a fixed-resolution `SequenceCaptureTarget`: each frame renders to an independent offscreen color/depth target, reads back sequential RGBA, and feeds the existing Media Foundation H.264/MP4 encoder without changing Sequence timing or asset formats
+- [ ] Made Sequence recording survive lossless Swapchain rebuilds: resize/minimize/restore and shader-triggered rebuilds pause the current fixed-step frame, recreate only the capture GPU target, and retry the same frame index without finalizing or truncating the MP4
+- [ ] Classified Camera Actor meshes as editor-only visualization: free editor and GPU Pick views retain them, while Shot-following main view, PiP, and final Sequence capture filter every Camera Actor; Camera/Shot output now also applies actor FOV/Near/Far lens settings
+- [ ] Expanded recording diagnostics and UI documentation: `capture.json` now includes completion, captured duration, fixed-offscreen target, last Shot Camera, and Swapchain rebuild count; Include UI temporarily locks window resize and restores it afterward
+- [ ] Validation passed: `example01_withCamera` completed 600/600 frames at 20.0 s and 30 FPS while surviving two deliberate window resizes; a retained offscreen PNG contained no Camera Actor geometry; x64-debug/x64-release builds, 10/10 MCP tests, and `git diff --check` passed; user confirmed the final program run succeeded
+
 ## 2026-07-23
 
 - [ ] Replaced Animator Preview Mode with default-off Sequencer Control: only explicitly tracked Transform/Animator/Camera outputs are owned by the Sequencer, while untracked animators continue live; fixed Clip Preview and reset root-motion history across ownership/seek changes

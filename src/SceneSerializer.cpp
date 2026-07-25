@@ -11,6 +11,7 @@
 #include "Transform.hpp"
 #include "camera.hpp"
 #include <nlohmann/json.hpp>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -88,6 +89,44 @@ std::string resolveLegacyAstPath(const std::string& astRel, const std::string& r
     return astRel;
 }
 
+bool isNumericArray(const json& object, const char* key, size_t expectedSize)
+{
+    if (!object.contains(key))
+        return true;
+    const auto& value = object[key];
+    if (!value.is_array() || value.size() < expectedSize)
+        return false;
+    for (size_t index = 0; index < expectedSize; ++index) {
+        if (!value[index].is_number())
+            return false;
+    }
+    return true;
+}
+
+bool isLegacyDefaultCameraEntry(const json& entity, int sceneVersion)
+{
+    if (sceneVersion > 1
+        || entity.contains("type")
+        || entity.contains("astRelPath")
+        || !entity.contains("entityId")
+        || !entity["entityId"].is_number_unsigned()
+        || !entity.contains("displayName")
+        || !entity["displayName"].is_string()) {
+        return false;
+    }
+    const uint64_t entityId = entity["entityId"].get<uint64_t>();
+    return entity["displayName"].get<std::string>()
+        == "Camera_" + std::to_string(entityId);
+}
+
+std::string sceneEntityType(const json& entity, int sceneVersion)
+{
+    if (entity.contains("type") && entity["type"].is_string())
+        return entity["type"].get<std::string>();
+    return isLegacyDefaultCameraEntry(entity, sceneVersion)
+        ? "camera" : "mesh";
+}
+
 } // namespace
 
 static bool writeJson(const std::string& path, const json& j)
@@ -121,22 +160,26 @@ bool SceneSerializer::save(const std::string& path,
                            const Camera& camera)
 {
     json j;
-    j["version"] = 1;
+    j["version"] = 2;
 
     // ── Entities ─────────────────────────────────────────────────────────
     auto ents = json::array();
     for (const auto& ent : sceneMgr.getModelEntities()) {
         json e;
+        const bool isCamera = ent.isCamera();
 
-        // 优先保存 .ast 路径（新设计），回退到 displayName（兼容旧实体）
-        if (!ent.astRelPath.empty()) {
-            e["astRelPath"] = ent.astRelPath;
-        } else if (!ent.displayName.empty()) {
-            e["displayName"] = ent.displayName;
-        } else {
-            continue;
+        if (!isCamera) {
+            // Mesh 优先保存 .ast 路径，回退到 displayName 兼容旧实体。
+            if (!ent.astRelPath.empty()) {
+                e["astRelPath"] = ent.astRelPath;
+            } else if (!ent.displayName.empty()) {
+                e["displayName"] = ent.displayName;
+            } else {
+                continue;
+            }
         }
 
+        e["type"] = isCamera ? "camera" : "mesh";
         e["entityId"] = ent.entityId;
         if (!ent.displayName.empty())
             e["displayName"] = ent.displayName;
@@ -152,6 +195,17 @@ bool SceneSerializer::save(const std::string& path,
                              ent.transform.scale.y,
                              ent.transform.scale.z };
         e["visible"]     = ent.visible;
+
+        if (isCamera) {
+            e["camera"] = {
+                {"fovDeg", ent.cameraData.fovDeg},
+                {"nearPlane", ent.cameraData.nearPlane},
+                {"farPlane", ent.cameraData.farPlane},
+                {"previewEnabled", ent.cameraPreviewEnabled}
+            };
+            ents.push_back(std::move(e));
+            continue;
+        }
 
         // 持久化 AnimatorController 路径（相对 res/ 的相对路径），场景 reload 后自动恢复控制器
         if (!ent.animatorControllerPath.empty())
@@ -264,7 +318,24 @@ bool SceneSerializer::load(const std::string& path,
     json j;
     if (!readJson(path, j)) return false;
 
-    if (j.contains("entities") && j["entities"].is_array()) {
+    if (j.contains("version")
+        && !j["version"].is_number_integer()
+        && !j["version"].is_number_unsigned()) {
+        std::cerr << "[SceneSerializer] Invalid scene version\n";
+        return false;
+    }
+    const int sceneVersion = j.value("version", 1);
+    if (sceneVersion < 1 || sceneVersion > 2) {
+        std::cerr << "[SceneSerializer] Unsupported scene version: "
+                  << sceneVersion << "\n";
+        return false;
+    }
+
+    if (j.contains("entities") && !j["entities"].is_array()) {
+        std::cerr << "[SceneSerializer] entities must be an array\n";
+        return false;
+    }
+    if (j.contains("entities")) {
         std::unordered_set<uint64_t> persistedIds;
         for (const auto& entityJson : j["entities"]) {
             if (!entityJson.is_object()) {
@@ -281,6 +352,69 @@ bool SceneSerializer::load(const std::string& path,
                 std::cerr << "[SceneSerializer] Duplicate entityId in scene: "
                           << entityId << "\n";
                 return false;
+            }
+            if (sceneVersion >= 2
+                && (!entityJson.contains("type")
+                    || !entityJson["type"].is_string())) {
+                std::cerr << "[SceneSerializer] Scene v2 entity is missing type\n";
+                return false;
+            }
+            const std::string type =
+                sceneEntityType(entityJson, sceneVersion);
+            if (type != "mesh" && type != "camera") {
+                std::cerr << "[SceneSerializer] Unsupported entity type: "
+                          << type << "\n";
+                return false;
+            }
+            if (!isNumericArray(entityJson, "position", 3)
+                || !isNumericArray(entityJson, "rotation", 4)
+                || !isNumericArray(entityJson, "scale", 3)) {
+                std::cerr << "[SceneSerializer] Invalid transform for entity "
+                          << entityId << "\n";
+                return false;
+            }
+            if (entityJson.contains("visible")
+                && !entityJson["visible"].is_boolean()) {
+                std::cerr << "[SceneSerializer] Invalid visibility for entity "
+                          << entityId << "\n";
+                return false;
+            }
+            if (type == "camera" && entityJson.contains("camera")) {
+                const auto& cameraJson = entityJson["camera"];
+                if (!cameraJson.is_object()) {
+                    std::cerr << "[SceneSerializer] Invalid camera settings for entity "
+                              << entityId << "\n";
+                    return false;
+                }
+                for (const char* key :
+                     {"fovDeg", "nearPlane", "farPlane"}) {
+                    if (cameraJson.contains(key)
+                        && !cameraJson[key].is_number()) {
+                        std::cerr << "[SceneSerializer] Invalid camera "
+                                  << key << " for entity " << entityId << "\n";
+                        return false;
+                    }
+                }
+                if (cameraJson.contains("previewEnabled")
+                    && !cameraJson["previewEnabled"].is_boolean()) {
+                    std::cerr << "[SceneSerializer] Invalid camera preview setting for entity "
+                              << entityId << "\n";
+                    return false;
+                }
+                const float fov =
+                    cameraJson.value("fovDeg", 45.f);
+                const float nearPlane =
+                    cameraJson.value("nearPlane", 0.1f);
+                const float farPlane =
+                    cameraJson.value("farPlane", 100.f);
+                if (!std::isfinite(fov) || fov <= 0.f || fov >= 180.f
+                    || !std::isfinite(nearPlane) || nearPlane <= 0.f
+                    || !std::isfinite(farPlane)
+                    || farPlane <= nearPlane) {
+                    std::cerr << "[SceneSerializer] Camera lens values are out of range for entity "
+                              << entityId << "\n";
+                    return false;
+                }
             }
         }
     }
@@ -310,6 +444,68 @@ bool SceneSerializer::load(const std::string& path,
     // ── 加载实体 ────────────────────────────────────────────────────────
     if (j.contains("entities")) {
         for (const auto& ej : j["entities"]) {
+            const std::string entityType =
+                sceneEntityType(ej, sceneVersion);
+            glm::vec3 pos(0.f);
+            if (ej.contains("position")) {
+                pos = {ej["position"][0].get<float>(),
+                       ej["position"][1].get<float>(),
+                       ej["position"][2].get<float>()};
+            }
+            glm::quat rotation(1.f, 0.f, 0.f, 0.f);
+            if (ej.contains("rotation")) {
+                rotation = glm::quat(
+                    ej["rotation"][3].get<float>(),
+                    ej["rotation"][0].get<float>(),
+                    ej["rotation"][1].get<float>(),
+                    ej["rotation"][2].get<float>());
+            }
+            glm::vec3 scale(1.f);
+            if (ej.contains("scale")) {
+                scale = {ej["scale"][0].get<float>(),
+                         ej["scale"][1].get<float>(),
+                         ej["scale"][2].get<float>()};
+            }
+            const uint64_t preferredEntityId =
+                ej.value("entityId", uint64_t(0));
+
+            if (entityType == "camera") {
+                const uint64_t eid = sceneMgr.createCameraEntity(
+                    pos, rotation, ctx, bufMgr, preferredEntityId);
+                auto* ent = sceneMgr.getModelEntity(eid);
+                if (!ent)
+                    continue;
+
+                if (ej.contains("displayName")
+                    && ej["displayName"].is_string()) {
+                    ent->displayName =
+                        ej["displayName"].get<std::string>();
+                }
+                ent->transform.scale = scale;
+                ent->visible = ej.value("visible", true);
+                ent->syncCameraFromTransform();
+                ent->cameraData.name = ent->displayName;
+
+                if (ej.contains("camera")) {
+                    const auto& cameraJson = ej["camera"];
+                    ent->cameraData.fovDeg =
+                        cameraJson.value("fovDeg", ent->cameraData.fovDeg);
+                    ent->cameraData.nearPlane =
+                        cameraJson.value("nearPlane", ent->cameraData.nearPlane);
+                    ent->cameraData.farPlane =
+                        cameraJson.value("farPlane", ent->cameraData.farPlane);
+                    ent->cameraPreviewEnabled =
+                        cameraJson.value(
+                            "previewEnabled", ent->cameraPreviewEnabled);
+                }
+                if (isLegacyDefaultCameraEntry(ej, sceneVersion)) {
+                    std::cout
+                        << "[SceneSerializer] migrated legacy Camera Actor "
+                        << ent->displayName << " (" << ent->entityId << ")\n";
+                }
+                continue;
+            }
+
             // 优先通过 astRelPath 加载（新设计），回退到 displayName 扫描（兼容旧场景文件）
             std::string modelPath;
 
@@ -364,13 +560,6 @@ bool SceneSerializer::load(const std::string& path,
                 continue;
             }
 
-            glm::vec3 pos(0.f);
-            if (ej.contains("position"))
-                pos = { ej["position"][0].get<float>(),
-                        ej["position"][1].get<float>(),
-                        ej["position"][2].get<float>() };
-
-            const uint64_t preferredEntityId = ej.value("entityId", uint64_t(0));
             uint64_t eid = sceneMgr.createModelEntity(modelPath, pos, bufMgr, true,
                                                        preferredEntityId);
             auto* ent = sceneMgr.getModelEntity(eid);
@@ -384,23 +573,9 @@ bool SceneSerializer::load(const std::string& path,
                 ent->astRelPath = resolveLegacyAstPath(ej["astRelPath"].get<std::string>(), resRoot);
 
             // Restore transform
-            if (ej.contains("rotation")) {
-                ent->transform.rotation = glm::quat(
-                    ej["rotation"][3].get<float>(),  // w
-                    ej["rotation"][0].get<float>(),  // x
-                    ej["rotation"][1].get<float>(),  // y
-                    ej["rotation"][2].get<float>()   // z
-                );
-                sceneMgr.setEntityTransform(eid, ent->transform);
-            }
-            if (ej.contains("scale")) {
-                ent->transform.scale = {
-                    ej["scale"][0].get<float>(),
-                    ej["scale"][1].get<float>(),
-                    ej["scale"][2].get<float>()
-                };
-                sceneMgr.setEntityTransform(eid, ent->transform);
-            }
+            ent->transform.rotation = rotation;
+            ent->transform.scale = scale;
+            sceneMgr.setEntityTransform(eid, ent->transform);
             if (ej.contains("visible"))
                 ent->visible = ej["visible"].get<bool>();
             if (ej.contains("materialId") && ej["materialId"].get<uint32_t>() != 0) {
