@@ -2,7 +2,7 @@
 
 一个面向图形学学习与编辑器实践的 C++20 / Vulkan 实时 3D 引擎。
 
-tinyEngine 采用模块化 Manager 架构，已经从基础 Vulkan 渲染器扩展为带 Content Browser、场景编辑、PBR 材质、骨骼动画、Animator 状态机、Sequencer、Camera/Shot、视频录制和 MCP Agent 控制能力的小型编辑器。
+tinyEngine 采用模块化 Manager 架构，已经从基础 Vulkan 渲染器扩展为带 Content Browser、场景编辑、PBR 材质、骨骼动画、Animator 状态机、Sequencer、Camera/Shot、视频录制和 MCP/IPC 自动化控制能力的小型编辑器。
 
 > 当前项目以 Windows + Visual Studio 2022 为主要开发环境。代码中的部分基础设施兼容其他平台，但原生文件对话框和 MP4 录制等功能仍依赖 Windows。
 
@@ -147,9 +147,9 @@ res/
 
 `res/content/` 和 `res/bin/` 是当前资产布局；`res/materials/`、`res/models/` 和 `res/textures/` 仅作为旧资产兼容路径保留。
 
-## MCP Agent 控制
+## MCP/IPC 控制
 
-tinyEngine 可以开启本地 TCP/NDJSON 控制端点，再由 Python FastMCP 服务向 Codex 或其他 MCP Host 暴露工具。所有引擎修改命令都会排队到 Vulkan 主线程执行。
+tinyEngine 可以开启本地 TCP/NDJSON 控制端点，再由 Python FastMCP 服务向兼容的 MCP Host 暴露工具。所有引擎修改命令都会排队到 Vulkan 主线程执行。
 
 ### 安装 Python 适配层
 
@@ -172,7 +172,7 @@ py -3.11 -m venv .venv
 | `--port N` | 指定监听端口，默认 `9527` |
 | `--exit-after N` | 渲染 N 帧后自动退出，便于冒烟测试 |
 
-项目内的 `.codex/config.toml` 已包含本地 Codex MCP 配置。其他 MCP Host 可使用以下 stdio 命令：
+MCP Host 可使用以下 stdio 命令启动适配层：
 
 ```powershell
 .\.venv\Scripts\python.exe -m mcp_server
@@ -233,20 +233,9 @@ Application
 
 `Application` 是顶层调度器，各 Manager 负责独立 Vulkan 或编辑器子系统。动画状态、材质绑定和 Transform 以实体为边界保存，渲染、PiP 与 GPU Pick 共用一致的实体和 SkinBinding 数据。
 
-## 项目文档
-
-- [TDD.md](TDD.md)：当前技术设计、模块职责、数据流和验证记录
-- [animation-system-plan.md](animation-system-plan.md)：动画、Animator、Sequencer 与资产系统计划
-- [multimodel-import-plan.md](multimodel-import-plan.md)：多模型导入设计
-- [mcp-control-plan.md](mcp-control-plan.md)：MCP 控制与验证层设计
-- [DailyProgress.md](DailyProgress.md)：英文开发进度
-- [DailyProgress_Chinese.md](DailyProgress_Chinese.md)：中文开发进度
-- [lessons-learned.md](lessons-learned.md)：外部验证中积累的缺陷模式与修复经验
-
-## 当前限制与路线图
+## 当前限制
 
 - Content Browser 离屏缩略图仍需完善材质显示、相机角度和蒙皮模型渲染。
-- Phase D 的统一 Animation Asset Registry 和 Assets 面板尚未完成。
 - 单个 Skin 的 GPU Bone Palette 上限为 256。
 - FBX 暂不导入 Blend Shape、约束、灯光、相机和分层/程序化材质。
 - Sequence MP4 录制目前没有音频轨道。
